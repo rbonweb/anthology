@@ -86,12 +86,13 @@ The remote folder is a copy without git history, so checks that read it (for exa
 | Check | What it proves |
 |---|---|
 | `rust-lint` | `cargo fmt --check` and `clippy -D warnings` |
-| `rust-test-linux` and `rust-test-macos` | `cargo test --workspace --locked` in the pinned Rust image and on macOS: the unit tests, the repository checks, the shim tests and the golden replay. Each gates on parallel `-shard` jobs (plain and `--all-features`; on Linux the golden replay is a shard of its own). A pull request that changes only release metadata (`ci/jobs/rust-scope.sh` lists it) skips the shards, and `rust-test-linux` runs the `repo-tests` checks instead |
+| `rust-test-linux` and `rust-test-macos` | `cargo test` in the pinned Rust image and on macOS: the unit tests, the repository checks, the shim tests and the golden replay (one test per difftest surface). They are the required checks and gate on parallel `-shard` jobs (plain and `--all-features`), which pass when `ci/jobs/rust-scope.sh` found nothing for them to run. See [What a pull request runs](#what-a-pull-request-runs) |
 | `deny` | `cargo deny check` (advisories, bans, licenses, sources; `deny.toml`), and that `serde_json` stays out of the shipped binary |
 | `shellcheck` and `shims-distros` | The `sh` shims pass `shellcheck -s sh`, and the shim tests pass on Alpine, Debian slim and Ubuntu, with each system's own shell and downloaders |
 | `ledger` (`ci/jobs/ledger.sh`) | Every row of the test ledger names a Rust test that cargo really runs, or a reviewed drop reason |
 | `fuzz-build` | Every fuzz target builds and survives a short run (`fuzz.yml` runs them longer, weekly) |
 | `atl-test` job (`scripts/atl-test.sh`, then `scripts/atl-net-test.sh`) | atl passes its tests, including one named test per change the fork makes, and the release binary works with the network off |
+| `atl-test-macos` (`ci/jobs/atl-test-macos.sh`) | atl passes its tests on macOS too, where temporary folders sit behind `/private/var` symlinks |
 | `atl-release` and `anthology-release` workflows, on a pull request | A change to the workflow or the toolchain pin builds and tests all four release targets, without publishing |
 | `vendor-check` (`scripts/dev.sh vendor check`) | Every vendored tree and license regenerates exactly from its pin |
 | `version-bump` (`scripts/dev.sh version-bump`) | A changed plugin has a higher version than at the merge base |
@@ -100,6 +101,20 @@ The remote folder is a copy without git history, so checks that read it (for exa
 | `memory-diff` (`scripts/dev.sh memory-diff`, pull requests) | Lists changed files under `.claude/memory/` and `.claude/agent-memory/` in the job summary, so a memory note is reviewed like code |
 | `startup-budget` (`scripts/dev.sh startup-budget`, then the budget tests) | The per-agent startup budgets and the session-start output budget (9,000 characters) hold |
 | `cli-syntax` (`ci/jobs/cli-syntax.sh`) | The `claude plugin` subcommands and flags the plugins and evals rely on exist in the pinned Claude Code. No model is called |
+
+### What a pull request runs
+
+A pull request runs only the Rust tests its change can affect, so a round takes minutes. `ci/jobs/rust-scope.sh` (rules in `ci/scope-rules.tsv`) reads the changed files and `cargo metadata`, and picks:
+
+- **Crates.** The changed crates plus every crate that depends on them, through a normal, build or dev dependency. The `rest` shards run their tests and are split by the weights in `ci/test-weights.tsv`.
+- **Golden surfaces.** The golden replay is one test per surface (`golden_replay::<surface>` in `crates/difftest/tests/golden.rs`). A pull request replays the surfaces of the crates it reaches, in one shard, plus the surfaces a rule names (an agent prompt replays `dev.startup-budget`). A change to `difftest` replays all of them.
+- **Docs, plugins, scripts, evals, memory notes, release metadata.** The repository checks (`repo-tests`) only.
+- **atl and fuzz.** `atl-test` runs for a change to `atl/` or a crate atl builds, `atl-test-macos` for a change to `atl/` itself, and `fuzz-build` for a change to `fuzz/` or a crate the targets build.
+- **macOS.** The macOS shards run on a pull request only for platform-sensitive paths (the `macos` rules: shims, hooks, the guard, code that spawns processes or reads the platform), and then only for the affected crates.
+
+Everything runs, as before, on every push to `build` and `main`, on a manual run of the workflow, and on a pull request that has the `full-ci` label or a commit with `[full-ci]` in its message (a trailer line or the subject). It also runs for a change to the test machinery itself (`ci.yml`, `ci/jobs/rust-*`, `ci/scope-rules.tsv`, the Rust image, the toolchain, `Cargo.toml` or `Cargo.lock` beyond a version) and for a path no rule places, so a new top-level folder needs a row in `ci/scope-rules.tsv`.
+
+The Linux shards keep the cargo registry, the toolchain and the dependency build in a cache (`ci/jobs/rust-cache.sh`): a push to `build` or `main` saves it and a pull request reads it.
 
 Images are pinned by digest in `ci/images/*.Dockerfile`, Rust crates by `Cargo.lock`, the toolchain by `rust-toolchain.toml`, and GitHub Actions by commit SHA. Dependabot proposes the bumps, and CI and the evals gate them.
 

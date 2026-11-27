@@ -1,0 +1,83 @@
+# Which tests a changed path needs. ci/jobs/rust-scope.sh reads this for every file a pull request
+# changes outside crates/ (a crate folder maps to its crate and the crates that depend on it) and
+# outside the release metadata it places itself (versions, locks, the changelog, memory notes).
+#
+# One row per rule: a glob, a tab, and effects separated by spaces. The glob is a shell `case`
+# pattern, where `*` also matches `/`. Every rule that matches a path applies, and a path that no
+# rule matches runs everything, so a new folder needs a row here (the repo-tests in ci_scope.rs
+# check every tracked path). Effects:
+#   full          the whole workspace, every surface, atl, fuzz and macOS (the test machinery
+#                 itself, the toolchain, the image)
+#   pkg:NAME      the crate NAME changed: it and every crate that depends on it run
+#   surface:NAME  replay that golden surface; surface:* replays them all
+#   atl           run atl-test (Linux, in the pinned image)
+#   atl-macos     run atl-test-macos: atl's own tests on macOS, for a change to atl itself
+#   fuzz          run fuzz-build
+#   macos         platform-sensitive: run the macOS shards on a pull request (the shims, the
+#                 hooks and bin shims, the guard, code that spawns processes, waits or reads the
+#                 platform). Push runs always run them.
+#
+# --- the test machinery: a change is proved by running everything
+.github/workflows/ci.yml	full
+ci/jobs/rust-*	full
+ci/scope-rules.tsv	full
+ci/test-weights.tsv	full
+ci/images/rust.Dockerfile	full
+rust-toolchain.toml	full
+scripts/rust-test.sh	full
+# --- atl and the fuzz targets have their own jobs
+atl/*	atl atl-macos
+scripts/atl-test.sh	atl
+scripts/atl-net-test.sh	atl
+fuzz/*	fuzz pkg:repo-tests
+ci/jobs/fuzz.sh	fuzz pkg:repo-tests
+ci/jobs/fuzz-build.sh	fuzz pkg:repo-tests
+# --- plugins: the repository checks read every file; some files also feed a golden
+plugins/*	pkg:repo-tests
+plugins/anthology/agents/*	surface:dev.startup-budget surface:dev.upstream-watch
+plugins/anthology/templates/*	surface:hook.session-start surface:setup
+plugins/*/bin/*	macos
+plugins/anthology/hooks/*.sh	macos
+plugins/anthology-guardrails/hooks/*.sh	macos
+# --- the divergence files every golden check reads
+port/difftest/*	pkg:repo-tests surface:*
+# --- everything else: the repository checks (docs, ledger, vendor, evals, workflows, scripts)
+port/*	pkg:repo-tests
+vendor/*	pkg:repo-tests
+docs/*	pkg:repo-tests
+evals/*	pkg:repo-tests
+scripts/*	pkg:repo-tests
+ci/*	pkg:repo-tests
+.github/*	pkg:repo-tests
+.claude/settings.json	pkg:repo-tests
+.claude-plugin/*	pkg:repo-tests
+*.md	pkg:repo-tests
+LICENSE	pkg:repo-tests
+deny.toml	pkg:repo-tests
+.gitattributes	pkg:repo-tests
+.gitignore	pkg:repo-tests
+.gitleaks.toml	pkg:repo-tests
+# --- platform-sensitive Rust: the guard, code that spawns, waits or reads the platform
+crates/anthology-guard/*	macos
+crates/anthology-core/src/sys.rs	macos
+crates/anthology-core/src/platform.rs	macos
+crates/anthology-core/src/fsx.rs	macos
+crates/anthology-core/src/fsx/*	macos
+crates/anthology-core/src/git.rs	macos
+crates/anthology-core/src/env.rs	macos
+crates/anthology-core/src/paths.rs	macos
+crates/anthology-pycompat/src/errno_tables*	macos
+crates/anthology-pycompat/src/pyerr.rs	macos
+crates/anthology-runtime/src/bootstrap.rs	macos
+crates/anthology-runtime/src/compat.rs	macos
+crates/anthology-runtime/src/doctor.rs	macos
+crates/anthology-runtime/src/fetch.rs	macos
+crates/anthology-runtime/src/session_start.rs	macos
+crates/anthology-settings/src/write.rs	macos
+crates/anthology-memory/src/portable*	macos
+crates/anthology-memory/src/repo.rs	macos
+crates/anthology-cli/src/cmd/perm/git.rs	macos
+crates/anthology-testkit/src/run.rs	macos
+crates/anthology-testkit/src/sandbox.rs	macos
+crates/anthology-testkit/src/bs.rs	macos
+crates/repo-tests/tests/shims*	macos

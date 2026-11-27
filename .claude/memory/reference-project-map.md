@@ -35,7 +35,7 @@ Three Claude Code plugins backed by one static Rust binary, `anthology`. ATL (`a
 
 ## Checks
 - Everything: `scripts/rust-test.sh`; one crate: `... test -p <crate>`. One-shots and `session-stop` drop the target volume (`ANTHOLOGY_KEEP_TARGET=1` keeps it); `session-start` runs `gc`; `anthology-sccache` is shared. Remote: `ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh <args>` cleans only its own items.
-- CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also checks `release.sh`, `rust-test.sh`, `remote-build.sh`); `rust-test-linux`/`-macos` gate on `-shard` jobs, which `rust-scope.sh` skips for release metadata. A PR in merge conflict runs no CI.
+- CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also checks `release.sh`, `rust-test.sh`, `remote-build.sh`). On a PR `rust-scope.sh` (rules `ci/scope-rules.tsv`, weights `ci/test-weights.tsv`, graph `rust-graph.mjs`) picks the crates a change reaches, their golden surfaces (`golden_replay::<surface>` tests, `difftest/tests/golden.rs`), atl, atl on macOS, fuzz and macOS; `rust-test-linux`/`-macos` are the required gates over its `-shard` matrices. A push, the `full-ci` label, `[full-ci]` in a commit or a change to the test machinery runs everything. A PR in merge conflict runs no CI: merge `origin/build`.
 - `lock-fresh.sh` warns only (exit 0). `fuzz.sh`: `cargo metadata --locked` guards the fuzz lock.
 - Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps inherited tests to Rust tests or drop reasons (`ledger.sh`).
 - Budgets: agent `BUDGET` in `startup_budget.rs`; guide max 3800 characters, session-start output max 9000 (`session_start.rs`).
@@ -50,5 +50,6 @@ Three Claude Code plugins backed by one static Rust binary, `anthology`. ATL (`a
 - Change to `atl.lock`, `bin/*` or `hooks/*`: release `anthology`. Edit `hooks.json`: update its pins in `repo-tests/tests/shims/statics.rs`, `cutover_hooks.rs` and `anthology-runtime/tests/atl_install.rs`.
 - Agent prompts: run `scripts/dev.sh startup-budget`, raise `BUDGET` only with a stated reason. A changed `setup`, session start, doctor or memory sync output: `scripts/dev.sh golden bless --surface X`.
 - Docs: `README.md` is the front page (at most 120 lines); detail lives in `docs/*.md` (`DOC_PAGES`, `repo-tests` `docs.rs`).
+- New crate: a row in `ci/test-weights.tsv`. New golden surface: a line in `golden_replay` (`difftest/tests/golden.rs`). New top-level folder: a row in `ci/scope-rules.tsv`, or CI runs everything for it. `repo-tests/tests/ci_scope.rs` pins all three.
 - Add, remove or rewire a piece: update this map in the same commit.
 - Memory notes get their own `chore(memory): ...` commit.
