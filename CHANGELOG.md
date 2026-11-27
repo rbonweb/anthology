@@ -12,8 +12,8 @@ a new version section.
 
 #### Fixed
 
-- The `anthology` binary 0.2.8: the guard closes three bypasses that were already on `build` (they are not new in
-  0.2.8; each was shown to run a program in bash 5 or zsh 5.9 while the guard allowed the command).
+- The `anthology` binary 0.2.9: the guard closes three bypasses that were already on `build` (they are not new in
+  0.2.9; each was shown to run a program in bash 5 or zsh 5.9 while the guard allowed the command).
   1. Programs that run another program from an option the guard did not read. The value is now read as a command
      (so an install in it is G1), and a value that is not a known harmless one (`cat`, `less`, a compressor for
      `sort`) makes the command too complex (G0), because these programs also pass the command a file name that
