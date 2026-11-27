@@ -207,7 +207,8 @@ const ABSENT_CLAIMS = [
   'Project map missing in this worktree.',
   'No map yet.',
 ]
-const MAP_BASE = 'Changes: Added hooks/mods/x.ts, renamed the build command.'
+// Names a new piece without a path: a path in a world with no `.git` would read as an edit outside a repo.
+const MAP_BASE = 'Changes: Added a new mod, renamed the build command.'
 
 test('a "map missing" claim counts as dealing with the map only when the file is absent in the agent folder', async ($, on) => {
   engine(on, { ...IN_WORKTREE(), files: [] })
@@ -255,13 +256,15 @@ const QUOTED_CLAIMS = [
 ]
 
 test('a quoted read error is judged by whether the map exists, not by the words around it', async ($, on) => {
-  const w: World = { ...IN_WORKTREE(), files: { includes: p => p === MAP } }
+  // The claims name paths, so the worktree and its parent repo hold `.git`: they are not edits outside one.
+  const gits = (p: string) => p === `${WORKTREE}/.git` || p === '/work/repo/.git'
+  const w: World = { ...IN_WORKTREE(), files: { includes: p => p === MAP || gits(p) } }
   engine(on, w)
   for (const said of QUOTED_CLAIMS) {
     const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
     expect(r.text, said).toContain('Reminder: ')
   }
-  w.files = { includes: () => false }
+  w.files = { includes: gits }
   for (const said of QUOTED_CLAIMS) {
     const r = await $.agent.report(report(`${MAP_BASE}\n${said}`))
     expect(r.text, said).toContain(CHECK)
@@ -544,4 +547,86 @@ test('a git timeout, a git failure or a lookup failure leaves the text-only chec
     expect(part.text).toContain('no commit')
     expect(part.text).not.toContain('uncommitted')
   }
+})
+
+// Edits outside any git repo: there is nothing to commit and no test to run, so the report that says
+// neither is not short of anything. The edited paths come from the report text: absolute, `~/` and
+// relative (against the agent's folder). A path is in a repo when it or a folder above it holds `.git`.
+const HOME_DIR = '/home/u'
+const OUTSIDE = `Changed ${HOME_DIR}/.claude/settings.json: set the model.`
+const outsideWorld = (over: World = {}): World => ({
+  agents: () => [{ id: 'a1', cwd: '/scratch' } as AgentInfo],
+  env: { HOME: HOME_DIR },
+  files: { includes: () => false },
+  ...over,
+})
+const gitAt = (...dirs: string[]) => ({ includes: (p: string) => dirs.some(d => p === `${d}/.git`) })
+
+test('edits only outside a git repo: no commit and no tested gap, whatever the path spelling', async ($, on) => {
+  engine(on, outsideWorld())
+  for (const text of [
+    OUTSIDE,
+    'Edited ~/.claude/settings.json: set the model.',
+    'Edited `/etc/hosts` and /opt/tools/conf.toml.',
+    'Edited ./notes/todo.md (relative to the scratch folder).',
+  ]) {
+    expect((await $.agent.report(report(text))).text, text).toBe(text)
+  }
+})
+
+test('an edit inside a git repo keeps the commit and tested gaps', async ($, on) => {
+  engine(on, outsideWorld({ files: gitAt(HOME_DIR) })) // a dotfiles repo in the home folder
+  const r = await $.agent.report(report(OUTSIDE))
+  expect(r.text).toContain('no commit')
+  expect(r.text).toContain('what was tested')
+})
+
+test('mixed edits keep the checks, because one path is in a repo', async ($, on) => {
+  engine(on, outsideWorld({ files: gitAt('/work/repo') }))
+  const r = await $.agent.report(report(`${OUTSIDE}\nAlso edited /work/repo/src/a.ts.`))
+  expect(r.text).toContain('no commit')
+  expect(r.text).toContain('what was tested')
+})
+
+test('a relative path is judged by the agent folder, and unknown is treated as in a repo', async ($, on) => {
+  const text = 'Edited src/a.ts.'
+  const w = outsideWorld()
+  engine(on, w)
+  expect((await $.agent.report(report(text))).text).toBe(text)
+  w.files = gitAt('/scratch')
+  expect((await $.agent.report(report(text))).text).toContain('no commit')
+  w.files = { includes: () => false }
+  w.agents = () => []
+  expect((await $.agent.report(report(text))).text).toContain('no commit')
+})
+
+test('a ~ path with no HOME is unknown, so the checks stay', async ($, on) => {
+  engine(on, outsideWorld({ env: {} }))
+  expect((await $.agent.report(report('Edited ~/.claude/settings.json.'))).text).toContain('no commit')
+})
+
+test('a report with no path in it keeps the checks, and a URL or a slash command is no path', async ($, on) => {
+  engine(on, outsideWorld())
+  for (const text of ['Done.', 'Ran /plugin install and read https://github.com/a/b/c.', 'Chose read/write.']) {
+    expect((await $.agent.report(report(text))).text, text).toContain('no commit')
+  }
+})
+
+test('outside a repo, attribution lines are still flagged and a commit is still not asked for', async ($, on) => {
+  engine(on, outsideWorld())
+  const text = `${OUTSIDE}\nCo-Authored-By: Claude <x>`
+  const block = (await $.agent.report(report(text))).text?.slice(text.length) ?? ''
+  expect(block).toContain('attribution')
+  expect(block).not.toContain('no commit')
+  expect(block).not.toContain('what was tested')
+})
+
+test('a failing path lookup keeps the checks', async ($, on) => {
+  const broken = {
+    includes: (): boolean => {
+      throw new Error('no fs')
+    },
+  }
+  engine(on, outsideWorld({ files: broken }))
+  expect((await $.agent.report(report(OUTSIDE))).text).toContain('no commit')
 })
