@@ -265,7 +265,7 @@ jobs:
           path: |
             ${{ runner.temp }}/rust-cache/cargo
             ${{ runner.temp }}/rust-cache/rustup
-            ${{ runner.temp }}/rust-cache/target
+            ${{ runner.temp }}/rust-cache/sccache
           key: rust-linux-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'ci/images/rust.Dockerfile') }}
           restore-keys: |
             rust-linux-${{ matrix.name }}-
@@ -279,13 +279,10 @@ jobs:
           PART: ${{ matrix.part }}
           PACKAGES: ${{ matrix.packages }}
           SURFACES: ${{ matrix.surfaces }}
+          # sccache keeps what the dependencies compiled in the cached volume; scripts/rust-test.sh
+          # leaves it off in CI by default, because a runner starts empty.
+          ANTHOLOGY_SCCACHE: "1"
         run: ci/jobs/rust-test-linux.sh "$FEATURES" "$PART"
-      - name: trim the cache to the dependencies
-        env:
-          CACHE_DIR: ${{ runner.temp }}/rust-cache
-          # cargo metadata lists the workspace's crates with the runner's toolchain.
-          RUSTUP_TOOLCHAIN: stable
-        run: ci/jobs/rust-cache.sh trim "$CACHE_DIR"
       # Only a push or a manual run saves: a pull request reads the cache of its base branch.
       - name: save the Rust cache
         if: ${{ success() && github.event_name != 'pull_request' }}
@@ -294,7 +291,7 @@ jobs:
           path: |
             ${{ runner.temp }}/rust-cache/cargo
             ${{ runner.temp }}/rust-cache/rustup
-            ${{ runner.temp }}/rust-cache/target
+            ${{ runner.temp }}/rust-cache/sccache
           key: rust-linux-${{ matrix.name }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', 'ci/images/rust.Dockerfile') }}
 
   rust-test-linux:

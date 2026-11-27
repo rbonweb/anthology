@@ -119,7 +119,8 @@ fn linux(args: &[&str], env: &[(&str, &str)]) -> Result<Vec<String>, Output> {
     executable(
         dir.path(),
         "docker",
-        "for a in \"$@\"; do printf '%s\\0' \"$a\"; done > \"$DOCKER_ARGV\"",
+        // the first call is `docker run`; the later `docker volume rm` must not overwrite it
+        "[ -e \"$DOCKER_ARGV\" ] || for a in \"$@\"; do printf '%s\\0' \"$a\"; done > \"$DOCKER_ARGV\"",
     );
     let out = Command::new("sh")
         .arg(repo::path(LINUX))
@@ -530,12 +531,16 @@ fn runner_volumes() -> BTreeSet<String> {
     executable(
         dir.path(),
         "docker",
-        "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$DOCKER_ARGV\"",
+        // the first call is `docker run`; the later `docker volume rm` must not overwrite it
+        "[ -e \"$DOCKER_ARGV\" ] || for a in \"$@\"; do printf '%s\\n' \"$a\"; done > \"$DOCKER_ARGV\"",
     );
     let out = Command::new(repo::path("scripts/rust-test.sh"))
         .args(["run", "true"])
         .env("PATH", path_with(dir.path()))
         .env("DOCKER_ARGV", &argv)
+        // CI turns sccache off by default; the Linux shards turn it on (ci.yml)
+        .env("ANTHOLOGY_SCCACHE", "1")
+        .env_remove("CI")
         .output()
         .expect("rust-test.sh ran");
     assert!(
@@ -553,7 +558,12 @@ fn runner_volumes() -> BTreeSet<String> {
 
 #[test]
 fn the_cache_volumes_are_the_ones_the_test_runner_mounts() {
-    let volumes = runner_volumes();
+    // The registry, the toolchain, the checkout's target folder and the shared sccache. The target
+    // volume is made for one run and removed with it, so only the other three are kept: sccache
+    // holds what the dependencies compiled.
+    let mut volumes = runner_volumes();
+    assert_eq!(volumes.len(), 4, "{volumes:?}");
+    volumes.retain(|v| !v.starts_with("anthology-rust-target-"));
     assert_eq!(volumes.len(), 3, "{volumes:?}");
     let calls = cache_calls(&["volumes", "/cache"]);
     let created: BTreeSet<String> = calls
@@ -588,76 +598,8 @@ fn the_cache_folders_are_made_before_docker_binds_them() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    for sub in ["cargo", "rustup", "target"] {
+    for sub in ["cargo", "rustup", "sccache"] {
         assert!(cache.join(sub).is_dir(), "{sub}");
-    }
-}
-
-#[test]
-fn trimming_keeps_what_the_dependencies_built_and_drops_the_rest() {
-    if Command::new("node").arg("--version").output().is_err() {
-        eprintln!("skipped: node is not installed");
-        return;
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let debug = dir.path().join("target/debug");
-    let make = |rel: &str| {
-        let p = debug.join(rel);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, "x").unwrap();
-    };
-    // third party: kept
-    for keep in [
-        "deps/libserde-1a.rlib",
-        "deps/serde-1a.d",
-        ".fingerprint/serde-1a/lib-serde",
-        "build/serde-1a/out/x",
-    ] {
-        make(keep);
-    }
-    // the workspace's own crates, test programs and incremental state: dropped
-    for drop in [
-        "deps/libanthology_core-9f.rlib",
-        "deps/libanthology_core-9f.rmeta",
-        ".fingerprint/anthology-core-9f/lib-anthology_core",
-        "build/anthology-core-9f/out/x",
-        "deps/golden-77",
-        "deps/difftest-77",
-        "incremental/x/y",
-        "examples/e",
-    ] {
-        make(drop);
-    }
-    let out = Command::new("sh")
-        .arg(repo::path(CACHE))
-        .arg("trim")
-        .arg(dir.path())
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    for keep in [
-        "deps/libserde-1a.rlib",
-        "deps/serde-1a.d",
-        ".fingerprint/serde-1a/lib-serde",
-        "build/serde-1a/out/x",
-    ] {
-        assert!(debug.join(keep).exists(), "{keep} was kept");
-    }
-    for gone in [
-        "deps/libanthology_core-9f.rlib",
-        "deps/libanthology_core-9f.rmeta",
-        ".fingerprint/anthology-core-9f",
-        "build/anthology-core-9f",
-        "deps/golden-77",
-        "deps/difftest-77",
-        "incremental",
-        "examples",
-    ] {
-        assert!(!debug.join(gone).exists(), "{gone} was dropped");
     }
 }
 
@@ -849,15 +791,16 @@ fn atl_test_and_fuzz_build_run_only_when_their_inputs_changed() {
     }
 }
 
-/// The folders `actions/cache` keeps for the Linux shards: the three the test runner mounts.
+/// The folders `actions/cache` keeps for the Linux shards: the registry, the toolchain and the
+/// sccache of the dependencies, three of the volumes the test runner mounts.
 const CACHE_DIRS: [&str; 3] = [
     "${{ runner.temp }}/rust-cache/cargo",
     "${{ runner.temp }}/rust-cache/rustup",
-    "${{ runner.temp }}/rust-cache/target",
+    "${{ runner.temp }}/rust-cache/sccache",
 ];
 
 #[test]
-fn a_linux_shard_restores_binds_trims_and_saves_the_rust_cache() {
+fn a_linux_shard_restores_binds_and_saves_the_rust_cache() {
     let job = job("rust-test-linux-shard");
     let order: Vec<String> = yaml::items(&job["steps"])
         .iter()
@@ -877,13 +820,12 @@ fn a_linux_shard_restores_binds_trims_and_saves_the_rust_cache() {
             .position(|s| s.contains(needle))
             .unwrap_or_else(|| panic!("no step with {needle}: {order:?}"))
     };
-    // dirs, restore, volumes, test, trim, save
+    // dirs, restore, volumes, test, save
     assert!(at("rust-cache.sh dirs") < at("actions/cache/restore@"));
     assert!(at("actions/cache/restore@") < at("rust-cache.sh volumes"));
     assert!(at("rust-cache.sh volumes") < at("rust-test-linux.sh"));
-    assert!(at("rust-test-linux.sh") < at("rust-cache.sh trim"));
-    assert!(at("rust-cache.sh trim") < at("actions/cache/save@"));
-    for sub in ["dirs", "volumes", "trim"] {
+    assert!(at("rust-test-linux.sh") < at("actions/cache/save@"));
+    for sub in ["dirs", "volumes"] {
         let step = step_running(
             &job,
             &format!(r#"ci/jobs/rust-cache.sh {sub} "$CACHE_DIR""#),
@@ -894,9 +836,10 @@ fn a_linux_shard_restores_binds_trims_and_saves_the_rust_cache() {
             "{sub}"
         );
     }
-    // trim reads the manifests with cargo on the runner, which must not fetch the pinned toolchain.
-    let trim = step_running(&job, r#"ci/jobs/rust-cache.sh trim "$CACHE_DIR""#);
-    assert_eq!(text(&trim["env"], "RUSTUP_TOOLCHAIN"), "stable");
+    // scripts/rust-test.sh leaves sccache off in CI (a runner starts empty); with the cache
+    // restored it is what makes the dependencies a hit.
+    let test = step_running(&job, r#"ci/jobs/rust-test-linux.sh "$FEATURES" "$PART""#);
+    assert_eq!(text(&test["env"], "ANTHOLOGY_SCCACHE"), "1");
     let restore = step_using(&job, "actions/cache/restore@");
     let save = step_using(&job, "actions/cache/save@");
     for step in [restore, save] {
