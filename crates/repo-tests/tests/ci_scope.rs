@@ -983,8 +983,8 @@ fn the_macos_shards_run_the_affected_crates_with_both_feature_sets() {
 #[test]
 fn the_scripts_repo_tests_executes_run_macos_and_the_other_scripts_do_not() {
     // repo-tests runs these four under macOS bash 3.2: atl_rename_script.rs, atl_sync_fixture.rs
-    // and rtk_layout.rs (sync-atl.sh runs real, with atl-rename.sh), remote_build.rs and
-    // rust_test_script.rs. A change to only one of them must run the macOS shards, repo-tests
+    // (sync-atl.sh runs real there, with atl-rename.sh; its bad-tag test is in another file),
+    // remote_build.rs and rust_test_script.rs. A change to only one of them must run the macOS shards, repo-tests
     // among them. rust-test.sh is a `full` path (the whole workspace, so no package list).
     assert!(scope_after(|d| touch(d, "scripts/rust-test.sh")).flag("run_macos"));
     for file in [

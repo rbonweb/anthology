@@ -36,8 +36,8 @@ scripts/rust-test.sh	full
 atl/*	atl atl-macos job:vendor-check
 scripts/atl-test.sh	atl
 scripts/atl-net-test.sh	atl
-# repo-tests runs these under macOS bash 3.2 (atl_rename_script.rs; atl_sync_fixture.rs and
-# rtk_layout.rs run sync-atl.sh with atl-rename.sh; remote_build.rs). The other scripts are only
+# repo-tests runs these under macOS bash 3.2 (atl_rename_script.rs; atl_sync_fixture.rs and the
+# sync script's bad-tag test run sync-atl.sh with atl-rename.sh; remote_build.rs). The other scripts are only
 # read as text there, or stubbed, so scripts/* has no macos rule. rust-test.sh is `full` above.
 scripts/atl-rename.sh	macos
 scripts/sync-atl.sh	macos
