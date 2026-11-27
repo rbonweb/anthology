@@ -71,7 +71,8 @@ use crate::prefixes::{
     is_interpreter, parallel_lines, pm_runs_own_verb, strip_prefixes,
 };
 use crate::shell_args::{
-    Budget, SHELLS, ShellMode, WORD, embedded_shells_in, prog_name, script_starts_in, shell_parse,
+    Budget, SHELLS, ShellMode, WORD, docker_script_starts_in, embedded_shells_in, prog_name,
+    shell_parse,
 };
 
 const DOCKER: &[&str] = &["docker", "docker-compose"];
@@ -1285,6 +1286,9 @@ pub(crate) struct Ctx<'a> {
     /// G0-FP: the text being collected has no `$`, no unescaped backtick and no consumer of text (`plain_text`),
     /// so no word can be given a name by an expansion (`subscript_runs`); scoped to one `collect` call.
     plain: bool,
+    /// The text being collected holds an unquoted paren, or was split by the lenient fallback (`LexInfo::parens`):
+    /// the segments may not be the commands that run, so no reading of a command's words as plain data holds.
+    parens: bool,
     /// SH-F3: the entries whose segment held a `$(` or a backtick.
     held_entries: HashSet<usize>,
     /// SH-F3: how many stdin-reading entries have been added (`reads_stdin_as_shell`), in this pass or
@@ -1358,6 +1362,7 @@ impl<'a> Ctx<'a> {
             holders: Vec::new(),
             subst: false,
             plain: false,
+            parens: true,
             held_entries: HashSet::new(),
             readers: 0,
             script_readers: HashSet::new(),
@@ -1684,9 +1689,11 @@ impl<'a> Ctx<'a> {
         }
         self.seen.insert(key.clone(), (depth, self.cwd.clone()));
         let (braces, quoted_braces, plain) = (self.braces, self.quoted_braces, self.plain);
+        let parens = self.parens;
         let readers = self.readers;
         self.collect_once(text, exempt, depth, known);
         (self.braces, self.quoted_braces, self.plain) = (braces, quoted_braces, plain);
+        self.parens = parens;
         if self.readers > readers {
             self.reads_seen.insert(key.clone());
         }
@@ -1711,6 +1718,7 @@ impl<'a> Ctx<'a> {
         }
         self.unproven |= info.unproven;
         self.plain = !(lexed.lenient || info.nested_lenient) && plain_text(text, &lexed.segments);
+        self.parens = info.parens || lexed.lenient || info.nested_lenient;
         self.arith_texts.extend(info.arith_texts);
         let mut from_text = Vec::new();
         if lexed.lenient || info.nested_lenient {
@@ -2467,6 +2475,7 @@ impl<'a> Ctx<'a> {
     ) -> Option<usize> {
         let arith = std::mem::take(&mut self.arith);
         let holders = std::mem::take(&mut self.holders);
+        let had_holders = !holders.is_empty();
         let subst = std::mem::take(&mut self.subst);
         let known = std::mem::take(&mut self.top_known);
         let size: usize = tokens.iter().map(|t| WORD + t.len()).sum();
@@ -2557,6 +2566,24 @@ impl<'a> Ctx<'a> {
         let prog_path = cmd.first().map(|w| pystr::lower(w)).unwrap_or_default();
         let prog = cmd.first().map(|w| prog_name(w)).unwrap_or_default();
         let args: Vec<String> = cmd.get(1..).map(<[String]>::to_vec).unwrap_or_default();
+        // the command's words are the literal text written: no word held a parameter, a substitution, an
+        // unquoted glob or a brace, the program and its arguments are the last words as they stand, and
+        // nothing adds arguments at run time (`xargs`), and no redirect or here-string anywhere in the segment:
+        // the lexer takes zsh's numeric glob `c<1-5>` for two redirects and drops the words they swallow; and no
+        // unquoted paren anywhere in the text: it ends the segment, but zsh reads `(-o|-x)` as one word's glob
+        let literal_command = !had_holders
+            && !self.parens
+            && redirs.is_empty()
+            && self.group_texts(group).is_empty()
+            && !subst
+            && !arith
+            && !self.braces
+            && !self.quoted_braces
+            && words.ends_with(&cmd)
+            && !peeled.placeholder
+            && !peeled.unknown_option
+            && !peeled.stdin_args
+            && !peeled.emptied;
         // PE-1, PE-3, PE-5, PE-6: a program from a parameter expansion, code from a value, a nested
         // subscript, a renamed program. The analysis goes on and is too complex at its end (`unproven`), so
         // a rule that blocks a reading still names itself (`${x:-npx} playwright install` is G1)
@@ -2889,8 +2916,10 @@ impl<'a> Ctx<'a> {
             }
         }
         if DOCKER.contains(&prog.as_str()) {
-            // `docker run img sh -euc "..."`
-            let Some(starts) = script_starts_in(&args, &mut self.work.extra) else {
+            // `docker run img sh -euc "..."`; not the SQL of `docker exec db psql -c "select count(*) ..."`
+            let Some(starts) =
+                docker_script_starts_in(&prog, &args, literal_command, &mut self.work.extra)
+            else {
                 self.halt();
                 return None;
             };
