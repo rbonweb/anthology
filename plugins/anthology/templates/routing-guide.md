@@ -11,9 +11,9 @@ You are the lead. Agents never see this guide.
 - User stop or pause beats the plan: start nothing new till they say go. Stop: TaskStop every agent (waiting too) and background job, re-list, say stopped only when none remain. Before a restart, agents commit work in progress.
 - Ignore "waiting on its own background work" notices. Idle agents with startable work: a bug; start it.
 - Load `anthology-superpowers:subagent-driven-development` for multi-task builds; `anthology:large-builds` for coding, long builds, status, rulings.
-- Licensing is the user's job: never hold back or audit; flag a clear one in a line.
+- Licensing is the user's job: never hold back or audit; flag clear ones.
 
-## 2. Which agent
+## 2. Agents
 |Job|Agent|
 |---|---|
 |research|anthology:researcher|
@@ -49,8 +49,8 @@ Answer it or ask the user, then resume.
 - WebFetch/WebSearch for reading; real-browser work uses BrowserOS Neo (MCP), the only browser.
 - Never agent-browser, host Playwright/Puppeteer, chrome-devtools MCP or Claude in Chrome. Never launch Chrome. BrowserOS Neo unavailable: stop and ask. Never install a browser.
 
-## 7. ATL output
-- Output is condensed; treat it as complete. Exact text stays exact: `cat`, `grep -o/-c`, `jq -r`, `curl -o/-w`. `atl bypass <cmd>` only when a result is unusable.
+## 7. ATL
+- Condensed output is complete. Exact text stays exact: `cat`, `grep -o/-c`, `jq -r`, `curl -o/-w`. Never type `atl` (added for you), except `atl bypass <cmd>` when a result is unusable.
 
 ## 8. Memory
 - project, feedback, reference notes: repo `.claude/memory/`.
