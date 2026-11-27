@@ -10,6 +10,26 @@ a new version section.
 
 ### [Unreleased]
 
+#### Changed
+
+- The `anthology` binary 0.2.6: the guard no longer blocks `docker exec db psql -c "select count(*) from t"`
+  as too complex to check. Inside a docker command every `-c` word was read as a shell option and the next
+  word was parsed as a shell script, so SQL such as `count(*)` failed to parse. `psql -c` of plain SQL runs
+  no shell and `docker exec` runs its arguments without one, so that SQL is now data. This holds only when
+  the whole command is plain text (no parameter, substitution, glob, brace, redirect or parenthesis, so the shell
+  cannot split or expand a word into others), the command is `docker exec`, `docker compose exec` or
+  `docker-compose exec` with only the options `-u`, `--user`, `-w`, `--workdir`, `--detach-keys`, `-i`,
+  `-t`, `-d`, `-it`, `--privileged`, `--interactive`, `--tty`, `--detach` and `-e`/`--env` for the libpq
+  connection variables (`PGPASSWORD`, `PGUSER`, `PGDATABASE`, `PGHOST`, `PGPORT` and a few more; never
+  `PATH`, and `--env-file` is not accepted), the program word is exactly `psql` (not `PSQL`, not a path),
+  and each `-c` and `--command` value (there may be several; one that fails ends the reading for all of them) holds no backslash (`\!` and `\o |` make psql start a
+  shell), `$`, backtick, `~`, `^` or `#`. The options of psql are checked too: `-c`, `--command`, `-U`, `-h`,
+  `-p`, `-d` (and their long forms) with a plain name, `-v` for `ON_ERROR_STOP`, `ON_ERROR_ROLLBACK`,
+  `AUTOCOMMIT`, `ECHO`, `QUIET` and `VERBOSITY`, a cluster of `A`, `t`, `q`, `X`, `x`, `H`, and at most two
+  plain database or user names. `-o`, `-f`, `-L`, `-P`, any attached value and any connection string keep the
+  reading they had, because psql can run a program for them. Anything else keeps the reading it had,
+  including `sh -c`, `bash -c`, `docker run` and every other program that takes `-c`.
+
 ### [0.5.6] - 2026-11-26
 
 - Remove: Anthology no longer raises alerts of its own. The `Notification` hook and `hooks/notify.sh` (the Glass sound on macOS, the `notify-send` desktop alert on Linux, the terminal bell) are gone, and so is the in-session toast of the alerts mod. The `ANTHOLOGY_NOTIFY` switch goes with them, since there is nothing left to turn off. The `/anthology-status` pane and its command stay. Any notification app you choose works alongside Anthology, or you can add a `Notification` hook of your own.
