@@ -1,0 +1,1 @@
+- Change: new skill `/anthology:check-repo` checks a repo or git URL for malicious code (install scripts, editor and agent auto-run files, hidden text, payloads) before you open it, and adds an advisory second opinion that can never lower a finding. `/anthology:setup` now ends by offering to run it on the current repo, and the routing guide points security work on a clone to it.

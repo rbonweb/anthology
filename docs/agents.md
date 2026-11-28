@@ -42,7 +42,7 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 | `marketer` | sonnet | docs only | Page copy, email, social, ads, launches and PR, CRO and A/B tests, tracking plans, SEO and AI search, content and campaign plans | humanizer, product-marketing; per deliverable only: copywriting, landing-page-copywriter, copy-editing, emails, email-sequence, social, ad-creative, launch, public-relations, cro, ab-testing, analytics, seo-audit, programmatic-seo, ai-seo, content-strategy, content-creation, campaign-plan |
 | `blog-writer` | sonnet | docs only | Blog posts: trend research, brief, outline, draft, score gate | blog-write, blog-factcheck, humanizer; blog-discourse, blog-brief, blog-outline, blog-cluster only when the job needs them |
 
-- **Knowledge belongs to agents.** Every knowledge folder is read by at least one agent, or linked from one it reads (`blog` holds claude-blog's shared references). A Startup line that ends in "only when …" is read only for that kind of job. The main session never sees any of it. The only skills the main session has are `anthology-superpowers`, the three user commands and `anthology:large-builds`, the rulebook for long multi-agent builds. Each agent reads its own knowledge files before it starts anything else.
+- **Knowledge belongs to agents.** Every knowledge folder is read by at least one agent, or linked from one it reads (`blog` holds claude-blog's shared references). A Startup line that ends in "only when …" is read only for that kind of job. The main session never sees any of it. The only skills the main session has are `anthology-superpowers`, the four user commands and `anthology:large-builds`, the rulebook for long multi-agent builds. Each agent reads its own knowledge files before it starts anything else.
 - **Builders and critics are different models.** For UI work, `ui-designer` (Sonnet) builds and `ui-reviewer` (Opus) checks.
 - **Who writes which copy.** `ui-designer` writes the strings in UI it builds; `docs-writer` writes UX copy for UI someone else builds; `marketer` writes marketing copy; `blog-writer` writes blog posts; `reviewer` checks marketing deliverables for claims, brand voice and copy. `dashboard-copy` is Anthology's own knowledge, written from Carbon and GOV.UK guidance.
 - **For websites and landing pages** `design-taste-frontend` leads. **For app screens** `ui-taste` leads. `frontend-design` is the baseline.
@@ -60,6 +60,7 @@ Agents write in one fixed terse style in chat and reports. Files, code, commits 
 | `/anthology:setup remove` | Takes out the settings entries and the ATL download that setup added; never deletes your notes (see [Removing](setup.md#removing)) |
 | `/anthology:export` | Exports your memory notes to a portable archive (see [Export and import](memory.md#export-and-import)) |
 | `/anthology:import <file>` | Imports an archive after a dry run |
+| `/anthology:check-repo <path or URL>` | Checks a repo or git URL for malicious code before you open it. Reads files only and never runs the repo's code (see [Check a repo](check-repo.md)) |
 | `/anthology-status` | Opens a pane with the agents that run, the last few that finished and the permission prompts that wait for you (see [The status pane](mods.md#the-status-pane)) |
 
 These run only when you ask for them.
