@@ -40,7 +40,7 @@ Three Claude Code plugins, one static Rust binary, `anthology`; ATL (`atl/`, a f
 - `anthology perm classify` output change: update `classifiedPaths` in `hooks/mods/permissions.ts`.
 - `evals/baseline.json`: record only from the CI run of `evals.yml`.
 - `atl.lock`, `bin/*` or `hooks/*` change: release `anthology`. `hooks.json` edit: update pins in `repo-tests/tests/shims/statics.rs`, `cutover_hooks.rs`, `anthology-runtime/tests/atl_install.rs`.
-- Agent prompts: run `scripts/dev.sh startup-budget`; raise `BUDGET` (`startup_budget.rs`) only with a stated reason. Changed `setup`, session start, doctor or memory sync output: `scripts/dev.sh golden bless --surface X`.
+- Agent prompts: `scripts/dev.sh startup-budget` (a `, only …` line adds its largest file); raise its `BUDGET` with a reason. Changed `setup`, session start, doctor or memory sync output: `scripts/dev.sh golden bless --surface X`.
 - Docs: `README.md` front page, ≤120 lines; detail in `docs/*.md` (`DOC_PAGES`, `repo-tests` `docs.rs`).
 - New crate: a row in `ci/test-weights.tsv`. New golden surface: a line in `golden_replay` (`difftest/tests/golden.rs`). New top-level folder: a row in `ci/scope-rules.tsv`, or CI runs everything. `repo-tests/tests/ci_scope.rs` pins all three.
 - Add, remove or rewire a piece: put the map line in the PR body; the lead applies it. Memory notes get their own `chore(memory): ...` commit.

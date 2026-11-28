@@ -24,7 +24,7 @@ pub const AUTH_VARS: [&str; 3] = [
 ];
 pub const CLAUDE_TIMEOUT: u64 = 300;
 pub const NO_AUTH: &str = "no API credentials (set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)";
-pub const EXPECTED_AGENTS: usize = 11;
+pub const EXPECTED_AGENTS: usize = 12;
 pub const MARKER: &str = "smoke-unpushed-marker";
 pub const ATL_RAW_GIT: &str = "create/copy files and use";
 pub const GUARD_G1: &str = "anthology-guardrails (G1)";
@@ -334,8 +334,10 @@ static MEM_NOTE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static META_LINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(\w+):\s*(.*)$").expect("META_LINE_RE is a fixed pattern"));
+/// An always Startup line: one path and nothing after it, so a conditional line ("`, only ...")
+/// is not a required read.
 static STARTUP_ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^- `\$\{CLAUDE_PLUGIN_ROOT\}/knowledge/(.+?)/SKILL\.md`")
+    Regex::new(r"(?m)^- `\$\{CLAUDE_PLUGIN_ROOT\}/knowledge/([A-Za-z0-9_./-]+?)/SKILL\.md`[ \t]*$")
         .expect("STARTUP_ITEM_RE is a fixed pattern")
 });
 static HEADING_RE: LazyLock<Regex> =
@@ -662,7 +664,7 @@ fn strip_quotes(s: &str) -> &str {
 
 /// One agent file, by plain line parsing (no PyYAML): model / isolation from the frontmatter,
 /// preloads from its `skills:` list (the `plugin:` prefix dropped), startup from the `## Startup`
-/// section (refs `x` or `ds/x` of its `knowledge/.../SKILL.md` paths).
+/// section (refs `x` or `ds/x` of the `knowledge/.../SKILL.md` paths on its always lines).
 pub fn parse_agent(text: &str) -> Result<AgentSpec, String> {
     let (head, body) = match text.strip_prefix("---\n") {
         Some(rest) => rest.split_once("\n---").unwrap_or((rest, "")),

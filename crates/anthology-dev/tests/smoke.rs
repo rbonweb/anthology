@@ -64,7 +64,8 @@ type RosterRow = (
     &'static [&'static str],
     &'static [&'static str],
 );
-const UI_KNOWLEDGE: [&str; 11] = [
+/// The always reads only: `website-clone` is a conditional line.
+const UI_KNOWLEDGE: [&str; 10] = [
     "frontend-design",
     "design-taste-frontend",
     "ui-taste",
@@ -75,9 +76,8 @@ const UI_KNOWLEDGE: [&str; 11] = [
     "ds/interaction-design",
     "ds/design-elevation",
     "avoid-ai-design",
-    "website-clone",
 ];
-const EXPECTED_ROSTER: [RosterRow; 11] = [
+const EXPECTED_ROSTER: [RosterRow; 12] = [
     (
         "researcher",
         "opus",
@@ -117,12 +117,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "opus",
         false,
         &[],
-        &[
-            "code-review-checklist",
-            "karpathy-guidelines",
-            "tech-debt",
-            "deploy-checklist",
-        ],
+        &["code-review-checklist", "karpathy-guidelines"],
     ),
     ("scout", "haiku", false, &[], &[]),
     (
@@ -166,13 +161,14 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "sonnet",
         false,
         &[],
-        &[
-            "seo-audit",
-            "campaign-plan",
-            "content-creation",
-            "email-sequence",
-            "humanizer",
-        ],
+        &["humanizer", "product-marketing"],
+    ),
+    (
+        "blog-writer",
+        "sonnet",
+        false,
+        &[],
+        &["humanizer", "blog-write", "blog-factcheck"],
     ),
 ];
 
@@ -719,6 +715,20 @@ mod helper_tests {
                 preloads: Vec::new(),
                 startup: Vec::new(),
             }
+        );
+    }
+
+    /// Rust-only: a conditional Startup line ("`, only ...") is not a read every start makes.
+    #[test]
+    fn test_conditional_startup_lines_are_not_required_reads() {
+        let text = "---\nname: x\nmodel: opus\n---\n\n## Startup\nRead:\n\
+                    - `${CLAUDE_PLUGIN_ROOT}/knowledge/caveman/SKILL.md`\n\
+                    - `${CLAUDE_PLUGIN_ROOT}/knowledge/always/SKILL.md`\n\
+                    - `${CLAUDE_PLUGIN_ROOT}/knowledge/sometimes/SKILL.md`, only when x.\n\n\
+                    ## Role\nx\n";
+        assert_eq!(
+            parse_agent(text).unwrap().startup,
+            to_strings(&["caveman", "always"])
         );
     }
 

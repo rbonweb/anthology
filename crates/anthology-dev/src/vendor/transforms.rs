@@ -1,4 +1,5 @@
-//! The transforms (vendor.py `rename_plugin`, `strip_connectors`, `rename_skill`).
+//! The transforms (vendor.py `rename_plugin`, `strip_connectors`, `rename_skill`), and
+//! `drop_paths`, which has no Python original.
 //!
 //! Three patterns have lookaround and run on fancy-regex (plan GC-16): the `rename-plugin`
 //! token (a bytes pattern, so fancy-regex's ASCII bytes mode), `IF_TOOLS_CONNECTED` and the
@@ -19,7 +20,12 @@ use super::py::{self, D, Piece, S, W, W_INNER};
 use super::{Entry, Result, VendorError};
 
 /// The transform names (vendor.py `TRANSFORMS`).
-pub const TRANSFORMS: [&str; 3] = ["rename-plugin", "strip-connectors", "rename-skill"];
+pub const TRANSFORMS: [&str; 4] = [
+    "rename-plugin",
+    "strip-connectors",
+    "rename-skill",
+    "drop-paths",
+];
 
 /// The file `strip-connectors` deletes, and must not see referenced afterwards.
 pub const CONNECTORS_FILE: &str = "CONNECTORS.md";
@@ -36,6 +42,19 @@ pub fn run_transform(tree: &Path, entry: &Entry, spec: &json::Map) -> Result<jso
         }
         "strip-connectors" => strip_connectors(tree),
         "rename-skill" => rename_skill(tree, field("old"), field("new")),
+        "drop-paths" => {
+            let paths: Vec<String> = spec
+                .get("paths")
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            drop_paths(tree, &paths)
+        }
         other => Err(VendorError(format!("KeyError: {}", py::repr_str(other)))),
     }
 }
@@ -522,6 +541,53 @@ pub fn suffix(name: &str) -> &str {
         Some(i) if i > 0 && i < name.len() - 1 => &name[i..],
         _ => "",
     }
+}
+
+// ------------------------------------------------------------------------------ drop-paths
+
+/// `drop_paths(tree, paths)`: leave upstream files and folders out of the vendored tree.
+///
+/// Each path is relative to `tree` (`validate_sources` has checked it) and goes in order: a file
+/// or symlink with `remove_file`, a folder with `remove_dir_all`. A path that is not there is an
+/// error, so an upstream rename cannot leave a file in by accident. A symlink on the way to the
+/// last component is an error too, so nothing outside `tree` is touched.
+pub fn drop_paths(tree: &Path, paths: &[String]) -> Result<json::Map> {
+    for rel in paths {
+        let parts: Vec<&str> = rel.split('/').collect();
+        let mut at = tree.to_path_buf();
+        for part in &parts[..parts.len() - 1] {
+            at.push(part);
+            if is_symlink(&at) {
+                return Err(VendorError(format!(
+                    "drop-paths: {} goes through a link",
+                    py::repr_str(rel)
+                )));
+            }
+        }
+        at.push(parts[parts.len() - 1]);
+        let meta = match fs::symlink_metadata(&at) {
+            Ok(meta) => meta,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Err(VendorError(format!(
+                    "drop-paths: {} is not in the source",
+                    py::repr_str(rel)
+                )));
+            }
+            Err(e) => return Err(os_err(&e, &at)),
+        };
+        let removed = if meta.is_dir() {
+            fs::remove_dir_all(&at)
+        } else {
+            fs::remove_file(&at)
+        };
+        removed.map_err(|e| os_err(&e, &at))?;
+    }
+    Ok(py::stats(&[("dropped", paths.len() as i64)]))
 }
 
 // ----------------------------------------------------------------------------- rename-skill

@@ -8,7 +8,7 @@ For what the product is and why it is built this way, read the [README](README.m
 
 - **The repo is public.** Never commit a secret, a token, a `.env` file, an absolute home path (use `~/.claude/...`), a machine name or an email address. A test and gitleaks check this.
 - **No options.** Anthology has no user-facing modes, levels or toggles. Do not add any.
-- **Vendored content is generated.** `plugins/anthology/knowledge/**` and `plugins/anthology-superpowers/**` are produced by `anthology-dev vendor` (run as [`scripts/dev.sh`](scripts/dev.sh) `vendor`) from pinned upstream commits. Never edit them by hand: change the patch or the transform and regenerate. CI regenerates everything and fails on any difference.
+- **Vendored content is generated.** `plugins/anthology/knowledge/**` and `plugins/anthology-superpowers/**` are produced by `anthology-dev vendor` (run as [`scripts/dev.sh`](scripts/dev.sh) `vendor`) from pinned upstream commits. Never edit them by hand: change the patch or the transform and regenerate. CI regenerates everything and fails on any difference. The one exception is a first-party knowledge folder, which no source targets and which is written by hand (`dashboard-copy`; see [Syncing a vendored source](#syncing-a-vendored-source)).
 - **BrowserOS Neo is the only browser.** Nothing we ship recommends another browser or launches Chrome, and nothing installs browser tooling on the host.
 - **One language: Rust.** Product code lives in `crates/` and ships as one static `anthology` binary (`crates/anthology-cli`), pinned per plugin by `anthology.lock`. The plugin side is POSIX `sh` only: the shims in `hooks/` and the wrappers in `bin/`. Maintainer tools are `anthology-dev` subcommands. The only other code is shell glue around docker, git and `claude` in `scripts/` and `ci/jobs/`. Do not add another language; the vendored superpowers files are upstream's and stay as they are.
 - **Behaviour is pinned.** The frozen golden files (`crates/<crate>/tests/golden/`) record what each ported surface must answer, and `cargo test` replays them. Change one only on purpose, with `scripts/dev.sh golden bless`, and say why in the PR. The test ledger in `port/ledger/` maps every test the port inherited to a Rust test or a reviewed drop reason; `ci/jobs/ledger.sh` (the `ledger` job) checks every row against the tests cargo really runs.
@@ -37,7 +37,7 @@ For what the product is and why it is built this way, read the [README](README.m
 | `ci/` | Pinned Docker images, the pinned Claude Code, and one script per CI job in `ci/jobs/` |
 | `.github/workflows/` | `ci.yml`, `evals.yml`, `upstream-watch.yml`, `fuzz.yml`, `atl-release.yml`, `anthology-release.yml` |
 
-`skills/` holds only the three user commands. Every knowledge folder must be read by at least one agent, and a test enforces it.
+`skills/` holds only the three user commands. Every knowledge folder must be read by at least one agent, or linked from one it reads, and a test enforces it.
 
 ## Development setup
 
@@ -150,6 +150,9 @@ Notes for particular sources:
 
 - **`design-taste-frontend`** has a machine-readable port map, `vendor/patches/design-taste-frontend.portmap.json`, that lists each upstream script as keep, port or drop. `vendor` fails when upstream adds a script the map does not list, and when any shipped file contains a Chrome launch. When that happens, decide for the new script and add it to the map.
 - **`ui-taste`** has no git upstream. It is pinned by the sha256 of its `CHECKSUMS.sha256` manifest, and a pristine copy lives in `vendor/snapshots/ui-taste/`. To move it, set `checksum` in `sources.json`, then run `scripts/dev.sh vendor fetch ui-taste && scripts/dev.sh vendor build ui-taste`.
+- **`drop-paths`** is a transform that leaves upstream files or folders out of the vendored tree: `{"name": "drop-paths", "paths": ["evals", "references/a.md"]}`, each path relative to the source folder. It fails when a path is not in the source, so an upstream rename cannot leave a file behind by accident. Use it, not a deletion hunk in a patch, which would copy the whole file into the patch and break on every upstream edit.
+- **First-party knowledge** (`dashboard-copy`) is hand-written. No `sources.json` entry targets it, `anthology-dev vendor` never touches it, and `vendor check` ignores it. The folders are listed in `FIRST_PARTY_KNOWLEDGE` in `crates/repo-tests/src/repo.rs`, and `test_first_party_folders_are_hand_written` in `crates/repo-tests/tests/knowledge.rs` fails when a source targets one, and when a knowledge folder is neither pinned by a source nor on that list. A new hand-written folder goes on the list in the same change. Nothing checks hand-written text against an upstream license, so check the license of any third-party material before you use it, and keep its attribution in the folder (`dashboard-copy/SKILL.md` carries the GOV.UK and Carbon notices).
+- **Support folders** (`blog`, listed in `SUPPORT_KNOWLEDGE`) are vendored but have no `SKILL.md` and no agent reads them. They hold shared references that other knowledge files link to.
 - **`vendor/licenses/`** carries each source's license text, unchanged, refreshed by `fetch` and `sync`.
 - **Licenses inside the plugin.** Claude Code installs a plugin directory on its own, so `build` also copies each source's license, unchanged, into its target folder (a source with no license file of its own gets the fixed text as `LICENSE`). An upstream `NOTICE` outside the source folder must be listed in the entry's `license_extra` (caveman ships `NOTICE` and `LICENSE-MIT` this way), or `build` fails. `check` verifies the copies byte for byte.
 
@@ -263,6 +266,14 @@ To change the baseline on purpose, re-record it from a CI run as above and expla
 ### Startup budgets
 
 Each agent's startup reading (its body, the Startup files it must read, and its preloaded skills) has a byte budget in the `BUDGET` table in `crates/anthology-dev/src/startup_budget.rs` (the tests are in `crates/repo-tests/tests/roster.rs`), set at the measured size plus 15%. This makes upstream growth show up in a sync PR instead of silently raising the cost of every call. `scripts/dev.sh startup-budget [agent ...]` prints each agent's current size against its budget. Upstream-watch issues for a source that an agent reads at startup carry a "Startup budget" section with the current sizes; run that command after `scripts/dev.sh vendor sync` to get the sizes after the sync.
+
+**Conditional Startup lines.** A Startup line whose last path is followed by `` `, only when …``, `` `, only for …`` or `` `, only to …`` is conditional: the agent reads it only for that kind of job. Write it after all the always lines, in exactly this form, or `test_startup_lines_follow_the_grammar` fails:
+
+```text
+- `${CLAUDE_PLUGIN_ROOT}/knowledge/<folder>/SKILL.md` and `${CLAUDE_PLUGIN_ROOT}/knowledge/<other>/SKILL.md`, only when <the kind of job>.
+```
+
+The budget counts the body, every always file, the preloaded skills and the **largest conditional file**, not the sum of the conditional ones, because a brief needs one deliverable's files at a time. The smoke cases and the knowledge-read evals demand only the always files. The cost: a brief that spans several deliverables reads more than the budget says. Every conditional path still counts as read for the "every knowledge folder has a reader" check, so the tools still see it.
 
 When a sync fails a budget:
 

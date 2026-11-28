@@ -30,54 +30,6 @@ graders:
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
     after: {tool: Glob, input_match: '\*\.md'}
-  - name: read-seo-audit
-    type: tool_used
-    tool: Read
-    input_match: 'knowledge/seo-audit/SKILL\.md'
-  - name: order-seo-audit
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/seo-audit/SKILL\.md'}
-    after: {tool: Glob, input_match: '\*\.md'}
-  - name: inorder-caveman-seo-audit
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
-    after: {tool: Read, input_match: 'knowledge/seo-audit/SKILL\.md'}
-  - name: read-campaign-plan
-    type: tool_used
-    tool: Read
-    input_match: 'knowledge/campaign-plan/SKILL\.md'
-  - name: order-campaign-plan
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/campaign-plan/SKILL\.md'}
-    after: {tool: Glob, input_match: '\*\.md'}
-  - name: inorder-seo-audit-campaign-plan
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/seo-audit/SKILL\.md'}
-    after: {tool: Read, input_match: 'knowledge/campaign-plan/SKILL\.md'}
-  - name: read-content-creation
-    type: tool_used
-    tool: Read
-    input_match: 'knowledge/content-creation/SKILL\.md'
-  - name: order-content-creation
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/content-creation/SKILL\.md'}
-    after: {tool: Glob, input_match: '\*\.md'}
-  - name: inorder-campaign-plan-content-creation
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/campaign-plan/SKILL\.md'}
-    after: {tool: Read, input_match: 'knowledge/content-creation/SKILL\.md'}
-  - name: read-email-sequence
-    type: tool_used
-    tool: Read
-    input_match: 'knowledge/email-sequence/SKILL\.md'
-  - name: order-email-sequence
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/email-sequence/SKILL\.md'}
-    after: {tool: Glob, input_match: '\*\.md'}
-  - name: inorder-content-creation-email-sequence
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/content-creation/SKILL\.md'}
-    after: {tool: Read, input_match: 'knowledge/email-sequence/SKILL\.md'}
   - name: read-humanizer
     type: tool_used
     tool: Read
@@ -86,7 +38,19 @@ graders:
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
     after: {tool: Glob, input_match: '\*\.md'}
-  - name: inorder-email-sequence-humanizer
+  - name: inorder-caveman-humanizer
     type: tool_order
-    before: {tool: Read, input_match: 'knowledge/email-sequence/SKILL\.md'}
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
     after: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
+  - name: read-product-marketing
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/product-marketing/SKILL\.md'
+  - name: order-product-marketing
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/product-marketing/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-humanizer-product-marketing
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/product-marketing/SKILL\.md'}

@@ -306,13 +306,30 @@ fn run_script_grants() -> Vec<String> {
         .collect()
 }
 
-/// Startup reading per agent (caveman first): the roster.
+/// Startup reading per agent (caveman first): the roster's always reads.
 fn expected_startup() -> Vec<(&'static str, Vec<String>)> {
     repo::expected_roster()
         .into_iter()
         .map(|a| {
             let mut refs = vec!["caveman".to_string()];
             refs.extend(a.knowledge.iter().map(|k| (*k).to_string()));
+            (a.name, refs)
+        })
+        .collect()
+}
+
+/// Every Startup path per agent: the always reads, then the conditional ones.
+fn expected_startup_paths() -> Vec<(&'static str, Vec<String>)> {
+    repo::expected_roster()
+        .into_iter()
+        .map(|a| {
+            let mut refs = vec!["caveman".to_string()];
+            refs.extend(
+                a.knowledge
+                    .iter()
+                    .chain(&a.conditional)
+                    .map(|k| (*k).to_string()),
+            );
             (a.name, refs)
         })
         .collect()
@@ -701,7 +718,7 @@ mod roster_case_tests {
                 assert!(has_case(&cases, &format!("knowledge-{agent}")), "{agent}");
             }
         }
-        assert_eq!(startup.len(), 11);
+        assert_eq!(startup.len(), 12);
         let mut found: Vec<&str> = cases
             .iter()
             .filter_map(|(n, _)| n.strip_prefix("knowledge-"))
@@ -895,7 +912,7 @@ mod roster_case_tests {
     fn test_agent_files_agree_with_the_cases() {
         // Runs once the agents exist (stream A); until then each agent is skipped.
         each_row(
-            &expected_startup(),
+            &expected_startup_paths(),
             |(a, _)| format!("agent={a}"),
             |(agent, refs)| {
                 let rel = format!("plugins/anthology/agents/{agent}.md");

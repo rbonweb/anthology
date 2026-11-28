@@ -1,0 +1,61 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -239,7 +239,7 @@
+ | **Easy-to-understand** | +14% | Simplify complex concepts |
+ | **Authoritative tone** | +10% | Write with demonstrated expertise |
+ | **Unique vocabulary** | +6% | Increase word diversity |
+-| ~~Keyword stuffing~~ | **-8%** | **Actively hurts AI visibility** |
++| Keyword stuffing | **-8%** | **Actively hurts AI visibility** |
+ 
+ **Best combination:** Fluency + Statistics = maximum boost. Rank matters: citing sources lifted a 5th-ranked site's visibility 115% but cut top-ranked sites' visibility 30%.
+ 
+@@ -298,7 +298,7 @@
+ 
+ AI agents aren't just answering questions — they're becoming buyers. When an AI agent evaluates tools on behalf of a user, it needs structured, parseable information. If your pricing is locked in a JavaScript-rendered page or a "contact sales" wall, agents will skip you and recommend competitors whose information they can actually read.
+ 
+-**Audit this layer first**: [references/agent-readiness.md](references/agent-readiness.md) — the access/discovery/parseability checklist, free scoring tools (`npx is-agentic`, Frase's checker), Markdown content negotiation + `Link` headers, `llms-full.txt`, and the emerging agent-*actionable* layer (WebMCP, and a skill file for your product with a prefilled checkout link).
++**Audit this layer first**: [references/agent-readiness.md](references/agent-readiness.md) — the access/discovery/parseability checklist, free scoring tools (the free checkers in references/agent-readiness.md), Markdown content negotiation + `Link` headers, `llms-full.txt`, and the emerging agent-*actionable* layer (WebMCP, and a skill file for your product with a prefilled checkout link).
+ 
+ Add these machine-readable files to your site root:
+ 
+@@ -479,13 +479,9 @@
+ 
+ ## Tool Integrations
+ 
+-For implementation, see the [tools registry](https://github.com/coreyhaines31/marketingskills/blob/main/tools/REGISTRY.md).
+-
+-| Tool | Use For |
+-|------|---------|
+-| `semrush` | AI Overview tracking, keyword research, content gap analysis |
+-| `ahrefs` | Backlink analysis, content explorer, AI Overview data |
+-| `gsc`, `ga4` | Search Console performance and query data; referral traffic from AI sources |
++In Anthology, no paid keys, vendor CLIs or marketing-tool MCP servers: work from exports, screenshots or numbers the user gives, and name a paid tool only as an option the user runs.
++
++Tools the user may already run: Semrush (AI Overview tracking, keyword research, content gap analysis), Ahrefs (backlink analysis, content explorer, AI Overview data), Search Console and GA4 (query data and referral traffic from AI sources).
+ 
+ ---
+ 
+--- a/references/agent-readiness.md
++++ b/references/agent-readiness.md
+@@ -6,10 +6,10 @@
+ 
+ | Tool | Run it | Method |
+ |---|---|---|
+-| **Is Agentic** (Vercel + Ora) | `npx is-agentic yourdomain.com` or [is-agentic.com](https://is-agentic.com) | 100+ checks; Essential checks carry most of the score; Recommended checks activate only when evidence shows you have that surface (API, MCP server, commerce); not-applicable checks are excluded, not failed; includes an observed agent journey showing where a real agent hit friction |
++| **Is Agentic** (Vercel + Ora) | `docker run --rm node:22-alpine npx -y is-agentic yourdomain.com` or [is-agentic.com](https://is-agentic.com) | 100+ checks; Essential checks carry most of the score; Recommended checks activate only when evidence shows you have that surface (API, MCP server, commerce); not-applicable checks are excluded, not failed; includes an observed agent journey showing where a real agent hit friction |
+ | **Frase Agent Readiness Checker** | [frase.io/tools/agent-readiness](https://www.frase.io/tools/agent-readiness) | Access / Discovery / Parseability triad; 80+ = agents can reliably use the site, 60–79 = solid with gaps, <60 = real access problems |
+ 
+-For developer documentation specifically, Fern's **Agent Score** grades a docs site for coding agents (run `npx afdocs check <docs-url>` locally first, or score it at buildwithfern.com/agent-score for a public report page).
++For developer documentation specifically, Fern's **Agent Score** grades a docs site for coding agents (run `docker run --rm node:22-alpine npx -y afdocs check <docs-url>` first, or score it at buildwithfern.com/agent-score for a public report page).
+ 
+ Run one before and after any agent-readiness work — the score is a shareable artifact and the failed checks are your worklist. (All of these are vendor tools with a product behind them; the *checks* are the value, not the pitch.)
+ 
+@@ -76,7 +76,7 @@
+ 
+ **Ways to add WebMCP** (all early; confirm browser and assistant support before promising anything):
+ - **Implement it yourself.** Follow the WebMCP draft to declare each action as a tool with an input schema, wired to the form or API the page already uses. Keep the tool list short (the 2–4 highest-intent actions) and reuse existing validation, spam protection, and permissions rather than building a parallel path.
+-- **Use your platform's support, if it has any.** Some site platforms and agent workflows add WebMCP for you. Ploy ◆, for example, has a Ploybook that inspects the site, defines tool contracts, implements them against existing form logic, and validates them. It's a guided workflow, not a hosted MCP server. ◆ marks a [Verified Partner](https://github.com/coreyhaines31/marketingskills/blob/main/tools/REGISTRY.md#verified-partners) of this repository (disclosure, not endorsement); name an alternative alongside it when you mention it.
++- **Use your platform's support, if it has any.** Some site platforms and agent workflows add WebMCP for you. Ploy ◆, for example, has a Ploybook that inspects the site, defines tool contracts, implements them against existing form logic, and validates them. It's a guided workflow, not a hosted MCP server. ◆ marks a Verified Partner of the repository this skill comes from (disclosure, not endorsement); name an alternative alongside it when you mention it.
+ - **Have a coding agent do it** in the site's repo, with the same scoping: a few actions, existing logic, a test for each.
+ 
+ Whichever path, test that each tool rejects bad input, that submissions land where the normal form's do (CRM, inbox, conversion tracking), and that nothing bypasses consent or rate limits.
