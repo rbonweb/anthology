@@ -1,0 +1,7 @@
+repo: https://github.com/DataDog/guarddog
+branch: v3
+commit: 5da9538eb05b8c2710db60541ec9732557687f8b
+date: 2026-11-16T20:00:40Z
+license: Apache-2.0
+path: guarddog/analyzer/sourcecode/
+files: the 44 threat-*.yar rules and the 4 *.meta files they include or reference, unchanged, plus LICENSE and NOTICE from the repo root
