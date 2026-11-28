@@ -458,6 +458,26 @@
       ]
     },
     {
+      "name": "website-clone",
+      "repo": "https://github.com/JCodesMore/ai-website-cloner-template",
+      "path": ".agents/skills/clone-website",
+      "ref": "v0.6.2",
+      "commit": "14085f8ba2a15b5e7f509c78dfc4017dbbfced6d",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/website-clone",
+      "transform": [
+        {
+          "name": "rename-skill",
+          "old": "clone-website",
+          "new": "website-clone"
+        },
+        {
+          "patch": "vendor/patches/website-clone.patch"
+        }
+      ]
+    },
+    {
       "name": "atl",
       "managed_by": "subtree",
       "target": "atl",

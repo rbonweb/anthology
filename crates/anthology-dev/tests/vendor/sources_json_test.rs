@@ -39,6 +39,7 @@ fn test_real_sources_validate() {
         "caveman",
         "design-taste-frontend",
         "karpathy-guidelines",
+        "website-clone",
         "atl",
     ]
     .iter()
