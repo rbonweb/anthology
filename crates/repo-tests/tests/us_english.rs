@@ -3,8 +3,9 @@
 //!
 //! Every tracked UTF-8 file is read except the excluded paths: upstream and generated text
 //! (`vendor/`, the superpowers plugin, the generated knowledge folders, the whole of `atl/` except
-//! the files this fork added), the GuardDog rule files vendored into the check-repo scanner, and
-//! the `.gz` goldens, which only `golden bless` rewrites. Each line is cut into identifiers, and each identifier into words
+//! the files this fork added), the GuardDog rule files and the benign samples of the check-repo
+//! scanner (both copied unchanged from upstream), and the `.gz` goldens, which only `golden bless`
+//! rewrites. Each line is cut into identifiers, and each identifier into words
 //! (`SanitiseProse` is `Sanitise` and `Prose`); a word that is a UK form from the list below fails
 //! the test with its file, line, the word and its US form.
 //!
@@ -27,7 +28,7 @@ use repo_tests::repo;
 const THIS_FILE: &str = "crates/repo-tests/tests/us_english.rs";
 
 /// Folders and files whose text is not ours to edit, or is written by a tool.
-const EXCLUDED: [&str; 8] = [
+const EXCLUDED: [&str; 9] = [
     "vendor/",
     "plugins/anthology-superpowers/",
     "plugins/anthology/knowledge/",
@@ -35,6 +36,10 @@ const EXCLUDED: [&str; 8] = [
     // kept unchanged so a later sync can diff against it (see `SOURCE` in the folder). The rest of
     // the scanner crate is ours and is checked.
     "crates/anthology-scan/rules/guarddog/",
+    // The scanner's benign samples: files copied unchanged from open-source repos (SOURCES.md names
+    // each one and its licence), such as a minified bundle that spells `initialised`. The scanner
+    // must stay quiet on the real text, so the text is not edited.
+    "crates/anthology-scan/tests/benign/",
     // The Python test names and rows that `port/ledger` maps to Rust tests.
     "port/python-test-ids.txt",
     "port/python-test-rows.tsv",
@@ -496,6 +501,7 @@ fn the_exclusions_say_what_they_skip() {
         "plugins/anthology/knowledge/blog/SKILL.md",
         "crates/anthology-scan/rules/guarddog/threat-process-cryptomining.yar",
         "crates/anthology-scan/rules/guarddog/NOTICE",
+        "crates/anthology-scan/tests/benign/minified-bundle/clipboard.min.js",
         "atl/src/core/stream.rs",
         "crates/anthology-guard/tests/data/test_guard_rules.jsonl",
         "crates/anthology-core/tests/golden/x.jsonl.gz",
@@ -511,6 +517,7 @@ fn the_exclusions_say_what_they_skip() {
         "crates/anthology-cli/src/main.rs",
         "crates/anthology-scan/src/lib.rs",
         "crates/anthology-scan/NOTICE",
+        "crates/anthology-scan/tests/attacks.rs",
         "DECISIONS.md",
         ".claude/memory/MEMORY.md",
         "port/difftest/divergences/guard.hook.toml",
