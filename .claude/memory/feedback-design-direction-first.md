@@ -6,7 +6,7 @@ metadata:
   modified: 2026-11-28
 ---
 
-Collect design direction before the first UI task: logo and colours, light or dark, fonts, one to three reference sites, focus style, and public identity (name, contact channels, legal names allowed). If the owner is away, record a Ruling per gap and ask on return.
+Collect design direction before the first UI task: logo and colors, light or dark, fonts, one to three reference sites, focus style, and public identity (name, contact channels, legal names allowed). If the owner is away, record a Ruling per gap and ask on return.
 
 A "like X" or clone brief starts by capturing X at 1440 and 390, and hands in a side-by-side. For a product with three or more modules, write a navigation map before UI work. Use cases start from real users' jobs, not the codebase.
 

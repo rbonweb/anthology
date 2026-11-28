@@ -454,7 +454,7 @@ fn names(value: Option<&Value>) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// `(here, *here.parents)` for an absolute, normalised path.
+/// `(here, *here.parents)` for an absolute, normalized path.
 fn self_and_parents(here: &Path) -> Vec<&Path> {
     let mut out = Vec::new();
     let mut folder = Some(here);
@@ -563,7 +563,7 @@ fn py_dirname(p: &[u8]) -> Vec<u8> {
     }
 }
 
-/// `Path(p).parents`, as normalised strings.
+/// `Path(p).parents`, as normalized strings.
 fn pathlib_parents(p: &[u8]) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut cur = pathlib_str(p);

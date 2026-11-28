@@ -4,9 +4,9 @@
 //! Fixtures are assembled at run time: no real home path, email, hostname or token sits in this
 //! file. Every timing assertion is a ratio (4x the input must cost less than 6x, best of
 //! several runs, with a floor so a very fast scan cannot flake), never wall time. `cargo test`
-//! builds unoptimised (about 25 times slower than a release build here), so the inputs are
+//! builds unoptimized (about 25 times slower than a release build here), so the inputs are
 //! smaller than Python's where noted; they stay well inside the linear regime, and quadratic
-//! behaviour costs 16x on a 4x input at any size.
+//! behavior costs 16x on a 4x input at any size.
 
 use std::time::Instant;
 
@@ -503,7 +503,7 @@ mod quoted_key_scaling_test {
     use super::*;
 
     /// Python: 10,000 then 40,000 units, under `max(6 * small, 0.2)`. Here 2,500 then 10,000
-    /// (unoptimised build), under `max(10 * small, 0.5)`: 4x the input stays far from the 16x a
+    /// (unoptimized build), under `max(10 * small, 0.5)`: 4x the input stays far from the 16x a
     /// quadratic scan would take, and shared CI runners measured 8x.
     #[test]
     fn test_quoted_secret_key_scan_scales_linearly() {
@@ -736,7 +736,7 @@ mod quoted_key_test {
 
     /// Python: each shape 20,000 then 80,000 times, each tail 200,000 then 800,000 times,
     /// under `max(6 * small, 0.1)`. Here 2,500 then 10,000 and 25,000 then 100,000
-    /// (unoptimised build).
+    /// (unoptimized build).
     #[test]
     fn test_quoted_key_patterns_scan_in_linear_time() {
         let mut patterns: Vec<(&str, bool)> = SECRET_PATTERNS
@@ -856,7 +856,7 @@ mod exemption_test {
 mod hostile_input_test {
     use super::*;
 
-    /// Python's n is 100,000; 25,000 here (unoptimised build).
+    /// Python's n is 100,000; 25,000 here (unoptimized build).
     const N: usize = 25_000;
 
     /// A hostile line of about `n` characters.

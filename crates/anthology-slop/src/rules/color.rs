@@ -1,9 +1,9 @@
-//! Colour parsing for the UI rules: just enough CSS colour syntax to tell a violet from a blue.
+//! Color parsing for the UI rules: just enough CSS color syntax to tell a violet from a blue.
 
 use regex::Regex;
 use std::sync::LazyLock;
 
-/// A colour with channels 0..=255 and alpha 0..=1.
+/// A color with channels 0..=255 and alpha 0..=1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Rgba {
     r: f64,
@@ -14,7 +14,7 @@ pub(crate) struct Rgba {
 
 /// A hex run, or an `rgb`/`rgba`/`hsl`/`hsla` call without nested parentheses.
 static COLOR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\([^()]*\)").expect("colour regex")
+    Regex::new(r"(?i)#[0-9a-f]{3,8}\b|\b(?:rgba?|hsla?)\([^()]*\)").expect("color regex")
 });
 
 /// `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`, `hsl()` and `hsla()`.
@@ -59,7 +59,7 @@ pub(crate) fn is_violet(c: Rgba) -> bool {
     is_chromatic(c) && (228.0..=300.0).contains(&hsl(c).0)
 }
 
-/// s >= 40 and 15 < l < 90: a colour with a hue to speak of, not a grey, a near-white or a
+/// s >= 40 and 15 < l < 90: a color with a hue to speak of, not a gray, a near-white or a
 /// near-black.
 pub(crate) fn is_chromatic(c: Rgba) -> bool {
     let (_, s, l) = hsl(c);
@@ -71,13 +71,13 @@ pub(crate) fn is_violet_family(c: Rgba) -> bool {
     is_chromatic(c) && (228.0..=330.0).contains(&hsl(c).0)
 }
 
-/// The colours a violet is paired with in the stock gradient: chromatic, h in 190..=345 (blue
+/// The colors a violet is paired with in the stock gradient: chromatic, h in 190..=345 (blue
 /// through pink).
 pub(crate) fn is_blue_to_pink(c: Rgba) -> bool {
     is_chromatic(c) && (190.0..=345.0).contains(&hsl(c).0)
 }
 
-/// Every colour written in `s`, in order. Text that is not a valid colour is skipped.
+/// Every color written in `s`, in order. Text that is not a valid color is skipped.
 pub(crate) fn colors_in(s: &str) -> Vec<Rgba> {
     COLOR
         .find_iter(s)
@@ -115,7 +115,7 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
     })
 }
 
-/// The arguments of a colour function: three values, then an optional alpha, split on commas,
+/// The arguments of a color function: three values, then an optional alpha, split on commas,
 /// slashes and white space.
 fn tokens(args: &str) -> Option<Vec<&str>> {
     let t: Vec<&str> = args
@@ -206,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_every_colour_form() {
+    fn parses_every_color_form() {
         assert!(is(parse_color("#fff"), (255.0, 255.0, 255.0, 1.0)));
         assert!(is(parse_color("#0f08"), (0.0, 255.0, 0.0, 136.0 / 255.0)));
         assert!(is(parse_color("#6366f1"), (99.0, 102.0, 241.0, 1.0)));
@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_what_is_not_a_colour() {
+    fn rejects_what_is_not_a_color() {
         for s in [
             "",
             "#",
@@ -314,7 +314,7 @@ mod tests {
         assert!(violet("hsl(260 45% 50%)") && !violet("hsl(260 30% 50%)"));
         assert!(violet("hsl(260 50% 20%)") && !violet("hsl(260 50% 10%)"));
         assert!(violet("hsl(260 50% 85%)") && !violet("hsl(260 50% 95%)"));
-        assert!(!violet("#808080"), "a grey has no hue");
+        assert!(!violet("#808080"), "a gray has no hue");
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
             !family("#3b82f6") && !family("#ec4899"),
             "blue and hot pink are outside"
         );
-        assert!(!family("hsl(270 20% 50%)"), "a grey-purple is no colour");
+        assert!(!family("hsl(270 20% 50%)"), "a gray-purple is no color");
     }
 
     #[test]
@@ -349,7 +349,7 @@ mod tests {
     }
 
     #[test]
-    fn colors_in_finds_every_colour_in_source_order() {
+    fn colors_in_finds_every_color_in_source_order() {
         let found = colors_in(
             "135deg, #6366f1 0%, rgba(168, 85, 247, 0.5) 50%, hsl(262 83% 58%), #abc, var(--x), #12345",
         );

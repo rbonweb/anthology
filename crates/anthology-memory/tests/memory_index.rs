@@ -1867,7 +1867,7 @@ mod save_cli_test {
         let p = save_from_file(&s, &body_file);
         assert_eq!(p.code, 1);
         assert!(p.stderr_text().contains("too long"), "{}", p.stderr_text());
-        // CRLF: normalised it would fit, but the raw file is over the limit, so it is refused
+        // CRLF: normalized it would fit, but the raw file is over the limit, so it is refused
         // rather than read in part.
         let line = format!("{}\r\n", "y".repeat(78));
         fs::write(&body_file, line.repeat(206)).expect("write");

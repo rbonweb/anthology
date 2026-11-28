@@ -932,7 +932,7 @@ mod rule_table_test {
             large < (10 * small).max(Duration::from_millis(500)),
             "{small:?} then {large:?}"
         );
-        // the run still normalises when a space ends it
+        // the run still normalizes when a space ends it
         let bs = "\\".repeat(50_000);
         let command =
             format!("python3 -c 'open(\"~/Library/Application{bs} Support/Google/Chrome\")'");

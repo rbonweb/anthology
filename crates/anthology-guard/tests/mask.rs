@@ -100,7 +100,7 @@ fn masks_each_label_and_keeps_the_rest() {
 #[test]
 fn a_secret_inside_a_longer_blob_or_with_too_little_after_it_stays() {
     let aws = aws();
-    // Rule 0: a base64 neighbour on either side means it is no key.
+    // Rule 0: a base64 neighbor on either side means it is no key.
     unchanged(&format!("x{aws}\n"));
     unchanged(&format!("{aws}y\n"));
     unchanged(&format!("a/{aws}\n"));

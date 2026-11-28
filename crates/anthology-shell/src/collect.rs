@@ -32,7 +32,7 @@
 //!   not after a `\[`, and not a `[` that starts the word or follows punctuation, unless the command holds an
 //!   array literal `=(`, a `$(...)`/backtick, or any `$`, unescaped backtick or shell/`eval`/`xargs` in the
 //!   text: see `subscript_runs`); an assignment, export or
-//!   prefix of `TAR_OPTIONS` or `GIT_CONFIG_*` that is not the modelled prefix of `tar` / `git`, a git alias
+//!   prefix of `TAR_OPTIONS` or `GIT_CONFIG_*` that is not the modeled prefix of `tar` / `git`, a git alias
 //!   given twice or through `GIT_CONFIG_*`, `git --config-env`; a shell reading stdin from a producer that
 //!   is not literal (`curl | sh`, `f | tr | sh`), from a compound command with a redirect or here-string, or
 //!   from a compound with no literal output; a here-string that is only a substitution (`sh <<< "$(f)"`);
@@ -923,9 +923,9 @@ fn sets_hook_variable(prefix: &[String], prog: &str, args: &[String]) -> bool {
 }
 
 /// Fail closed: `TAR_OPTIONS` / `GIT_CONFIG_*` set (in `prefix`, the words before the program, or as an
-/// export's argument) anywhere but as the modelled prefix of `tar` / `git`, a git alias from `GIT_CONFIG_*`
+/// export's argument) anywhere but as the modeled prefix of `tar` / `git`, a git alias from `GIT_CONFIG_*`
 /// or given twice, and `git --config-env`.
-fn option_env_unmodelled(prefix: &[String], prog: &str, args: &[String]) -> bool {
+fn option_env_unmodeled(prefix: &[String], prog: &str, args: &[String]) -> bool {
     let mut aliases: HashSet<String> = HashSet::new();
     let mut twice = false;
     for k in 0..args.len().saturating_sub(1) {
@@ -2658,7 +2658,7 @@ impl<'a> Ctx<'a> {
             self.halt();
             return None;
         }
-        if option_env_unmodelled(prefix, &prog, &args) {
+        if option_env_unmodeled(prefix, &prog, &args) {
             self.halt();
             return None;
         }

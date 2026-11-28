@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn legal_boilerplate_files_are_exempt_in_any_case_with_or_without_an_extension() {
-        // fixed licence wording ("express or implied") trips the list-of-three rule
+        // fixed license wording ("express or implied") trips the list-of-three rule
         for path in [
             "/r/LICENSE",
             "/r/LICENSE.md",

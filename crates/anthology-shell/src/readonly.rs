@@ -46,7 +46,7 @@
 //!   lead to, each target relative to the one before it.
 //! - No path of an obvious secret ([`SECRET_PATTERNS`]: `.ssh`, `.env`, `*.pem`, `id_*`, `.aws/credentials`
 //!   and so on, in any ASCII case), alone or under the `cd` targets, whatever the command; a recursive path
-//!   is refused too when it is a directory such a secret lies in (`.aws`). This is defence in depth: the
+//!   is refused too when it is a directory such a secret lies in (`.aws`). This is defense in depth: the
 //!   path check owns the decision.
 //!
 //! The programs that run are not only the GNU and BSD ones: the shell snapshot the commands run under puts
@@ -86,7 +86,7 @@ pub const READONLY_PROGRAMS: &[&str] = &[
 const MAX_LEN: usize = 4096;
 
 /// Names that must never be read on a proof. A path with a component that matches one of these (after any
-/// `cd` is folded in) is not proven, whatever the command: this is defence in depth under the path check
+/// `cd` is folded in) is not proven, whatever the command: this is defense in depth under the path check
 /// (P4), which owns the real decision, including the user's `Read()` deny rules, symlinks and containment.
 ///
 /// A pattern is one or more `/`-separated components, in lower case. `*` stands for any run of characters
@@ -200,7 +200,7 @@ pub enum ReadOnly {
 
 type Why = &'static str;
 
-/// The characters of one path component, tokenised for a glob match: `*` is any run, `?` and a bracket
+/// The characters of one path component, tokenized for a glob match: `*` is any run, `?` and a bracket
 /// class (read as any one character: it can only widen the match) are one character.
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Tok {

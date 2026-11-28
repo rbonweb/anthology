@@ -1,0 +1,1 @@
+- Add: every agent writes US English (color, behavior, organize, license, canceled) in the files, commits and reports it produces. Comments, docs and messages in the plugin use US spelling too.

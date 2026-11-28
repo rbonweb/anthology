@@ -22,7 +22,7 @@ On 2026-11-20 the owner decided to port **all** of Anthology's own Python to Rus
 
 **How to apply:**
 - The launch is held until the port lands.
-- The reviewed Python build and its ~1,500 tests are the behavioural spec, with differential testing between Python and Rust.
+- The reviewed Python build and its ~1,500 tests are the behavioral spec, with differential testing between Python and Rust.
 - Vendored upstream content (superpowers, knowledge scripts) stays as upstream wrote it.
 
 See [[anthology-status]].

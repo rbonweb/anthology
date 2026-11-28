@@ -1,6 +1,6 @@
 ---
 name: 'Host signals and subagent waiting (spike 2026-11-24)'
-description: 'Measured entrypoint, attended flag, Bash env, mod surfaces, version and background-notice behaviour on Claude Code 2.1.323 and 2.1.330'
+description: 'Measured entrypoint, attended flag, Bash env, mod surfaces, version and background-notice behavior on Claude Code 2.1.323 and 2.1.330'
 metadata:
   type: project
   modified: 2026-11-24

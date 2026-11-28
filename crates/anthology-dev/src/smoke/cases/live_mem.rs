@@ -31,7 +31,7 @@ pub fn run(ctx: &Ctx) -> Res<Outcome> {
         argv.extend(args.iter().map(|a| a.to_string()));
         ctx.run(&argv, &repo, &env, 120, None)
     };
-    let description = format!("the live probe colour is {NEEDLE}");
+    let description = format!("the live probe color is {NEEDLE}");
     let saved = mem(&[
         "save",
         "--agent",

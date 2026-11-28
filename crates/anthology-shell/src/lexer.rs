@@ -339,7 +339,7 @@ pub(crate) fn find_backtick(text: &str, i: usize, work: &mut Work) -> Result<usi
 }
 
 /// The word a process substitution stands for in its command (bash passes `/dev/fd/N`; the number is not
-/// modelled, and no rule reads it).
+/// modeled, and no rule reads it).
 const PROCSUB_PATH: &str = "/dev/fd/63";
 
 /// A heredoc registered on the current line: (delimiter readings, group, quoted, `<<-`).
@@ -1143,7 +1143,7 @@ impl<'t, 'a> Lexer<'t, 'a> {
             }
             Some(b'{') => {
                 let k = self.brace_end(i)?;
-                // bash runs a `<(...)` in an unquoted `${...}`; that is not modelled here, so it is too complex
+                // bash runs a `<(...)` in an unquoted `${...}`; that is not modeled here, so it is too complex
                 if text
                     .get(i + 2..k)
                     .is_some_and(|body| body.contains("<(") || body.contains(">("))

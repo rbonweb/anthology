@@ -55,7 +55,7 @@ where
         if rc != 0 || result.is_null() {
             return None;
         }
-        // SAFETY: on success `result` points at `pwd`, initialised by the lookup, whose
+        // SAFETY: on success `result` points at `pwd`, initialized by the lookup, whose
         // `pw_dir` is null or a NUL-terminated string inside `buf`, which is still alive.
         let dir = unsafe { (*result).pw_dir };
         if dir.is_null() {

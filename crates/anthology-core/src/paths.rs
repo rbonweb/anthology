@@ -12,7 +12,7 @@ use crate::{Env, sys};
 /// result is `/`. With no `HOME` and no passwd entry Python returns the path unchanged, so
 /// this is `~`.
 ///
-/// This is `expanduser("~")`, normalised. Python sites that use `HOME` as given, such as
+/// This is `expanduser("~")`, normalized. Python sites that use `HOME` as given, such as
 /// `os.environ.get("HOME") or os.path.expanduser("~")`, want [`home_raw`] instead.
 pub fn home(env: &Env) -> PathBuf {
     let raw = match env.get_os("HOME") {
@@ -32,7 +32,7 @@ pub fn home(env: &Env) -> PathBuf {
 
 /// `os.environ.get("HOME") or os.path.expanduser("~")`: `HOME` exactly as given (a trailing
 /// `/` kept) when it is non-empty, else [`home`]. These Python sites use this form:
-/// `guard.py:21` (passed to `guard_rules.check`, which never normalises it) and
+/// `guard.py:21` (passed to `guard_rules.check`, which never normalizes it) and
 /// `settings_patch.py:556` (line numbers informational).
 ///
 /// Sites that treat an unset or empty `HOME` as "no home" (no passwd fallback), such as

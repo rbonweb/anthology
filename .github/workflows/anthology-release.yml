@@ -3,7 +3,7 @@ name: anthology-release
 # Builds the `anthology` binary (crates/anthology-cli) for four targets, tests the shipped
 # crates first, attests the tarballs and publishes them, with checksums.txt, to the release for
 # the tag `anthology-bin--v<version>` (<version> is the root Cargo.toml [workspace.package]
-# version). Design §10; modelled on atl-release.yml.
+# version). Design §10; modeled on atl-release.yml.
 #
 #   - push of a tag `anthology-bin--v*`: deny, build, test, attest, publish.
 #   - workflow_dispatch with `tag`: the same, from that existing tag.

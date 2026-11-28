@@ -10,4 +10,4 @@ Session start (crates/anthology-runtime/src/project.rs, session_start.rs): after
 Delegation mod: whole Claude config folder and any file with no .git in its folder or above are exempt; a pure deletion (30 lines, 4 KB) and a config-file edit (15 lines) are tiny fixes; code stays at 5 lines. A failing fs.exists counts as project code.
 Tests: delegation.test.ts engine stub answers fs.exists as true for every /.git unless a test passes repos, so existing paths count as in a repo; fs.read answers only <root>/.claude/anthology.json from repoConfig. In Rust, tests use Fx.go_cwd with SessionCase fake_repo for a plain folder and make_repo plus approve for an approved one.
 Golden: the hook.session-start golden changed in 256 cases, all a pure insertion of MAP_LINE for an approved repo; compare old and new gz per case id to prove it.
-Why: the plugin used to override a user own per-repo agents; these are the pieces to touch when that behaviour changes again.
+Why: the plugin used to override a user own per-repo agents; these are the pieces to touch when that behavior changes again.

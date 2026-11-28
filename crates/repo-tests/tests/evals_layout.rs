@@ -1,4 +1,4 @@
-//! Port of `tests/test_evals_layout.py`: static checks on the behaviour evals (case files, the
+//! Port of `tests/test_evals_layout.py`: static checks on the behavior evals (case files, the
 //! BrowserOS Neo mock, the runner's grants and the evals workflow).
 
 use std::collections::{BTreeSet, HashMap};
@@ -188,7 +188,7 @@ fn each_case(cases: &Cases, mut row: impl FnMut(&str, &Yaml) -> Result<(), Strin
     );
 }
 
-/// Same for any list of labelled rows.
+/// Same for any list of labeled rows.
 fn each_row<T>(rows: &[T], label: impl Fn(&T) -> String, row: impl Fn(&T) -> Result<(), String>) {
     let fails: Vec<String> = rows
         .iter()
@@ -1404,7 +1404,7 @@ mod workflow_tests {
         assert!(run.contains("present=true"));
         assert!(run.contains("present=false"));
         assert!(
-            run.contains("::notice::ANTHROPIC_API_KEY is not set; the behaviour evals are skipped")
+            run.contains("::notice::ANTHROPIC_API_KEY is not set; the behavior evals are skipped")
         );
     }
 

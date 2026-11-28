@@ -24,7 +24,7 @@
 - Files, commits and docs are written in normal prose. Commits carry only the git config author. No personal paths, emails or host names in any file.
 - Builds and tests run in Docker through `scripts/rust-test.sh` (`CARGO_BUILD_JOBS=3`). Test tiers follow `.superpowers/sdd/2026-11-20-rust-port/wave4-brief.md`: per-crate tests, fmt and clippy while coding; CI is the PR gate.
 - `README.md` stays at or under 120 lines.
-- Licences: the rule lists and patterns are ported from tbhb/vale-ai-tells (MIT), conorbronsdon/avoid-ai-writing (MIT), funboy322/avoid-ai-design (MIT) and leonxlnx/taste-skill copy-lint (MIT). humanizer is MIT. impeccable (Apache-2.0) is neither bundled nor copied. The crate's `NOTICE` carries the MIT copyright lines.
+- Licenses: the rule lists and patterns are ported from tbhb/vale-ai-tells (MIT), conorbronsdon/avoid-ai-writing (MIT), funboy322/avoid-ai-design (MIT) and leonxlnx/taste-skill copy-lint (MIT). humanizer is MIT. impeccable (Apache-2.0) is neither bundled nor copied. The crate's `NOTICE` carries the MIT copyright lines.
 
 ## Review Focus
 
@@ -59,7 +59,7 @@ B loses on install and on new-text-only checking. Cost if wrong: about 1,500 lin
 | Platforms | Every `anthology` target | Only the targets upstream builds |
 | Browser | None | Its render checks drive Chrome over CDP, which the browser rule forbids |
 | False positives | Only 9 rules that read source code, each with negative tests | 62 rules, several judging taste |
-| Licence | MIT (avoid-ai-design detector) | Apache-2.0 |
+| License | MIT (avoid-ai-design detector) | Apache-2.0 |
 
 The remaining P0/P1 tells become the ui-reviewer's fixed rubric (Task 9).
 
@@ -88,7 +88,7 @@ The switch is `ANTHOLOGY_SLOP_GATE=0` in the environment. It turns off both the 
 
 ## The v1 rules
 
-`B` = block (one hit refuses). `D` = density (only the new text is counted). The kinds are `md` = Markdown, `html`, `jsx`, `css`. Catalogue IDs are avoid-ai-design's.
+`B` = block (one hit refuses). `D` = density (only the new text is counted). The kinds are `md` = Markdown, `html`, `jsx`, `css`. Catalog IDs are avoid-ai-design's.
 
 ```text
 id                      sev kinds          summary (string in RULES)                                  hint (string in RULES)
@@ -99,8 +99,8 @@ text.not-x-but-y        B   md,html,jsx    denied-alternative contrast          
 text.hype-cta           B   md,html,jsx    hype call to action                                        say what happens when the reader acts, with one fact
 text.em-dash-density    D   md,html        em dashes: 3 or more, over 1 per 120 words                 use commas, colons, parentheses or full stops for most of these dashes
 text.triad-density      D   md,html        lists of three: 3 or more, over 1 per 150 words            keep the lists the content needs; vary or cut the rest
-ui.purple-gradient      B   css,html,jsx   purple or indigo gradient (C1)                              pick a gradient from the brand palette, or use a flat colour
-ui.gradient-text        B   css,html,jsx   gradient-filled text (C6)                                   use a solid text colour; put emphasis in size or weight
+ui.purple-gradient      B   css,html,jsx   purple or indigo gradient (C1)                              pick a gradient from the brand palette, or use a flat color
+ui.gradient-text        B   css,html,jsx   gradient-filled text (C6)                                   use a solid text color; put emphasis in size or weight
 ui.shadcn-default       B   css,html       untouched shadcn/ui base theme (K1)                         set the theme tokens to the product's own palette
 ui.glow-orb             B   css,html,jsx   decorative blurred orb (C11)                                remove the orb, or replace it with an image or shape that carries meaning
 ui.effect-library       B   jsx            stock effect-library component (K10)                        build the effect the design needs, or drop it
@@ -117,8 +117,8 @@ Every pattern is case-insensitive (`(?i)`). `['’]` stands for either apostroph
 ~~~text
 Line waiver (same line as the finding; reason of 8 or more characters; known rule id):
   Markdown/HTML:  <!-- slop-ok: text.ai-vocab the product is called Seamless Sync -->
-  JSX:            {/* slop-ok: ui.purple-gradient brand colour from the style guide */}
-  CSS/JS:         /* slop-ok: ui.purple-gradient brand colour from the style guide */   or   // slop-ok: ...
+  JSX:            {/* slop-ok: ui.purple-gradient brand color from the style guide */}
+  CSS/JS:         /* slop-ok: ui.purple-gradient brand color from the style guide */   or   // slop-ok: ...
 A density finding is waived by a valid waiver for that rule on any line of the new text.
 
 Ignore region (whole-line markers, at most 3 spaces of indent; an unclosed start runs to the end):
@@ -621,7 +621,7 @@ at\s+your\s+fingertips | in\s+just\s+a\s+few\s+clicks | we['’]ve\s+got\s+you\s
 
 ```text
 purple_gradient (C1): in style spans, each (?i)(?:linear|radial|conic)-gradient\(([^;{}]*)\) whose argument, with var(--x) resolved
-    against `--x: value` declarations anywhere in `code` (depth at most 6), holds a colour with is_violet; span = the call.
+    against `--x: value` declarations anywhere in `code` (depth at most 6), holds a color with is_violet; span = the call.
   In each class span: \b(?:from|via|to)-(?:indigo|violet|purple|fuchsia)-\d{2,3}\b together with \bbg-(?:gradient|linear|radial)\S*; span = the class value.
 gradient_text (C6): a rule body holding (?:-webkit-)?background-clip\s*:\s*['"]?text and (?:-webkit-text-fill-color|color)\s*:\s*['"]?transparent,
     or backgroundClip\s*:\s*['"]text['"] and (?:WebkitTextFillColor|color)\s*:\s*['"]transparent['"]; parts = the two declarations.
@@ -642,7 +642,7 @@ generator_signature (F1), on code: (?i)lovable-tagger|gpt-?engineer|\bv0\.dev\b|
 
 - [ ] **Step 1: Write the failing tests** with Views built by hand (`View { style: vec![..], classes: vec![..], ..View::plain(doc) }`):
   - `color.rs`:
-    - `parses_every_colour_form`;
+    - `parses_every_color_form`;
     - `indigo_500_is_violet_and_blue_500_is_not` (`#6366f1` hue about 239; `#3b82f6` hue about 217).
   - `ui.rs`, one positive and one negative per rule:
     - `linear-gradient(135deg, #6366f1, #a855f7)` fires; `linear-gradient(#3b82f6, #0ea5e9)` does not;
@@ -774,7 +774,7 @@ Wrap the whole hook in `catch_unwind` with a silent panic hook, as `cmd/hook.rs`
   - `hook_checks_only_the_new_text_of_an_edit`: the file already has a tell elsewhere; a clean Edit exits 0.
   - `hook_ignores_other_tools_and_kinds`: Bash, and a `.rs` file, exit 0.
   - `hook_fails_open_on_bad_input`: input that is not JSON, a missing `file_path`, a non-UTF-8 file, a file over 1 MiB and an `old_string` not found all exit 0.
-  - `hook_honours_the_switch`: `ANTHOLOGY_SLOP_GATE=0` exits 0.
+  - `hook_honors_the_switch`: `ANTHOLOGY_SLOP_GATE=0` exits 0.
   - `hook_skips_exempt_paths`: `.claude/memory/x.md` and `node_modules/p/README.md` exit 0.
   - `hook_gates_a_worktree_under_dot_claude`: a `.git` file in `<tmp>/.claude/worktrees/w`; a tell in `docs/a.md` there exits 10.
   - `check_reports_findings_and_exits_1`
@@ -822,7 +822,7 @@ Wrap the whole hook in `catch_unwind` with a silent panic hook, as `cmd/hook.rs`
 }
 ```
 
-**`slop-gate.sh` behaviour:**
+**`slop-gate.sh` behavior:**
 1. `#!/bin/sh`, then a header comment: what it does, that it fails open, and that only exit 10 from the binary blocks.
 2. `trap 'exit 0' HUP INT TERM`.
 3. Find `anth_hooks` from `$0`, as `session-start.sh` does. When `lib.sh` is missing or does not load in a subshell, exit 0.
@@ -913,7 +913,7 @@ The PR body carries the map lines from "Project map lines".
 ~~~~markdown
 ---
 name: avoid-ai-design
-description: Use as the fixed P0/P1 rubric when building or reviewing a UI, to find the defaults that make a page look generated. Adapted from funboy322/avoid-ai-design (MIT); the catalogue in this folder is upstream's references.
+description: Use as the fixed P0/P1 rubric when building or reviewing a UI, to find the defaults that make a page look generated. Adapted from funboy322/avoid-ai-design (MIT); the catalog in this folder is upstream's references.
 ---
 
 # AI design tells: the fixed rubric
@@ -930,11 +930,11 @@ A tell is a default nobody chose. It never proves who made a page. Judge the ren
 
 ## P0: a layperson sees it
 
-C1 purple or indigo gradient · C6 gradient-filled headline text · L1 pill badge over a centred hero · L2 three identical icon-topped feature cards · K1 untouched shadcn/ui base theme · T1 Inter as the primary face (see rule 5)
+C1 purple or indigo gradient · C6 gradient-filled headline text · L1 pill badge over a centered hero · L2 three identical icon-topped feature cards · K1 untouched shadcn/ui base theme · T1 Inter as the primary face (see rule 5)
 
 ## P1: a designer sees it
 
-SD1 cream ground with a terracotta accent · SD2 near-black ground with one acid-green or vermilion accent · SD4 tracked all-caps labels on three or more elements · SD5 one accented word in the headline · SD6 decorative 01/02/03 markers · SD9 a palette the vendors name as a default · T2 a face from the tasteful-free-font cluster · T4 Geist left untouched · T7 a typeface declared but never loaded · C2 indigo or violet primary buttons · C9 muted text below WCAG AA · C10 a one-note palette · C11 decorative blurred orbs · L4 round-number stat strip · L6 one centred width for every section · L7 three pricing tiers with a highlighted middle tier · L8 the default four-column footer · L9 the stock section order · L11 a big number as the hero · K2 one radius and soft shadow on every surface · K3 glassmorphism by reflex · K4 coloured side-stripe on rounded cards · K6 icon in a tinted rounded square · K8 default radius token · K9 the default dark SaaS card · K10 stock effect-library components · I2 emoji as interface icons · I3 the worn icon set and the sparkle glyph · CP1 vague aspirational headline · CP3 arrow glyph welded to a CTA · IM4 placeholder avatars or media · IM5 a five-star row on every testimonial · F1 generator signature left in · K7 no visible keyboard focus · M6 motion without prefers-reduced-motion
+SD1 cream ground with a terracotta accent · SD2 near-black ground with one acid-green or vermilion accent · SD4 tracked all-caps labels on three or more elements · SD5 one accented word in the headline · SD6 decorative 01/02/03 markers · SD9 a palette the vendors name as a default · T2 a face from the tasteful-free-font cluster · T4 Geist left untouched · T7 a typeface declared but never loaded · C2 indigo or violet primary buttons · C9 muted text below WCAG AA · C10 a one-note palette · C11 decorative blurred orbs · L4 round-number stat strip · L6 one centered width for every section · L7 three pricing tiers with a highlighted middle tier · L8 the default four-column footer · L9 the stock section order · L11 a big number as the hero · K2 one radius and soft shadow on every surface · K3 glassmorphism by reflex · K4 colored side-stripe on rounded cards · K6 icon in a tinted rounded square · K8 default radius token · K9 the default dark SaaS card · K10 stock effect-library components · I2 emoji as interface icons · I3 the worn icon set and the sparkle glyph · CP1 vague aspirational headline · CP3 arrow glyph welded to a CTA · IM4 placeholder avatars or media · IM5 a five-star row on every testimonial · F1 generator signature left in · K7 no visible keyboard focus · M6 motion without prefers-reduced-motion
 
 ## Report
 
