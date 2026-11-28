@@ -229,15 +229,15 @@ pub fn render_text(s: &Scan, m: &Meta) -> String {
     }
     out.push_str(verdict(s));
     out.push('\n');
-    out.push_str(&format!("target: {}\n", field(&m.target, FIELD_CHARS)));
-    if let Source::Url { rev, .. } = &m.source {
-        out.push_str(&format!("rev: {}\n", field(rev, FIELD_CHARS)));
-    }
     let c = counts(s);
     out.push_str(&format!(
         "CRITICAL {}  HIGH {}  MEDIUM {}  LOW {}  INFO {}\n",
         c[4], c[3], c[2], c[1], c[0]
     ));
+    out.push_str(&format!("target: {}\n", field(&m.target, FIELD_CHARS)));
+    if let Source::Url { rev, .. } = &m.source {
+        out.push_str(&format!("rev: {}\n", field(rev, FIELD_CHARS)));
+    }
     out.push_str(&format!(
         "scanned: {} in {} ms\n",
         plural(s.files, "file", "files"),
@@ -746,6 +746,12 @@ mod tests {
         let text = render_text(&s, &m);
         let head: Vec<&str> = text.lines().take(12).collect();
         assert_eq!(head[0], "Do not open", "{text}");
+        // The counts sit right under the verdict; the target follows.
+        assert_eq!(
+            head[1], "CRITICAL 1  HIGH 0  MEDIUM 2  LOW 0  INFO 1",
+            "{text}"
+        );
+        assert_eq!(head[2], "target: /r", "{text}");
         assert!(
             text.contains("\nCRITICAL 1  HIGH 0  MEDIUM 2  LOW 0  INFO 1\n"),
             "{text}"
