@@ -108,7 +108,7 @@ fn refusal(env: &Env, raw: &str) -> Option<String> {
         return None;
     }
     let shown = paths::shown(&path, root.as_deref());
-    Some(report::hook_message(edit.tool(), &shown, &findings))
+    Some(report::hook_message(edit.tool(), &shown, kind, &findings))
 }
 
 /// The edit a Write, Edit or MultiEdit input describes; None when a field is missing or has the
