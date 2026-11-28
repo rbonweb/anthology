@@ -1,0 +1,1 @@
+- Change: the implementer prompt's Docker cleanup sentence matches the owner's rule. After using containers, an agent removes its own containers, per-run volumes and images built only for its worktree, and keeps pulled base images and shared caches, because later runs reuse them.
