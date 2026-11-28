@@ -119,7 +119,7 @@ pub fn stripped_knowledge() -> Vec<(String, &'static str, String)> {
 pub const UNCHANGED_KNOWLEDGE: [&str; 3] =
     ["frontend-design", "web-design-guidelines", "design-skills"];
 
-/// `test_knowledge.EXPECTED_KNOWLEDGE`: the stripped 22, the unchanged 3 and five more.
+/// `test_knowledge.EXPECTED_KNOWLEDGE`: the stripped 22, the unchanged 3 and seven more.
 pub fn expected_knowledge() -> BTreeSet<String> {
     let mut set: BTreeSet<String> = stripped_knowledge()
         .into_iter()
@@ -133,6 +133,8 @@ pub fn expected_knowledge() -> BTreeSet<String> {
             "design-taste-frontend",
             "karpathy-guidelines",
             "website-clone",
+            "humanizer",
+            "avoid-ai-design",
         ]
         .map(String::from),
     );
@@ -222,7 +224,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "yes",
             true,
             vec![],
-            vec!["documentation", "ds/ux-writing"],
+            vec!["documentation", "ds/ux-writing", "humanizer"],
         ),
         spec(
             "ui-designer",
@@ -240,6 +242,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/design-systems",
                 "ds/interaction-design",
                 "ds/design-elevation",
+                "avoid-ai-design",
                 "website-clone",
             ],
         ),
@@ -254,6 +257,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "web-review",
                 "ds/design-critique",
                 "ds/accessibility-audit",
+                "avoid-ai-design",
             ],
         ),
         spec(
@@ -269,6 +273,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "product-brainstorming",
                 "ds/ux-strategy",
                 "ds/design-ops",
+                "humanizer",
             ],
         ),
         spec(
@@ -282,6 +287,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "campaign-plan",
                 "content-creation",
                 "email-sequence",
+                "humanizer",
             ],
         ),
     ]
@@ -314,8 +320,8 @@ mod tests {
     fn the_roster_data_matches_tests_repo_py() {
         assert_eq!(expected_roster().len(), 11);
         assert_eq!(stripped_knowledge().len(), 22);
-        assert_eq!(expected_knowledge().len(), 30);
-        assert_eq!(roster_agent("ui-designer").knowledge.len(), 10);
+        assert_eq!(expected_knowledge().len(), 32);
+        assert_eq!(roster_agent("ui-designer").knowledge.len(), 11);
         assert!(knowledge_path("ds/x").ends_with("design-skills/skills/x/SKILL.md"));
     }
 

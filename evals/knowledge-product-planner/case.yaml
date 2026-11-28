@@ -102,3 +102,15 @@ graders:
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/ux-strategy/SKILL\.md'}
     after: {tool: Read, input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'}
+  - name: read-humanizer
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/humanizer/SKILL\.md'
+  - name: order-humanizer
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-design-ops-humanizer
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-ops/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}

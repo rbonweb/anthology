@@ -1,0 +1,28 @@
+---
+name: avoid-ai-design
+description: Use as the fixed P0/P1 rubric when building or reviewing a UI, to find the defaults that make a page look generated. Adapted from funboy322/avoid-ai-design (MIT); the catalogue in this folder is upstream's references.
+---
+
+# AI design tells: the fixed rubric
+
+A tell is a default nobody chose. It never proves who made a page. Judge the rendered page and its source against every ID below, in order, and against no other list.
+
+## How to score
+
+1. The slop gate already refuses the code-certain subset in new code: `ui.purple-gradient` (C1), `ui.gradient-text` (C6), `ui.shadcn-default` (K1), `ui.glow-orb` (C11), `ui.effect-library` (K10), `ui.placeholder-media` (IM4), `ui.five-star-row` (IM5), `ui.generator-signature` (F1). Check them anyway: a scaffolder run through the shell is not gated.
+2. For each ID, read its entry in `ai-tells-catalog.md` (in this folder) before you decide.
+3. Mark each finding code-certain (seen in the source), rendered (seen on screen) or inferred.
+4. A P0 or P1 tell the brief did not ask for fails the review. A tell the brief asked for passes, and is named as such.
+5. T1 (Inter as the primary face) counts only with two or more other tells on the same page: a calibration on 202 human sites found Inter alone is not a tell.
+
+## P0: a layperson sees it
+
+C1 purple or indigo gradient · C6 gradient-filled headline text · L1 pill badge over a centred hero · L2 three identical icon-topped feature cards · K1 untouched shadcn/ui base theme · T1 Inter as the primary face (see rule 5)
+
+## P1: a designer sees it
+
+SD1 cream ground with a terracotta accent · SD2 near-black ground with one acid-green or vermilion accent · SD4 tracked all-caps labels on three or more elements · SD5 one accented word in the headline · SD6 decorative 01/02/03 markers · SD9 a palette the vendors name as a default · T2 a face from the tasteful-free-font cluster · T4 Geist left untouched · T7 a typeface declared but never loaded · C2 indigo or violet primary buttons · C9 muted text below WCAG AA · C10 a one-note palette · C11 decorative blurred orbs · L4 round-number stat strip · L6 one centred width for every section · L7 three pricing tiers with a highlighted middle tier · L8 the default four-column footer · L9 the stock section order · L11 a big number as the hero · K2 one radius and soft shadow on every surface · K3 glassmorphism by reflex · K4 coloured side-stripe on rounded cards · K6 icon in a tinted rounded square · K8 default radius token · K9 the default dark SaaS card · K10 stock effect-library components · I2 emoji as interface icons · I3 the worn icon set and the sparkle glyph · CP1 vague aspirational headline · CP3 arrow glyph welded to a CTA · IM4 placeholder avatars or media · IM5 a five-star row on every testimonial · F1 generator signature left in · K7 no visible keyboard focus · M6 motion without prefers-reduced-motion
+
+## Report
+
+One row per finding: ID, where (selector, file and line, or screenshot), code-certain / rendered / inferred, and the fix. Then list every `slop-ok` comment and `slop-ignore` region in the change, with its reason. End with pass or fail under rule 4.

@@ -40,6 +40,8 @@ fn test_real_sources_validate() {
         "design-taste-frontend",
         "karpathy-guidelines",
         "website-clone",
+        "humanizer",
+        "avoid-ai-design",
         "atl",
     ]
     .iter()
