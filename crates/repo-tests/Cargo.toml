@@ -24,6 +24,8 @@ sha2.workspace = true
 [dev-dependencies]
 # host_predicate: the guard's `host::embedded` against the same truth table as the hook and the mod.
 anthology-guard.workspace = true
+# slop_corpus: every slop rule stays silent on the human docs.
+anthology-slop.workspace = true
 anthology-testkit.workspace = true
 proptest.workspace = true
 tempfile.workspace = true
