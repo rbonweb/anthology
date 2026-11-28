@@ -559,9 +559,14 @@ fn jar_bytes() -> Vec<u8> {
     bytes
 }
 
+/// `gradle-wrapper.jar` with a Cyrillic small ie (U+0435) in place of the last `e`.
+fn homoglyph_jar() -> String {
+    format!("gradle/wrapper/gradl{}-wrapper.jar", '\u{0435}')
+}
+
 #[test]
 fn a20_homoglyph_gradle_wrapper_jar_next_to_its_twin() {
-    let name = format!("gradle/wrapper/grad{}-wrapper.jar", '\u{0435}');
+    let name = homoglyph_jar();
     let repo = Repo::new();
     repo.file("gradle/wrapper/gradle-wrapper.jar", jar_bytes())
         .file(&name, jar_bytes());
@@ -572,7 +577,7 @@ fn a20_homoglyph_gradle_wrapper_jar_next_to_its_twin() {
 
 #[test]
 fn a20_a_homoglyph_name_without_a_twin_is_medium() {
-    let name = format!("gradle/wrapper/grad{}-wrapper.jar", '\u{0435}');
+    let name = homoglyph_jar();
     let repo = Repo::new();
     repo.file(&name, jar_bytes());
     let s = repo.scan();
