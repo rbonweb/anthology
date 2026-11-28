@@ -5,8 +5,14 @@
 # binary's stderr (the message that names the line and the phrase) and exits 2. Every other
 # outcome exits 0 with no output, so the gate fails open: a missing, old, broken or crashing
 # binary, a lib.sh that does not load and a missing lock never stop an edit. It never installs
-# the binary (session start does) and writes nothing to stdout.
+# the binary (session start does) and writes nothing to stdout. The environment variable
+# ANTHOLOGY_SLOP_GATE set to exactly 0 turns the gate off: the script exits 0 without running
+# the binary.
 trap 'exit 0' HUP INT TERM
+# ANTHOLOGY_SLOP_GATE=0 (exactly 0) switches the gate off: exit 0 before anything else runs.
+if [ "${ANTHOLOGY_SLOP_GATE-}" = 0 ]; then
+    exit 0
+fi
 case $0 in
     */*) anth_hooks=${0%/*} ;;
     *) anth_hooks=. ;;

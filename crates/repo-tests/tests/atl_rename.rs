@@ -57,7 +57,12 @@ const PINNED_PATHS: [&str; 5] = [
 /// Single lines that keep the old name and cannot say `legacy` on the same line: (file, a
 /// substring of the line, why): golden lines, which are recorded output. Test names the port
 /// ledger pins are taken out of each line by [`ledger_pins`] instead.
-const PINNED_LINES: [(&str, &str, &str); 4] = [
+const PINNED_LINES: [(&str, &str, &str); 5] = [
+    (
+        "plugins/anthology/knowledge/public-relations/references/journalist-pitching.md",
+        "ConvertKit",
+        "vendored upstream text names the newsletter product ConvertKit, whose name holds the old letters; it is shipped generated and never hand-edited",
+    ),
     (
         "crates/anthology-dev/tests/golden/dev.rtk-trim.jsonl.gz",
         "\"surface\": \"dev.rtk-trim\"",

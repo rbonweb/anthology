@@ -1,4 +1,4 @@
-//! `tests/test_roster.py`: the 11-agent roster (frontmatter, Startup, rules and startup budget).
+//! `tests/test_roster.py`: the 12-agent roster (frontmatter, Startup, rules and startup budget).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
@@ -295,7 +295,7 @@ mod roster_test {
             .map(|a| a.name.to_string())
             .collect();
         assert_eq!(stems, want);
-        assert_eq!(repo::expected_roster().len(), 11);
+        assert_eq!(repo::expected_roster().len(), 12);
     }
 
     #[test]
@@ -517,7 +517,11 @@ mod roster_test {
             .iter()
             .map(|rel| rel.split('/').nth(1).unwrap().to_string())
             .collect();
-        let expected = repo::expected_knowledge();
+        // A support folder (no SKILL.md) is linked from a skill an agent reads, never read itself.
+        let mut expected = repo::expected_knowledge();
+        for support in repo::SUPPORT_KNOWLEDGE {
+            expected.remove(support);
+        }
         assert_eq!(
             expected.difference(&used).collect::<Vec<_>>(),
             Vec::<&String>::new()
@@ -829,6 +833,8 @@ mod roster_test {
             "TaskStop each one and say none remain",
             "Durations come only from timestamps you read.",
             "never pastes settings JSON or permission-mode strings",
+            "Credentials you fetch or generate (browser, dashboard, CLI): save them as `KEY=value` lines in `~/.config/<project>/<service>.env`.",
+            "Make the folder mode 700 and the file 600. Never put them in the repo, a commit, a log or your output; your report names only the path and the keys.",
             "Type commands plainly; never type `atl` yourself (it is added for you), except `atl bypass <cmd>` when a result is unusable.",
         ] {
             assert!(shell.contains(needle), "Shell lacks {needle:?}");
@@ -1036,7 +1042,7 @@ mod roster_test {
             std::fs::read_to_string(repo::path(&format!("{PLUGIN}/templates/routing-guide.md")))
                 .expect("the routing guide");
         for needle in [
-            "Merge conflicts: implementer.",
+            "Merge conflicts: implementer, in its own worktree: merge base, resolve, push; lead merges last.",
             "Checks over ~2 min: background or agent, never block.",
             "No lead coding tasks in plans.",
             "Brief by plan path and task ID; agents read the plan.",
@@ -1193,6 +1199,50 @@ mod roster_test {
                 );
                 expect_not_in(p, "routing guide", &memory, "Memory");
             },
+        );
+    }
+
+    // Trend data comes from public endpoints without keys or cookies. The commands are quoted
+    // (an unquoted URL with `?` or `>` breaks in zsh), the epoch comes from its own `date` call
+    // (no subshell, which Claude Code cannot check), and the User-Agent names no person. The
+    // `$(` check reads the Do section: every Memory section names `$(` as a thing to avoid.
+    #[test]
+    fn test_blog_writer_fetches_trends_without_keys() {
+        let (_, body) = agent("blog-writer").unwrap();
+        for needle in [
+            "curl -s -A 'anthology-blog-writer' '<url>'",
+            "date -u +%s",
+            "hn.algolia.com",
+            "reddit.com",
+            "90/100",
+        ] {
+            assert!(body.contains(needle), "blog-writer lacks {needle:?}");
+        }
+        let do_section = section(&body, "Do").unwrap();
+        assert!(!do_section.contains("$("), "Do holds a subshell");
+        assert!(!body.contains("BrowserOS"));
+    }
+
+    // Each kind of copy has one owner, and the prompts say so.
+    #[test]
+    fn test_copy_has_one_owner_per_kind() {
+        let (_, ui) = agent("ui-designer").unwrap();
+        assert!(
+            section(&ui, "Role")
+                .unwrap()
+                .contains("write every string in them")
+        );
+        let (_, reviewer) = agent("reviewer").unwrap();
+        assert!(
+            section(&reviewer, "Do")
+                .unwrap()
+                .contains("Marketing deliverable:")
+        );
+        let (_, docs) = agent("docs-writer").unwrap();
+        assert!(
+            section(&docs, "Do")
+                .unwrap()
+                .contains("UX-writing job for UI that someone else builds")
         );
     }
 

@@ -53,7 +53,11 @@ const FORBIDDEN: [&str; 13] = [
 ];
 
 fn all_folders() -> Vec<&'static str> {
-    MARKETINGSKILLS.iter().chain(OTHERS.iter()).copied().collect()
+    MARKETINGSKILLS
+        .iter()
+        .chain(OTHERS.iter())
+        .copied()
+        .collect()
 }
 
 fn folder(name: &str) -> String {
@@ -63,14 +67,20 @@ fn folder(name: &str) -> String {
 /// The `vendor/sources.json` entry called `name`.
 fn source(name: &str) -> Value {
     let text = repo::read("vendor/sources.json");
-    let sources = json::loads(&text).unwrap_or_else(|e| panic!("sources.json: {}", e.py_str(&text)));
+    let sources =
+        json::loads(&text).unwrap_or_else(|e| panic!("sources.json: {}", e.py_str(&text)));
     sources
         .as_object()
         .and_then(|m| m.get("sources"))
         .and_then(Value::as_array)
         .expect("sources is a list")
         .iter()
-        .find(|e| e.as_object().and_then(|m| m.get("name")).and_then(Value::as_str) == Some(name))
+        .find(|e| {
+            e.as_object()
+                .and_then(|m| m.get("name"))
+                .and_then(Value::as_str)
+                == Some(name)
+        })
         .unwrap_or_else(|| panic!("no source {name}"))
         .clone()
 }
@@ -104,8 +114,10 @@ fn collect(dir: &Path, rel: &str, out: &mut Vec<String>) {
 }
 
 fn read_lossy(rel: &str) -> String {
-    String::from_utf8_lossy(&std::fs::read(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}")))
-        .into_owned()
+    String::from_utf8_lossy(
+        &std::fs::read(repo::path(rel)).unwrap_or_else(|e| panic!("{rel}: {e}")),
+    )
+    .into_owned()
 }
 
 #[test]
@@ -159,10 +171,17 @@ fn the_marketing_sources_are_pinned() {
 #[test]
 fn no_folder_ships_upstream_evals() {
     for name in MARKETINGSKILLS {
-        assert!(!repo::path(&format!("{}/evals", folder(name))).exists(), "{name} ships evals/");
+        assert!(
+            !repo::path(&format!("{}/evals", folder(name))).exists(),
+            "{name} ships evals/"
+        );
     }
     assert!(
-        !repo::path(&format!("{}/references/generative-tools.md", folder("ad-creative"))).exists(),
+        !repo::path(&format!(
+            "{}/references/generative-tools.md",
+            folder("ad-creative")
+        ))
+        .exists(),
         "ad-creative ships references/generative-tools.md"
     );
 }
@@ -209,7 +228,10 @@ fn every_folder_is_a_skill_named_after_itself() {
         let skill = format!("{}/SKILL.md", folder(name));
         let (meta, _) = frontmatter::load(&skill);
         assert_eq!(meta["name"].as_str(), Some(name), "{skill}");
-        assert!(repo::path(&format!("{}/LICENSE", folder(name))).is_file(), "{name} has no LICENSE");
+        assert!(
+            repo::path(&format!("{}/LICENSE", folder(name))).is_file(),
+            "{name} has no LICENSE"
+        );
     }
 }
 
@@ -231,6 +253,9 @@ fn ux_microcopy_is_renamed_and_minimal() {
 fn the_tool_line_replaces_every_tool_table() {
     for name in ["emails", "analytics", "ad-creative"] {
         let skill = repo::read(&format!("{}/SKILL.md", folder(name)));
-        assert!(skill.contains(ANTHOLOGY_TOOLS_LINE), "{name}/SKILL.md lacks the tool line");
+        assert!(
+            skill.contains(ANTHOLOGY_TOOLS_LINE),
+            "{name}/SKILL.md lacks the tool line"
+        );
     }
 }
