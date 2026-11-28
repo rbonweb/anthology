@@ -20,6 +20,7 @@ set -- \
     "$staging/anthology/hooks/bootstrap.sh" \
     "$staging/anthology/hooks/session-start.sh" \
     "$staging/anthology/hooks/no-attribution.sh" \
+    "$staging/anthology/hooks/slop-gate.sh" \
     "$staging/anthology/bin/anthology" \
     "$staging/anthology/bin/anthology-mem" \
     "$staging/anthology-guardrails/hooks/lib.sh" \

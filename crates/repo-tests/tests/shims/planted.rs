@@ -453,14 +453,15 @@ fn without_a_path_the_binary_gets_no_relative_entry() {
     });
 }
 
-/// The anthology plugin's other hooks (atl-hook, no-attribution.sh) run on the safe PATH from
-/// their first line.
+/// The anthology plugin's other hooks (atl-hook, no-attribution.sh, slop-gate.sh) run on the
+/// safe PATH from their first line.
 #[test]
 fn the_other_hooks_run_no_planted_tool() {
     let ask = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"x"}}"#;
     let atl_input =
         br#"{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"atl gain"}}"#;
     let attribution = br#"{"session_id":"s1","tool_name":"Bash","tool_input":{"command":"git commit -m \"fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>\""}}"#;
+    let slop_write = br#"{"session_id":"s1","tool_name":"Write","tool_input":{"file_path":"/r/docs/a.md","content":"x"}}"#;
     each_shell("planted tools, other hooks", |sh| {
         for entry in Entry::ALL {
             let c = format!("{sh:?} {entry:?}");
@@ -507,6 +508,16 @@ fn the_other_hooks_run_no_planted_tool() {
                 run.out().contains("\"permissionDecision\":\"deny\""),
                 "{c} no-attribution: {}",
                 run.out()
+            );
+            // slop-gate.sh: no binary is installed, so it allows, silently, and never installs.
+            let mut spec = sb.spec(sh, "plugins/anthology/hooks/slop-gate.sh", &[], slop_write);
+            spec.path = Some(planted_path(&sb, entry, &[]));
+            let run = sb.run_spec(spec);
+            assert_nothing_planted_ran(&sb, &format!("{c} slop-gate"));
+            assert_eq!(
+                (run.code, run.out(), run.err()),
+                (Some(0), String::new(), String::new()),
+                "{c} slop-gate"
             );
         }
     });

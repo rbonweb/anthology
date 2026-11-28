@@ -60,13 +60,13 @@ mod budget {
         ("architect", 23738),
         ("implementer", 26561),
         ("debugger", 22293),
-        ("reviewer", 17815), // GC-13 16672, plus the Shell section
-        ("scout", 7284),     // GC-13 5944, plus the Shell section
-        ("docs-writer", 31686),
-        ("ui-designer", 128097),
+        ("reviewer", 17815),     // GC-13 16672, plus the Shell section
+        ("scout", 7284),         // GC-13 5944, plus the Shell section
+        ("docs-writer", 75475),  // +humanizer rewrite pass (owner, 2026-11-28)
+        ("ui-designer", 148488), // +avoid-ai-design rubric (owner, 2026-11-28)
         ("ui-reviewer", 65986),
-        ("product-planner", 102779),
-        ("marketer", 54384),
+        ("product-planner", 145072), // +humanizer rewrite pass (owner, 2026-11-28)
+        ("marketer", 96668),         // +humanizer rewrite pass (owner, 2026-11-28)
     ];
 
     pub fn budget_of(name: &str) -> Option<usize> {
