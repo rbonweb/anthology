@@ -115,13 +115,13 @@ mod tests {
     fn only_the_part_below_the_root_is_checked() {
         // the repo itself lives in a folder called build: its own files are still gated
         assert!(!exempt(
-            p("/home/u/build/proj/docs/a.md"),
-            Some(p("/home/u/build/proj")),
+            p("/home/user/build/proj/docs/a.md"),
+            Some(p("/home/user/build/proj")),
             None
         ));
         assert!(exempt(
-            p("/home/u/build/proj/dist/a.md"),
-            Some(p("/home/u/build/proj")),
+            p("/home/user/build/proj/dist/a.md"),
+            Some(p("/home/user/build/proj")),
             None
         ));
     }
@@ -134,16 +134,16 @@ mod tests {
 
     #[test]
     fn the_config_dir_is_exempt() {
-        let cfg = Some(p("/home/u/.claude"));
-        assert!(exempt(p("/home/u/.claude/plugins/x.md"), None, cfg));
+        let cfg = Some(p("/home/user/.claude"));
+        assert!(exempt(p("/home/user/.claude/plugins/x.md"), None, cfg));
         assert!(exempt(
-            p("/home/u/.claude/plugins/x.md"),
-            Some(p("/home/u")),
+            p("/home/user/.claude/plugins/x.md"),
+            Some(p("/home/user")),
             cfg
         ));
         // a folder that only starts with the same letters is another folder
-        assert!(!exempt(p("/home/u/.claude-other/a.md"), None, cfg));
-        assert!(!exempt(p("/home/u/docs/a.md"), None, cfg));
+        assert!(!exempt(p("/home/user/.claude-other/a.md"), None, cfg));
+        assert!(!exempt(p("/home/user/docs/a.md"), None, cfg));
         // a config folder that has no exempt name still exempts what is under it
         let cfg = Some(p("/etc/cfg"));
         assert!(exempt(p("/etc/cfg/a.md"), None, cfg));
