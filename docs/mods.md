@@ -29,7 +29,9 @@ When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) r
 - no commit (a sha, or the word "committed");
 - no test evidence (a test word; "tests not run" or "skipped" counts as none);
 - attribution lines (`Co-Authored-By: Claude`, "Generated with") in the report, which must not be there;
-- uncommitted files in the agent's own worktree.
+- uncommitted files in the agent's own worktree;
+- AI tells in the agent's changes, as `anthology slop check` finds them (see [The slop gate](slop-gate.md)): the gap names the first three and asks the lead to send the agent back to rewrite them;
+- slop waivers or ignore regions the agent added: the gap names the first three and asks the lead to confirm the user asked for that wording.
 
 Two more items are reminders, not gaps. They ride in a block that a gap raised and never raise one:
 
@@ -38,7 +40,11 @@ Two more items are reminders, not gaps. They ride in a block that a gap raised a
 
 The agent's own text is never rewritten or cut. A report with no gap is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run.
 
-When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out). Any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are.
+When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out). Any git failure leaves the text-only check.
+
+The two slop gaps come from one more run in that worktree: `anthology slop check --since <the main session's HEAD>`, which looks at the lines the agent added and at the files it left untracked (4 second limit, plus a 1.5 second `git rev-parse HEAD`). The slop gate refuses a Write, Edit or MultiEdit that adds a tell, so this part is there for text that reached a file another way, such as a scaffolder or `sed` run through the shell, and for waivers. It adds nothing when the binary is not installed (the mod never downloads it), when the run times out or fails, or when the agent works in the main session's own folder.
+
+Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are.
 
 ## The status pane
 
@@ -75,4 +81,5 @@ Set these in the environment, for example in the `env` block of `~/.claude/setti
 | `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the status pane, and the read-only commands mod |
 | `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation (for one approved repo only: `{"delegation": false}` in its `.claude/anthology.json`, see [Your own agents and skills](agents.md#your-own-agents-and-skills)) |
 | `ANTHOLOGY_AFTERWORK=0` | Turns off the after-work check |
+| `ANTHOLOGY_SLOP_GATE=0` | Turns off the slop gate (see [The slop gate](slop-gate.md)) and its part of the after-work check |
 | `ANTHOLOGY_HOST_MODE=full` | Opts back in when another program drives the session (see [Host mode](agents.md#host-mode)) |
