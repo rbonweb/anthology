@@ -1105,11 +1105,13 @@ mod roster_test {
         let skill = flat(&skill);
         for needle in [
             "Before the first UI task",
-            "a Ruling per gap",
+            "leave public identity and legal facts out",
+            "a Ruling for the other gaps",
             "never default",
             "reference capture",
             "banned-names list",
-            "ui-reviewer on the rendered newest build, before merge",
+            "in a `user` note (personal memory)",
+            "ui-reviewer on the PR head, rendered, while CI runs",
             "names the build or URL",
             "never skip it",
             "by eye before running the batch",
@@ -1117,11 +1119,13 @@ mod roster_test {
         ] {
             assert!(section.contains(needle), "{needle}");
         }
+        // Project memory is committed: the owner's names must not go there.
+        assert!(!section.contains("in project memory"));
         for needle in [
             "from memory",
             "names its evidence",
             "`grep -c`",
-            "act only on asks",
+            "act only on what the owner or the plan asked for",
             "into one agent per unit",
             "reassign a slice only after its owner commits",
             "read every failed job",
@@ -1130,6 +1134,21 @@ mod roster_test {
         ] {
             assert!(skill.contains(needle), "{needle}");
         }
+    }
+
+    // website-clone (vendored, patched): the brand fallback is the project's name, never the words
+    // "the user's brand", which agents print literally; capture never changes account state.
+    #[test]
+    fn test_website_clone_patch_keeps_capture_read_only_and_brand_real() {
+        let skill = std::fs::read_to_string(repo::path(&format!(
+            "{PLUGIN}/knowledge/website-clone/SKILL.md"
+        )))
+        .expect("the website-clone skill");
+        assert!(skill.contains(
+            "Capture is read-only: never submit, buy, sign up, post or change account state on the source."
+        ));
+        assert!(!skill.contains("the words \"the user's brand\""));
+        assert!(skill.contains("the project's name, listed under the placeholders to fill"));
     }
 
     #[test]

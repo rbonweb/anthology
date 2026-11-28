@@ -36,10 +36,10 @@ Read this before the first task of a large or long build (many tasks, several ag
   lead merges that branch. The lead does not resolve it, in any file (docs
   and memory notes included). Why: resolving a conflict is code work, and the
   lead's context is for decisions; a conflict agent could not write main.
-- Answer questions; act only on asks. A setting nobody asked for, or one that
-  injects behaviour, is listed for approval, never applied. Why: an unasked
-  setting and an over-scoped brief both changed what the owner had not
-  agreed to.
+- Answer questions; act only on what the owner or the plan asked for. A
+  setting nobody asked for, or one that injects behaviour, is listed for
+  approval, never applied. Why: an unasked setting and an over-scoped brief
+  both changed what the owner had not agreed to.
 - An interim notice that an agent is "waiting on its own background work"
   needs no reply and no action. Why: the agent is still working, and a
   reply only adds noise.
@@ -239,18 +239,21 @@ Read this before the first task of a large or long build (many tasks, several ag
   fonts, one to three sites the owner likes, the focus style and the public
   identity (name, contact channels, which legal names may appear). Ask once
   for any identity or legal fact shown publicly; never default one. Owner
-  away: record a Ruling per gap and ask about them first on return. Why:
-  direction that came after the build reworked the same files about four
-  times.
+  away: leave public identity and legal facts out, and record a Ruling for
+  the other gaps; ask about all of them first on return. Why: direction that
+  came after the build reworked the same files about four times, and a
+  Ruling on a phone number or legal entity is a default.
 - A clone or like-X brief starts with the reference capture (BrowserOS, 1440
   and 390). Why: a checkout built from memory was rebuilt.
-- Keep a banned-names list (owner, legal entity, upstream brands) in project
-  memory, and put it in every UI brief and review. Why: forks and stores
-  leaked upstream and owner names.
-- A UI task's one review is ui-reviewer on the rendered newest build, before
-  merge. When the owner wants less review, shrink it to the measured pass,
-  never skip it; only an explicit owner "skip review" skips it. Why: in three
-  projects UI merged unreviewed, and the owner found the faults.
+- Keep a banned-names list (owner, legal entity, upstream brands) in a `user`
+  note (personal memory), and paste it into every UI brief and review. Why:
+  forks and stores leaked upstream and owner names, and project memory is
+  committed.
+- A UI task's one review is ui-reviewer on the PR head, rendered, while CI
+  runs, before merge. When the owner wants less review, shrink it to the
+  measured pass, never skip it; only an explicit owner "skip review" skips
+  it. Why: in three projects UI merged unreviewed, and the owner found the
+  faults.
 - A review or QA brief names the build or URL. Why: one audit round ran on
   the older live site.
 - Check the first capture by eye before running the batch, and take product
