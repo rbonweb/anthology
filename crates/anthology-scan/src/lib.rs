@@ -166,9 +166,10 @@ pub struct Scan {
     pub scan_ms: u64,
 }
 
-/// Scans `tree` (Task 2). The stub finds nothing.
-pub fn scan(_tree: &tree::DiskTree) -> Scan {
-    Scan::default()
+/// Scans `tree`: every file through the rules, then each auto-run surface chained to the files it
+/// runs (Task 2).
+pub fn scan(tree: &tree::DiskTree) -> Scan {
+    scan::run(tree)
 }
 
 #[cfg(test)]
