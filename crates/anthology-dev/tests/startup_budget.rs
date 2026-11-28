@@ -278,11 +278,11 @@ mod lead_extras {
             BUDGET,
             [
                 ("researcher", 89267),
-                ("architect", 23738),
+                ("architect", 24131), // +393 credential path rule (owner, 2026-11-28)
                 ("implementer", 26561),
-                ("debugger", 22293),
+                ("debugger", 22686), // +393 credential path rule (owner, 2026-11-28)
                 ("reviewer", 17815), // GC-13 16672, plus the Shell section
-                ("scout", 7284),     // GC-13 5944, plus the Shell section
+                ("scout", 7677), // GC-13 5944, plus the Shell section; +393 credential path rule (owner, 2026-11-28)
                 ("docs-writer", 75475),
                 ("ui-designer", 148488),
                 ("ui-reviewer", 65986),

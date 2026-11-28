@@ -4,7 +4,7 @@
 //! `view.code` or, for copy, `view.text`. Every pattern names a fixed value or shape, so a hit is
 //! a tell and not a matter of taste.
 
-use super::color::{colors_in, is_violet};
+use super::color::{Rgba, colors_in, is_blue_to_pink, is_violet, is_violet_family};
 use crate::{Hit, Span, View, excerpt};
 use regex::Regex;
 use std::collections::HashMap;
@@ -13,6 +13,9 @@ use std::sync::LazyLock;
 /// Custom properties resolve at most this many links deep, and never past this many bytes.
 const MAX_VAR_DEPTH: usize = 6;
 const MAX_RESOLVED: usize = 1 << 16;
+/// A gradient call longer than this many bytes is not read: no real one is, and a long one that
+/// holds other calls (nested to any depth) would make the work grow with the square of the text.
+const MAX_CALL: usize = 4096;
 /// `filter: blur(n)` is an orb from this many pixels.
 const MIN_ORB_BLUR: u64 = 24;
 
@@ -22,6 +25,13 @@ fn re(pattern: &str) -> Regex {
 
 static GRADIENT_CALL: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)(?:linear|radial|conic)-gradient\("));
+/// The first item of a gradient's arguments when it is no colour stop: an angle, a direction
+/// (`to right`), a shape or size (`circle`, `ellipse`, `closest-side`), a position (`at 30% 20%`),
+/// a conic start (`from 0deg`) or a colour space (`in oklch`).
+static PRELUDE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^(?:[-+.\d]|(?:to|from|in|at)\s|circle|ellipse|closest-|farthest-)"));
+/// A colour hint between two stops: a bare length or percentage.
+static HINT: LazyLock<Regex> = LazyLock::new(|| re(r"^[-+]?(?:\d+\.?\d*|\.\d+)(?:%|[A-Za-z]+)?$"));
 static VAR_DECL: LazyLock<Regex> = LazyLock::new(|| re(r#"(--[A-Za-z0-9_-]+)\s*:\s*([^;{}"']*)"#));
 static VAR_USE: LazyLock<Regex> =
     LazyLock::new(|| re(r"var\(\s*(--[A-Za-z0-9_-]+)\s*(?:,[^()]*)?\)"));
@@ -97,10 +107,8 @@ pub(crate) fn purple_gradient(view: &View) -> Vec<Hit> {
     const ID: &str = "ui.purple-gradient";
     let mut calls = Vec::new();
     for (base, css) in regions(&view.code, &view.style) {
-        for m in GRADIENT_CALL.find_iter(css) {
-            if let Some(end) = call_end(css, m.end() - 1) {
-                calls.push((shift(base, m.start(), end), &css[m.end()..end - 1]));
-            }
+        for (start, open, end) in gradient_calls(css) {
+            calls.push((shift(base, start, end), &css[open + 1..end - 1]));
         }
     }
     let vars = if calls.iter().any(|(_, arg)| arg.contains("var(")) {
@@ -110,7 +118,7 @@ pub(crate) fn purple_gradient(view: &View) -> Vec<Hit> {
     };
     let mut hits: Vec<Hit> = calls
         .into_iter()
-        .filter(|(_, arg)| colors_in(&resolve(arg, &vars)).into_iter().any(is_violet))
+        .filter(|(_, arg)| is_purple_stock(&stops(&resolve(arg, &vars))))
         .map(|(span, _)| hit(ID, &view.code, span, Vec::new()))
         .collect();
     hits.extend(class_hits(view, ID, |v| {
@@ -273,24 +281,96 @@ fn declarations(base: usize, body: &str, first: &Regex, second: &Regex) -> Optio
     ))
 }
 
-/// The byte after the `)` that closes the `(` at `open`, or None when a `;`, `{` or `}` comes
-/// first or the text ends.
-fn call_end(css: &str, open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    for (i, b) in css.bytes().enumerate().skip(open) {
+/// Each gradient call in `css` as `(start, open, end)`: where its name starts, its `(`, and the byte
+/// after the `)` that closes it. A call is dropped when a `;`, `{` or `}` comes before its `)`, when
+/// the text ends first, or when it is longer than `MAX_CALL`.
+///
+/// One pass over `css` pairs every `(` with its `)` on a stack, so the work is linear however many
+/// calls are left open or nested. The old search from each call to the end of the text was quadratic.
+fn gradient_calls(css: &str) -> Vec<(usize, usize, usize)> {
+    let names: Vec<(usize, usize)> = GRADIENT_CALL
+        .find_iter(css)
+        .map(|m| (m.start(), m.end() - 1))
+        .collect();
+    let mut ends: Vec<Option<usize>> = vec![None; names.len()];
+    // Open parentheses not yet closed, with the index of the gradient call each one starts.
+    let mut open: Vec<(usize, Option<usize>)> = Vec::new();
+    let mut next = 0;
+    for (i, b) in css.bytes().enumerate() {
         match b {
-            b'(' => depth += 1,
+            b'(' => {
+                let call = (names.get(next).map(|n| n.1) == Some(i)).then_some(next);
+                next += usize::from(call.is_some());
+                open.push((i, call));
+            }
             b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i + 1);
+                if let Some((from, Some(call))) = open.pop()
+                    && i + 1 - from <= MAX_CALL
+                {
+                    ends[call] = Some(i + 1);
                 }
             }
-            b';' | b'{' | b'}' => return None,
+            b';' | b'{' | b'}' => open.clear(),
             _ => {}
         }
     }
-    None
+    names
+        .into_iter()
+        .zip(ends)
+        .filter_map(|((start, open), end)| end.map(|end| (start, open, end)))
+        .collect()
+}
+
+/// The colour stops of a gradient's arguments, each as the colours it holds: the items between
+/// top-level commas, without the leading angle, shape or position and without colour hints (a bare
+/// length or percentage).
+fn stops(args: &str) -> Vec<Vec<Rgba>> {
+    let mut items = top_level_items(args);
+    if items.first().is_some_and(|first| PRELUDE.is_match(first)) {
+        items.remove(0);
+    }
+    items
+        .into_iter()
+        .filter(|item| !item.is_empty() && !HINT.is_match(item))
+        .map(colors_in)
+        .collect()
+}
+
+/// `args` cut at the commas outside parentheses, each part trimmed.
+fn top_level_items(args: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let (mut depth, mut from) = (0usize, 0usize);
+    for (i, b) in args.bytes().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                items.push(args[from..i].trim());
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(args[from..].trim());
+    items
+}
+
+/// The stock purple gradient: two or three stops with a violet among them, and either every stop
+/// violet, indigo, purple or pink-violet, or (two stops) the other end a saturated blue or pink.
+/// A stop with several colours (a var declared for a light and a dark theme) counts when any one
+/// of them does. A longer list is a legend, a hue slider or a brand palette, not the tell.
+fn is_purple_stock(stops: &[Vec<Rgba>]) -> bool {
+    if !(2..=3).contains(&stops.len()) {
+        return false;
+    }
+    let every = |is: fn(Rgba) -> bool| stops.iter().all(|s| s.iter().copied().any(is));
+    let violet = stops.iter().any(|s| s.iter().copied().any(is_violet));
+    violet
+        && if stops.len() == 2 {
+            every(is_blue_to_pink)
+        } else {
+            every(is_violet_family)
+        }
 }
 
 /// Every `--name: value` declaration in `code`. A name declared twice (a light and a dark theme)
@@ -392,10 +472,10 @@ mod tests {
     #[test]
     fn every_gradient_kind_and_colour_form_counts() {
         for doc in [
-            "a { background: radial-gradient(circle, hsl(262 83% 58%), transparent); }",
-            "a { background: conic-gradient(from 0deg, rgba(124, 58, 237, 0.4), #fff); }",
-            "a { background: repeating-linear-gradient(45deg, #fff, #8b5cf6 10px); }",
-            "a { background: LINEAR-GRADIENT(to right, #6366F1, white); }",
+            "a { background: radial-gradient(circle, hsl(262 83% 58%), hsl(330 80% 60%)); }",
+            "a { background: conic-gradient(from 0deg, rgba(124, 58, 237, 0.4), #ec4899); }",
+            "a { background: repeating-linear-gradient(45deg, #3b82f6, #8b5cf6 10px); }",
+            "a { background: LINEAR-GRADIENT(to right, #6366F1, #A855F7); }",
         ] {
             assert_eq!(purple_gradient(&css(doc)).len(), 1, "{doc}");
         }
@@ -403,29 +483,33 @@ mod tests {
 
     #[test]
     fn a_var_is_resolved_against_its_declaration() {
-        let doc =
-            ":root { --brand: #7c3aed; }\n.a { background: linear-gradient(var(--brand), white); }";
+        let doc = ":root { --brand: #7c3aed; }\n.a { background: linear-gradient(var(--brand), #3b82f6); }";
         let hits = purple_gradient(&css(doc));
-        assert_eq!(seen(doc, &hits), ["linear-gradient(var(--brand), white)"]);
-        let chained = ":root { --a: var(--b); --b: var(--c); --c: #7c3aed; }\n.a { background: linear-gradient(var(--a), white); }";
+        assert_eq!(seen(doc, &hits), ["linear-gradient(var(--brand), #3b82f6)"]);
+        let chained = ":root { --a: var(--b); --b: var(--c); --c: #7c3aed; }\n.a { background: linear-gradient(var(--a), #3b82f6); }";
         assert_eq!(purple_gradient(&css(chained)).len(), 1);
-        let plain =
-            ":root { --brand: #3b82f6; }\n.a { background: linear-gradient(var(--brand), white); }";
+        let plain = ":root { --brand: #3b82f6; }\n.a { background: linear-gradient(var(--brand), #0ea5e9); }";
         assert!(purple_gradient(&css(plain)).is_empty());
+        let list = ":root { --stops: #6366f1, #a855f7; }\n.a { background: linear-gradient(90deg, var(--stops)); }";
+        assert_eq!(
+            purple_gradient(&css(list)).len(),
+            1,
+            "a var may hold both stops"
+        );
     }
 
     #[test]
     fn var_resolution_stops_at_depth_six_and_on_cycles() {
-        let deep = ":root { --a: var(--b); --b: var(--c); --c: var(--d); --d: var(--e); --e: var(--f); --f: var(--g); --g: #7c3aed; }\n.a { background: linear-gradient(var(--a), white); }";
+        let deep = ":root { --a: var(--b); --b: var(--c); --c: var(--d); --d: var(--e); --e: var(--f); --f: var(--g); --g: #7c3aed; }\n.a { background: linear-gradient(var(--a), #3b82f6); }";
         assert!(
             purple_gradient(&css(deep)).is_empty(),
             "seven links are past the depth"
         );
-        let cycle = ":root { --a: var(--a) var(--a); }\n.a { background: linear-gradient(var(--a), white); }";
+        let cycle = ":root { --a: var(--a) var(--a); }\n.a { background: linear-gradient(var(--a), #3b82f6); }";
         assert!(purple_gradient(&css(cycle)).is_empty());
-        let missing = ".a { background: linear-gradient(var(--nowhere), white); }";
+        let missing = ".a { background: linear-gradient(var(--nowhere), #3b82f6); }";
         assert!(purple_gradient(&css(missing)).is_empty());
-        let fallback = ".a { background: linear-gradient(var(--nowhere, #6366f1), white); }";
+        let fallback = ".a { background: linear-gradient(var(--nowhere, #6366f1), #3b82f6); }";
         assert_eq!(purple_gradient(&css(fallback)).len(), 1);
     }
 
@@ -441,6 +525,95 @@ mod tests {
         assert!(
             purple_gradient(&css(open)).is_empty(),
             "an unclosed call is no call"
+        );
+    }
+
+    #[test]
+    fn a_viridis_legend_is_not_a_purple_gradient() {
+        let doc = ".legend { background: linear-gradient(90deg,#440154,#3b528b,#21918c,#5ec962,#fde725); }";
+        assert!(purple_gradient(&css(doc)).is_empty());
+        let short = ".legend { background: linear-gradient(90deg, #440154, #21918c, #fde725); }";
+        assert!(purple_gradient(&css(short)).is_empty());
+    }
+
+    #[test]
+    fn a_hue_slider_is_not_a_purple_gradient() {
+        let doc = ".hue { background: linear-gradient(to right, hsl(0 100% 50%), hsl(60 100% 50%), hsl(120 100% 50%), hsl(180 100% 50%), hsl(240 100% 50%), hsl(300 100% 50%), hsl(360 100% 50%)); }";
+        assert!(purple_gradient(&css(doc)).is_empty());
+    }
+
+    #[test]
+    fn a_brand_gradient_with_discord_blurple_is_not_a_purple_gradient() {
+        for stops in ["#5865f2, #57f287", "#5865f2, #23272a", "#5865f2, #ffffff"] {
+            let doc = format!(".brand {{ background: linear-gradient(135deg, {stops}); }}");
+            assert!(purple_gradient(&css(&doc)).is_empty(), "{stops}");
+        }
+        let four =
+            ".brand { background: linear-gradient(90deg, #5865f2, #7289da, #99aab5, #eb459e); }";
+        assert!(purple_gradient(&css(four)).is_empty());
+    }
+
+    #[test]
+    fn four_stops_are_never_a_purple_gradient() {
+        let doc = ".a { background: linear-gradient(90deg, #6366f1, #7c3aed, #a855f7, #d946ef); }";
+        assert!(purple_gradient(&css(doc)).is_empty());
+    }
+
+    #[test]
+    fn the_classic_violet_pairs_and_triples_are_still_flagged() {
+        for doc in [
+            ".a { background: linear-gradient(135deg, #6366f1, #a855f7); }",
+            ".a { background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%); }",
+            ".a { background: linear-gradient(to right, #6366f1, #8b5cf6, #d946ef); }",
+            ".a { background: linear-gradient(135deg, #6366f1, #3b82f6); }",
+            ".a { background: linear-gradient(135deg, #8b5cf6, #ec4899); }",
+            ".a { background: radial-gradient(circle at 30% 20%, #a855f7, #6366f1); }",
+            ".a { background: linear-gradient(0.25turn, #6366f1, 40%, #a855f7); }",
+            ".a { background: linear-gradient(in oklch to right, #6366f1, #a855f7); }",
+        ] {
+            assert_eq!(purple_gradient(&css(doc)).len(), 1, "{doc}");
+        }
+    }
+
+    #[test]
+    fn a_violet_next_to_green_or_a_neutral_is_not_the_classic_pair() {
+        for doc in [
+            ".a { background: linear-gradient(135deg, #6366f1, #22c55e); }",
+            ".a { background: linear-gradient(135deg, #6366f1, #f97316); }",
+            ".a { background: linear-gradient(135deg, #6366f1, white); }",
+            ".a { background: linear-gradient(135deg, #6366f1, transparent); }",
+            ".a { background: linear-gradient(135deg, #6366f1, #a855f7, #22c55e); }",
+            ".a { background: linear-gradient(#6366f1); }",
+        ] {
+            assert!(purple_gradient(&css(doc)).is_empty(), "{doc}");
+        }
+    }
+
+    #[test]
+    fn unclosed_gradient_calls_are_scanned_once() {
+        let doc = "linear-gradient(".repeat((1 << 20) / "linear-gradient(".len());
+        let start = std::time::Instant::now();
+        assert!(purple_gradient(&css(&doc)).is_empty());
+        let took = start.elapsed();
+        assert!(took.as_secs() < 10, "1 MiB of unclosed calls took {took:?}");
+    }
+
+    #[test]
+    fn deeply_nested_gradient_calls_stay_cheap() {
+        let depth = (1 << 20) / ("linear-gradient(".len() + 1);
+        let doc = format!(
+            "{}#6366f1, #a855f7{}",
+            "linear-gradient(".repeat(depth),
+            ")".repeat(depth)
+        );
+        let start = std::time::Instant::now();
+        let hits = purple_gradient(&css(&doc));
+        let took = start.elapsed();
+        assert!(took.as_secs() < 10, "1 MiB of nested calls took {took:?}");
+        assert_eq!(
+            hits.len(),
+            1,
+            "only the innermost call is a gradient of two stops"
         );
     }
 
