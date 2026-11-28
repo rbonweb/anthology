@@ -4,7 +4,8 @@
 //! None of it is proof of bad intent, so each is LOW; it is a place to look. The scan itself never
 //! reads these files to configure a tool (the tool runner passes its own config).
 
-use super::agent::{clip, line_at, name_of};
+use super::agent::{clip, name_of};
+use crate::files::line_of;
 use crate::{FileCtx, Finding, Group, Severity};
 
 /// File names (at any depth) that configure or silence a scanner.
@@ -65,7 +66,7 @@ pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
         group: Group::Scanner,
         rule: "scanner.inline-suppress".to_string(),
         path: f.path.to_string(),
-        line: line_at(text, at),
+        line: line_of(text, at),
         why: "A comment tells a scanner to skip a line, so that line was not checked for secrets or bugs.".to_string(),
         seen: clip(text[line_start..line_end].trim()),
         action: "Read the line the comment silences.".to_string(),

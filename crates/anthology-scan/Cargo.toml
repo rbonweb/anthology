@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
-description = "check-repo: the malicious-code scan of a repo tree (reads files only, no env reads)"
+description = "check-repo: the malicious-code scan of a repo tree (reads files only; the scan reads no environment, fetch and the tools read four variables)"
 
 [lints]
 workspace = true
