@@ -3,7 +3,8 @@
 //!
 //! - `hook`: stdin is the Claude Code PreToolUse JSON. Exit 0 allows (no output); exit
 //!   `HOOK_BLOCK` blocks, with the message on stderr. Every failure, and a panic, allows: the
-//!   gate fails open, and only `HOOK_BLOCK` refuses an edit.
+//!   gate fails open, and only `HOOK_BLOCK` refuses an edit. The rule work runs on a thread of its
+//!   own with `HOOK_DEADLINE` to finish; past it the hook allows, with one line on stderr.
 //! - `check [--root DIR] [--since REF] [PATH...]`: one line per unwaived finding, then one per
 //!   waiver in the new text. Exit 0 none unwaived, 1 some, 2 a usage or git error.
 //! - `rules`: one tab-separated line per rule.
@@ -13,12 +14,14 @@ use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use anthology_core::Env;
 use anthology_core::git::{Git, RealGit};
 use anthology_pycompat::json::{self, Map, Value};
 use anthology_slop::edit::{self, ToolEdit};
-use anthology_slop::{MAX_DOC, Span, paths, report};
+use anthology_slop::{Finding, Kind, MAX_DOC, Span, paths, report};
 
 use super::Output;
 
@@ -59,21 +62,84 @@ fn guarded(f: impl FnOnce() -> Output) -> Output {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_default()
 }
 
+/// How long the hook works on the rules before it gives up and allows the edit. A rule that runs
+/// away on its input must not hold the edit until Claude Code's own timeout, which blocks.
+const HOOK_DEADLINE: Duration = Duration::from_secs(5);
+
+/// The one line on stderr when `HOOK_DEADLINE` passes. The exit code is 0.
+const SKIPPED: &str = "anthology slop: the check was skipped, it ran past the 5 s limit\n";
+
+/// The stack of the thread that runs the rules: more than a spawned thread gets by default, as
+/// much as the main thread has.
+const WORKER_STACK: usize = 8 << 20;
+
+/// The rules, as `anthology_slop::check`; a test passes a slower one.
+type Rules = fn(Kind, &str, &[Span]) -> Vec<Finding>;
+
 /// The hook on its input text: exit 0 with no output, or `HOOK_BLOCK` with the message.
 fn hook_with(env: &Env, raw: &str) -> Output {
-    match refusal(env, raw) {
-        Some(message) => Output {
+    hook_within(env, raw, HOOK_DEADLINE, anthology_slop::check)
+}
+
+/// `hook_with`, with the time the rule work may take and the rules it runs.
+fn hook_within(env: &Env, raw: &str, deadline: Duration, rules: Rules) -> Output {
+    match verdict(env, raw, deadline, rules) {
+        Some(Verdict::Block(message)) => Output {
             stderr: message.into_bytes(),
             code: HOOK_BLOCK,
+            ..Output::default()
+        },
+        Some(Verdict::TimedOut) => Output {
+            stderr: SKIPPED.as_bytes().to_vec(),
             ..Output::default()
         },
         None => Output::default(),
     }
 }
 
-/// The refusal message for this tool call, or None to allow it. Every step that cannot be
-/// completed allows.
-fn refusal(env: &Env, raw: &str) -> Option<String> {
+/// What the hook decided when it did not simply allow.
+enum Verdict {
+    /// Refuse, with this message.
+    Block(String),
+    /// The rule work did not finish in time: allow, and say so.
+    TimedOut,
+}
+
+/// How a piece of work ended.
+enum Within<T> {
+    Done(T),
+    TimedOut,
+    /// It panicked, or its thread could not start.
+    Failed,
+}
+
+/// Runs `work` on a thread of its own and waits up to `limit` for it. A run that is still going
+/// is left behind: the process ends with the hook, and takes the thread with it.
+fn within<T: Send + 'static>(
+    limit: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Within<T> {
+    let (tx, rx) = mpsc::channel();
+    let spawned = std::thread::Builder::new()
+        .name("slop-rules".to_string())
+        .stack_size(WORKER_STACK)
+        .spawn(move || {
+            // The receiver is gone when the deadline has passed.
+            let _ = tx.send(work());
+        });
+    if spawned.is_err() {
+        return Within::Failed;
+    }
+    match rx.recv_timeout(limit) {
+        Ok(done) => Within::Done(done),
+        Err(mpsc::RecvTimeoutError::Timeout) => Within::TimedOut,
+        Err(mpsc::RecvTimeoutError::Disconnected) => Within::Failed,
+    }
+}
+
+/// The verdict for this tool call, or None to allow it. Every step that cannot be completed
+/// allows. The work from the edit replay to the last rule has `deadline` to finish.
+fn verdict(env: &Env, raw: &str, deadline: Duration, rules: Rules) -> Option<Verdict> {
     if env.get_os("ANTHOLOGY_SLOP_GATE") == Some(OsStr::new("0")) {
         return None;
     }
@@ -96,19 +162,28 @@ fn refusal(env: &Env, raw: &str) -> Option<String> {
     }
     let edit = tool_edit(tool, tool_input)?;
     let before = read_doc(&path)?;
-    let (after, new) = edit::apply(before.as_deref(), &edit)?;
-    if after.len() > MAX_DOC {
-        return None;
-    }
-    let findings: Vec<_> = anthology_slop::check(kind, &after, &new)
-        .into_iter()
-        .filter(|f| f.waiver.is_none())
-        .collect();
+    let tool = edit.tool();
+    let grain = edit::grain(kind);
+    let work = move || {
+        let (after, new) = edit::apply_with(before.as_deref(), &edit, grain)?;
+        if after.len() > MAX_DOC {
+            return None;
+        }
+        Some(rules(kind, &after, &new))
+    };
+    let found = match within(deadline, work) {
+        Within::Done(found) => found?,
+        Within::TimedOut => return Some(Verdict::TimedOut),
+        Within::Failed => return None,
+    };
+    let findings: Vec<_> = found.into_iter().filter(|f| f.waiver.is_none()).collect();
     if findings.is_empty() {
         return None;
     }
     let shown = paths::shown(&path, root.as_deref());
-    Some(report::hook_message(edit.tool(), &shown, kind, &findings))
+    Some(Verdict::Block(report::hook_message(
+        tool, &shown, kind, &findings,
+    )))
 }
 
 /// The edit a Write, Edit or MultiEdit input describes; None when a field is missing or has the
@@ -359,7 +434,14 @@ fn path_files(base: &Path, args: &[PathBuf], config: &Path) -> Result<Vec<CheckF
         if paths::exempt(&path, root.as_deref(), Some(config)) {
             continue;
         }
-        let shown = paths::shown(&path, Some(root.as_deref().unwrap_or(base)));
+        // From the folder the user checks from (`--root`, else the cwd), so a file of a clone below
+        // it is not shown from the clone's own root. A path outside it is shown from its repo.
+        let from = if path.starts_with(base) {
+            base
+        } else {
+            root.as_deref().unwrap_or(base)
+        };
+        let shown = paths::shown(&path, Some(from));
         files.push(CheckFile {
             path,
             shown,
@@ -369,6 +451,10 @@ fn path_files(base: &Path, args: &[PathBuf], config: &Path) -> Result<Vec<CheckF
     Ok(files)
 }
 
+/// Walks `dir`, below the folder the user named. A folder below it that holds a `.git` folder is a
+/// clone of another repo (git's own listing leaves it out too), so it is not entered; the folder
+/// named on the command line is, whatever it holds. A `.git` file marks a submodule or a worktree,
+/// which is walked.
 fn walk(dir: &Path, config: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -381,7 +467,8 @@ fn walk(dir: &Path, config: &Path, out: &mut Vec<PathBuf>) {
         };
         let path = entry.path();
         if kind.is_dir() {
-            if !paths::exempt(&path, paths::repo_root(&path).as_deref(), Some(config)) {
+            let clone = path.join(".git").is_dir();
+            if !clone && !paths::exempt(&path, paths::repo_root(&path).as_deref(), Some(config)) {
                 walk(&path, config, out);
             }
         } else if kind.is_file() {
@@ -601,6 +688,7 @@ fn side(range: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn a_panic_in_the_hook_allows() {
@@ -627,6 +715,86 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&out.stderr)
         );
+    }
+
+    /// A Write of a tell to a file that does not exist, as hook input, and an env for it.
+    fn tell_input(tmp: &tempfile::TempDir) -> (Env, String) {
+        let file = tmp.path().join("a.md");
+        let raw = format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}","content":"We delve into it."}}}}"#,
+            file.display()
+        );
+        (Env::default().with_os("HOME", tmp.path().join("user")), raw)
+    }
+
+    /// A rule run that never ends in time: a stand-in for a rule that runs away on its input.
+    fn runaway(_: anthology_slop::Kind, _: &str, _: &[Span]) -> Vec<anthology_slop::Finding> {
+        std::thread::sleep(Duration::from_secs(30));
+        Vec::new()
+    }
+
+    #[test]
+    fn rule_work_past_the_deadline_allows_with_one_stderr_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (env, raw) = tell_input(&tmp);
+        let start = Instant::now();
+        let out = hook_within(&env, &raw, Duration::from_millis(100), runaway);
+        // the hook returns when the deadline passes, not when the rule is done
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.is_empty());
+        assert_eq!(out.stderr, SKIPPED.as_bytes());
+        assert_eq!(out.stderr.iter().filter(|&&b| b == b'\n').count(), 1);
+        let line = String::from_utf8_lossy(&out.stderr);
+        assert!(line.contains("skipped") && line.contains("5 s"), "{line}");
+    }
+
+    #[test]
+    fn the_deadline_is_five_seconds() {
+        assert_eq!(HOOK_DEADLINE, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn rule_work_inside_the_deadline_still_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (env, raw) = tell_input(&tmp);
+        let out = hook_within(&env, &raw, Duration::from_secs(60), anthology_slop::check);
+        assert_eq!(out.code, HOOK_BLOCK);
+        assert!(String::from_utf8_lossy(&out.stderr).contains("text.ai-vocab"));
+    }
+
+    #[test]
+    fn a_panic_in_the_rule_work_allows_without_the_skip_line() {
+        fn boom(_: anthology_slop::Kind, _: &str, _: &[Span]) -> Vec<anthology_slop::Finding> {
+            panic!("boom")
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let (env, raw) = tell_input(&tmp);
+        let out = hook_within(&env, &raw, Duration::from_secs(60), boom);
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.is_empty() && out.stderr.is_empty());
+    }
+
+    #[test]
+    fn a_hook_with_nothing_to_check_never_waits_for_a_deadline() {
+        // the switch and an unchecked kind allow before any rule work starts
+        let tmp = tempfile::tempdir().unwrap();
+        let (env, raw) = tell_input(&tmp);
+        let out = hook_within(
+            &env.with("ANTHOLOGY_SLOP_GATE", "0"),
+            &raw,
+            Duration::ZERO,
+            runaway,
+        );
+        assert_eq!((out.code, out.stderr.len()), (0, 0));
+        let raw = raw.replace("a.md", "a.rs");
+        let (env, _) = tell_input(&tmp);
+        let out = hook_within(&env, &raw, Duration::ZERO, runaway);
+        assert_eq!((out.code, out.stderr.len()), (0, 0));
     }
 
     #[test]

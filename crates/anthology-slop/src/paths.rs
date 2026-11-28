@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 /// A path whose part below the repo root has one of these components is exempt, in any case.
-pub const EXEMPT_DIRS: [&str; 15] = [
+pub const EXEMPT_DIRS: [&str; 17] = [
     ".git",
     ".claude",
     ".superpowers",
@@ -20,6 +20,8 @@ pub const EXEMPT_DIRS: [&str; 15] = [
     "__fixtures__",
     "__snapshots__",
     "__tests__",
+    "__mocks__",
+    "testdata",
     "stories",
 ];
 
@@ -181,6 +183,28 @@ mod tests {
             "/r/docs/building/a.md",
             "/r/docs/distribution/a.md",
             "/r/docs/not-node_modules/a.md",
+        ] {
+            assert!(!exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_data_and_mock_folders_are_exempt() {
+        // review-2 M5: Go's `testdata/` and Jest's `__mocks__/` hold fixtures, as `fixtures/` does
+        for path in [
+            "/r/testdata/slop.md",
+            "/r/pkg/testdata/in/a.md",
+            "/r/src/__mocks__/a.tsx",
+            "/r/src/TestData/a.md",
+            "/r/src/__MOCKS__/a.tsx",
+        ] {
+            assert!(exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+        // only a whole component counts
+        for path in [
+            "/r/docs/test-data/a.md",
+            "/r/src/mocks/a.tsx",
+            "/r/docs/data/a.md",
         ] {
             assert!(!exempt(p(path), Some(p("/r")), None), "{path}");
         }

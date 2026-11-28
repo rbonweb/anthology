@@ -33,10 +33,12 @@ A file is checked only up to 1 MiB. A bigger one is allowed unchecked.
 
 The gate checks what a call adds, not the file it lands in. It builds the file as it would be after the call and keeps only the hits that touch new text. A hit counts when any part of it does.
 
-- **`Edit`.** The text of `new_string`. The gate sees the whole file, so an edit inside an existing code fence or frontmatter lands in code and is not flagged, even though `new_string` holds no fence marker.
-- **`MultiEdit`.** The edits are applied in order, and the new lines are the lines that differ at the end.
+- **`Edit`.** What `new_string` changes in `old_string`. The gate sees the whole file, so an edit inside an existing code fence or frontmatter lands in code and is not flagged, even though `new_string` holds no fence marker.
+- **`MultiEdit`.** The edits are applied in order, and what differs at the end is new.
 - **`Write` to a new file.** The whole content.
-- **`Write` over an existing file.** The lines that were not in the old file. Old and new lines are matched one for one: a line you kept is not new, even when it appears twice, but a copy you added is. Blank lines are skipped. A file that already holds a tell can be rewritten as long as the rewrite adds none.
+- **`Write` over an existing file.** What differs from the old file. Old and new lines are matched one for one: a line you kept is not new, even when it appears twice, but a copy you added is. Blank lines are skipped. A file that already holds a tell can be rewritten as long as the rewrite adds none.
+
+How much of a changed line is new depends on the file. In Markdown it is the words that changed. A line often holds a whole paragraph that somebody else wrote, so fixing one typo in it does not bring an old `seamless` on the same line back. A rewritten line, one that shares fewer than half of its words with the line it replaced, is new as a whole. Whitespace is not a change. In HTML, JSX and CSS the whole changed line is new, because a design rule reads the code around the change.
 
 The two density rules count only the new text too: the dashes and the words in it.
 
@@ -96,7 +98,7 @@ Use a waiver only for wording the user asked for word for word, such as a produc
 
 - Any file whose extension is not in the table above.
 - Anything under the Claude config folder: `CLAUDE_CONFIG_DIR`, else `~/.claude`.
-- A file with one of these folder names in its path below the repository root, in any letter case: `.git`, `.claude`, `.superpowers`, `node_modules`, `vendor`, `third_party`, `dist`, `build`, `.next`, `coverage`, `fixtures`, `__fixtures__`, `__snapshots__`, `__tests__` and `stories`. The root is the nearest folder above the file that holds `.git`, as a folder or a file. With no such folder, the whole path is searched for those names.
+- A file with one of these folder names in its path below the repository root, in any letter case: `.git`, `.claude`, `.superpowers`, `node_modules`, `vendor`, `third_party`, `dist`, `build`, `.next`, `coverage`, `fixtures`, `__fixtures__`, `__snapshots__`, `__tests__`, `__mocks__`, `testdata` and `stories`. The root is the nearest folder above the file that holds `.git`, as a folder or a file. With no such folder, the whole path is searched for those names.
 - A git submodule inside one of those folders, such as `vendor/lib`. It has its own `.git` file, so the search goes on above it, up to the repository that holds it.
 - A story or test file: a name with `.stories.`, `.test.` or `.spec.` in it, such as `Button.stories.tsx` or `guide.test.md`.
 
@@ -124,7 +126,7 @@ anthology slop check --root ../app --since main
 anthology slop rules                       list the rules
 ```
 
-- **Paths.** Each file is checked whole. A folder is walked, and the exempt folders (see [Files it skips](#files-it-skips)) are left out.
+- **Paths.** Each file is checked whole. A folder is walked, and the exempt folders (see [Files it skips](#files-it-skips)) are left out, and so is a folder below it that holds a `.git` folder, because that is a clone of another repo (a vendor cache, say). A clone named on the command line is checked. Paths in the output are relative to `--root`, else to the current folder.
 - **`--since REF`.** Checks the lines added between the merge base of `REF` and `HEAD` and your working tree, plus every untracked file in full. Deleted files are skipped.
 - **`--root DIR`.** Runs the git commands of `--since` in `DIR`.
 - **Output.** One line per unwaived finding, then one line per waiver or ignore region in the new text:
@@ -178,3 +180,4 @@ To let one passage through, quote it or waive it instead (see [Quotes, specimens
 - **Quoted spans are not checked.** Text inside double quotes, a code span or a blockquote passes, so a tell can hide there.
 - **Known tells only.** A new habit passes until someone adds its rule, and a clean page can still be dull.
 - **The hook fails open.** When the binary is missing, too old to know `slop`, or crashes, the edit goes through. Only the binary's own refusal blocks it. The hook never downloads the binary: the session start does.
+- **A slow check is skipped.** The hook gives its rule work 5 seconds. A run that would pass the 60-second hook timeout, which blocks the edit, stops at the 5-second deadline and allows the edit instead. The binary prints `anthology slop: the check was skipped, it ran past the 5 s limit` on stderr, and that edit is not checked at all.
