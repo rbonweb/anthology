@@ -2,7 +2,8 @@
 //!
 //! "No false alarms" (plan, Global Constraints) is a promise about real repos; this repo is the
 //! first one it is held to. Indicator literals in Rust test sources are split (`concat!`) so the
-//! scan stays clean without an exclusion; the scan runs with no exclusions at all.
+//! scan stays clean without an exclusion. The scan reads every file; the one finding it lets
+//! through is a row of `ALLOWED` below, with its reason, for the lead to review.
 //!
 //! The same file pins the rest of Task 15: the network corpus (`ci/check-repo-corpus.tsv`, its job
 //! script and workflow) and the fuzz target.
@@ -33,13 +34,29 @@ fn block(f: &Finding) -> String {
     )
 }
 
+/// The only findings the self-scan lets through: `(path, rule, why it stays)`. Each row is one
+/// file and one rule, reviewed by the lead. A row nothing uses fails the test.
+const ALLOWED: &[(&str, &str, &str)] = &[(
+    "crates/anthology-scan/tests/benign/makefile-golangci/Makefile",
+    "autorun.build-script",
+    "a Makefile copied unchanged from cadvisor (Apache-2.0) that pipes a downloaded installer into a \
+     shell; the scanner's own test `benign.rs` expects exactly this HIGH, so the fixture is a real \
+     detection the scanner is meant to make, not a false alarm",
+)];
+
+fn allowed(f: &Finding) -> Option<usize> {
+    ALLOWED
+        .iter()
+        .position(|(path, rule, _)| *path == f.path && *rule == f.rule)
+}
+
 #[test]
 fn this_repo_has_no_high_or_critical_finding() {
     let s = scan_repo();
     let bad: Vec<String> = s
         .findings
         .iter()
-        .filter(|f| f.severity >= Severity::High)
+        .filter(|f| f.severity >= Severity::High && allowed(f).is_none())
         .map(block)
         .collect();
     assert!(
@@ -48,6 +65,20 @@ fn this_repo_has_no_high_or_critical_finding() {
         bad.len(),
         bad.join("\n")
     );
+}
+
+#[test]
+fn every_allowed_self_scan_finding_has_a_reason_and_is_still_found() {
+    let s = scan_repo();
+    for (i, (path, rule, why)) in ALLOWED.iter().enumerate() {
+        assert!(why.len() > 40, "{path} {rule}: say why it stays");
+        assert!(
+            s.findings
+                .iter()
+                .any(|f| f.severity >= Severity::High && allowed(f) == Some(i)),
+            "{path} {rule}: nothing uses this row, remove it"
+        );
+    }
 }
 
 #[test]
