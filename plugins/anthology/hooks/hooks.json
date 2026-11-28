@@ -31,6 +31,18 @@
             "onFailure": "block"
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/bin/sh",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/slop-gate.sh"],
+            "timeout": 60,
+            "onFailure": "block"
+          }
+        ]
       }
     ]
   },
