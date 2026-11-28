@@ -136,28 +136,36 @@ static STRUCTURE_LINE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:[ ]{0,3}#{1,6}(?:[ \t]|$)|[ \t]*\|)").expect("structure line pattern")
 });
 
-/// A line that starts with a label and then a dash: group 1 is the dash. The label is a list
-/// item's bold term (`- **Install** — ...`, also after a task-list box) or code span (masked),
-/// alone or with a colon and a short value (`- **Concise**: 4/10 — ...`), or, with or without a
-/// list marker, a date
-/// (`2026-11-28`) or a version (`v1.2.3`, `[1.2.3]`) as in a changelog.
+/// A line that starts with a label and then a dash. Group 1 is the dash after a list item's
+/// label: a bold term (`- **Install** — ...`, also linked, `- **[git](git/)** — ...`, and after a
+/// task-list box) or a code span (masked), alone or with a colon and a short value
+/// (`- **Concise**: 4/10 — ...`). Group 2 is the dash after a date (`2026-11-28`) or a version
+/// (`v1.2.3`, `[1.2.3]`), with or without a list marker, as in a changelog.
 static LEAD_DASH: LazyLock<Regex> = LazyLock::new(|| {
     let marker = r"(?:[-*+]|\d{1,9}[.)])[ \t]+";
     Regex::new(&format!(
         "^[ \\t]*(?:{marker}(?:\\[[ xX]\\][ \\t]+)?(?:\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|\\x01+)\
-         (?::[^\\u{{2014}}\\u{{2013}}\\n.;!?]{{0,40}})?\
-         |(?:{marker})?(?:\\d{{4}}[-/.]\\d{{1,2}}[-/.]\\d{{1,2}}|\\[?v?\\d+(?:\\.\\d+)+\\]?))\
-         [ \\t]*([\\u{{2014}}\\u{{2013}}])"
+         (?::[^\\u{{2014}}\\u{{2013}}\\n.;!?]{{0,40}})?[ \\t]*([\\u{{2014}}\\u{{2013}}])\
+         |(?:{marker})?(?:\\d{{4}}[-/.]\\d{{1,2}}[-/.]\\d{{1,2}}|\\[?v?\\d+(?:\\.\\d+)+\\]?)\
+         [ \\t]*([\\u{{2014}}\\u{{2013}}]))"
     ))
     .expect("lead dash pattern")
 });
+
+/// Dashes skipped from the one after a list item's label, as in `- **name** — what — detail`.
+const LABEL_DASHES: usize = 2;
+/// Dashes skipped from the one after a changelog line's date or version.
+const DATE_DASHES: usize = 1;
 
 /// What the dashes of one line are, read once per line that holds a dash.
 struct DashLine {
     /// Every dash of the line is structure.
     all: bool,
-    /// The byte offset of the dash that follows the line's label.
-    lead: Option<usize>,
+    /// The byte offset of the dash that follows the line's label, and how many dashes from
+    /// there on are still skipped.
+    lead: Option<(usize, usize)>,
+    /// The `[...]` pairs of the line, joined (a placeholder such as `[Role A — target]`).
+    brackets: Vec<Span>,
 }
 
 impl DashLine {
@@ -165,20 +173,58 @@ impl DashLine {
     fn at(text: &str, start: usize) -> Self {
         let end = text[start..].find('\n').map_or(text.len(), |n| start + n);
         let line = &text[start..end];
+        let all = STRUCTURE_LINE.is_match(line);
+        let lead = LEAD_DASH.captures(line).and_then(|c| {
+            c.get(1)
+                .map(|dash| (dash, LABEL_DASHES))
+                .or_else(|| c.get(2).map(|dash| (dash, DATE_DASHES)))
+                .map(|(dash, left)| (start + dash.start(), left))
+        });
+        let mut open = Vec::new();
+        let mut brackets = Vec::new();
+        if !all {
+            for (i, c) in line.char_indices() {
+                match c {
+                    '[' => open.push(start + i),
+                    ']' => {
+                        if let Some(from) = open.pop() {
+                            brackets.push(Span {
+                                start: from,
+                                end: start + i + 1,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         DashLine {
-            all: STRUCTURE_LINE.is_match(line),
-            lead: LEAD_DASH
-                .captures(line)
-                .and_then(|c| c.get(1))
-                .map(|dash| start + dash.start()),
+            all,
+            lead,
+            brackets: merged(&brackets),
+        }
+    }
+
+    /// True when the dash at `span` is structure: on a heading or table row, inside `[...]`, or
+    /// one of the dashes skipped after the label (each dash uses one of them up).
+    fn skips(&mut self, span: Span) -> bool {
+        if self.all || touches(&self.brackets, span) {
+            return true;
+        }
+        match &mut self.lead {
+            Some((at, left)) if span.start >= *at && *left > 0 => {
+                *left -= 1;
+                true
+            }
+            _ => false,
         }
     }
 }
 
 /// Em dashes (U+2014) and spaced en dashes (a space, U+2013, a space) outside `dash_skip`.
 /// A spaced en dash between two range ends (digits, times, day or month names) is a range.
-/// A dash in a heading or a table row, and the one after a list item's label or a changelog
-/// line's date or version, is structure and does not count.
+/// A dash in a heading, a table row or `[...]`, the first two after a list item's label and the
+/// one after a changelog line's date or version are structure and do not count.
 pub(crate) fn em_dash(view: &View, new: &[Span]) -> Vec<Hit> {
     let new = merged(new);
     let skip = merged(&view.dash_skip);
@@ -202,13 +248,15 @@ pub(crate) fn em_dash(view: &View, new: &[Span]) -> Vec<Hit> {
             _ => false,
         };
         let span = Span { start: i, end };
-        if dash && touches(&new, span) && !touches(&skip, span) {
-            let line = line.get_or_insert_with(|| DashLine::at(text, line_start));
-            if line.all || line.lead == Some(i) {
-                continue;
+        if dash {
+            // every dash of the line is read, new or not, so the skips fall on the first ones
+            let structure = line
+                .get_or_insert_with(|| DashLine::at(text, line_start))
+                .skips(span);
+            if !structure && touches(&new, span) && !touches(&skip, span) {
+                count += 1;
+                first.get_or_insert(span);
             }
-            count += 1;
-            first.get_or_insert(span);
         }
     }
     hit(
@@ -860,7 +908,8 @@ mod tests {
             format!("- Install {DASH} put it in place."),
             format!("**Install** {DASH} put it in place."),
             format!("- **Install** put it {DASH} in place."),
-            format!("- **Install** {DASH} put it {DASH} in place."),
+            // two dashes after a label are skipped, the third is counted
+            format!("- **Install** {DASH} put it {DASH} in place {DASH} now."),
             // a long value, or a sentence, is prose and not a value
             format!(
                 "- **Note**: {} {DASH} in place.",
@@ -871,6 +920,62 @@ mod tests {
             let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
             assert_eq!(dashes(&doc).len(), 1, "{line:?}");
         }
+    }
+
+    #[test]
+    fn up_to_two_dashes_after_a_linked_or_bold_label_do_not_count() {
+        for line in [
+            format!("- **[git](git/README.md)** {DASH} git, gh, gt {DASH} passthrough here."),
+            format!("1. **[`git/`](git/README.md)** {DASH} git, gh {DASH} passthrough here."),
+            format!("- **Install** {DASH} put it {DASH} in place."),
+            format!("- [ ] **Install** {DASH} put it {DASH} in place."),
+            format!("- **Concise**: 4/10 {DASH} put it {DASH} in place."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert!(dashes(&doc).is_empty(), "{line:?}");
+        }
+        // the budget is per line: a dash on the next line is counted again
+        let doc = format!(
+            "- **A** {DASH} b {DASH} c\n- d {DASH} e\n- f {DASH} g\n- h {DASH} i\n\n{}",
+            filler(177)
+        );
+        assert_eq!(dashes(&doc).len(), 1);
+    }
+
+    #[test]
+    fn a_dash_inside_square_brackets_does_not_count() {
+        for line in [
+            format!("- [ ] [Role A {DASH} target]"),
+            format!("Use [Role A {DASH} target] here."),
+            format!("Use [a [nested {DASH} one] too] here."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert!(dashes(&doc).is_empty(), "{line:?}");
+        }
+        // the controls: outside the brackets, unclosed, or closed before the dash
+        for line in [
+            format!("[Role A] {DASH} target here."),
+            format!("[Role A {DASH} target here."),
+            format!("Role A] {DASH} [target here."),
+            format!("[a] {DASH} [b]"),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert_eq!(dashes(&doc).len(), 1, "{line:?}");
+        }
+        // a bracket does not reach into the next line
+        let unit = format!("[a\nb {DASH} c]");
+        let doc = format!("{}\n\n{}", [unit.as_str(); 3].join("\n"), filler(177));
+        assert_eq!(dashes(&doc).len(), 1);
+    }
+
+    #[test]
+    fn brackets_are_scanned_in_linear_time() {
+        let started = std::time::Instant::now();
+        let open = format!("{}\n", format!("[ a {DASH} ").repeat(100_000));
+        assert_eq!(dashes(&open).len(), 1);
+        let pairs = format!("{}\n", format!("[[a {DASH} b]] ").repeat(100_000));
+        assert!(dashes(&pairs).is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 
     #[test]
