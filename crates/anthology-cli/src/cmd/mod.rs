@@ -13,6 +13,7 @@ pub mod mem;
 pub mod memory;
 pub mod perm;
 pub mod setup;
+pub mod slop;
 pub mod switch;
 
 use std::ffi::OsString;
@@ -68,6 +69,7 @@ commands:
   memory export|import
   perm classify
   switch routing_guide|delegation <folder>
+  slop hook|check|rules
   --version
 ";
 
@@ -104,6 +106,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("memory") => memory::run(rest, stdin),
         Some("perm") => perm::run(rest, stdin),
         Some("switch") => switch::run(rest, stdin),
+        Some("slop") => slop::run(rest, stdin),
         _ => Output::usage(&format!("unknown command: {}", first.to_string_lossy())),
     }
 }

@@ -22,6 +22,9 @@ const COMMANDS: &[&[&str]] = &[
     &["mem", "save"],
     &["memory", "export"],
     &["memory", "import"],
+    &["slop", "hook"],
+    &["slop", "check"],
+    &["slop", "rules"],
 ];
 
 /// An option no command accepts, so a ported command stops at its usage error instead of
