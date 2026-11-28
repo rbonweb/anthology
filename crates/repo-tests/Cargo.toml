@@ -26,6 +26,8 @@ sha2.workspace = true
 anthology-guard.workspace = true
 # slop_corpus: every slop rule stays silent on the human docs.
 anthology-slop.workspace = true
+# check_repo_self: the scan of this repo stays free of HIGH and CRITICAL findings.
+anthology-scan.workspace = true
 anthology-testkit.workspace = true
 proptest.workspace = true
 tempfile.workspace = true

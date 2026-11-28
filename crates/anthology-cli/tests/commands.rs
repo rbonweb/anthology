@@ -25,6 +25,7 @@ const COMMANDS: &[&[&str]] = &[
     &["slop", "hook"],
     &["slop", "check"],
     &["slop", "rules"],
+    &["check-repo"],
 ];
 
 /// An option no command accepts, so a ported command stops at its usage error instead of

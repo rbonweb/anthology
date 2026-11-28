@@ -32,6 +32,7 @@ anthology-memory.workspace = true
 anthology-runtime.workspace = true
 anthology-shell.workspace = true
 anthology-slop.workspace = true
+anthology-scan.workspace = true
 lexopt.workspace = true
 
 [dev-dependencies]

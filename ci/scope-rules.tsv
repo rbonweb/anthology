@@ -116,6 +116,7 @@ crate:anthology-testkit	job:shims-distros
 crate:anthology-memory	job:shims-distros
 crate:anthology-guard	job:shims-distros
 crate:anthology-slop	job:shims-distros
+crate:anthology-scan	job:shims-distros
 # repo-tests: the shim tests and the roster budget it holds, by file (its other tests are read by
 # no repository job)
 crates/repo-tests/src/*	job:shims-distros job:startup-budget
@@ -142,6 +143,8 @@ crates/anthology-settings/src/write.rs	macos
 crates/anthology-memory/src/portable*	macos
 crates/anthology-memory/src/repo.rs	macos
 crates/anthology-cli/src/cmd/perm/git.rs	macos
+crates/anthology-scan/src/fetch.rs	macos
+crates/anthology-scan/src/tools.rs	macos
 crates/anthology-testkit/src/run.rs	macos
 crates/anthology-testkit/src/sandbox.rs	macos
 crates/anthology-testkit/src/bs.rs	macos

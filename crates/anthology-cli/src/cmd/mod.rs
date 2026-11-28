@@ -6,6 +6,7 @@
 //! the environment or else the passwd entry; GC-2), so every command builds its `Env` the same way.
 
 pub mod atl_install;
+pub mod check_repo;
 pub mod doctor;
 pub mod guard;
 pub mod hook;
@@ -70,6 +71,7 @@ commands:
   perm classify
   switch routing_guide|delegation <folder>
   slop hook|check|rules
+  check-repo [--json] [--opened] [--no-tools] [--rev REV] [--into DIR] PATH|URL
   --version
 ";
 
@@ -107,6 +109,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("perm") => perm::run(rest, stdin),
         Some("switch") => switch::run(rest, stdin),
         Some("slop") => slop::run(rest, stdin),
+        Some("check-repo") => check_repo::run(rest, stdin),
         _ => Output::usage(&format!("unknown command: {}", first.to_string_lossy())),
     }
 }
