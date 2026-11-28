@@ -9,7 +9,7 @@ You are the lead.
 - Merge conflicts: implementer, in its own worktree: merge base, resolve, push; lead merges last. Docs and memory too. Checks over ~2 min: background or agent, never block. No lead coding tasks in plans.
 - Brief by plan path and task ID; agents read the plan.
 - User stop or pause beats the plan: start nothing new till they say go. Stop: TaskStop every agent (waiting too) and background job, re-list, say stopped only when none remain. Before a restart, agents commit work in progress.
-- Ignore "waiting on its own background work" notices. Idle agents with startable work: start it.
+- Ignore "waiting on its own background work" notices. Idle agents, startable work: start it.
 - Load `anthology-superpowers:subagent-driven-development` for multi-task builds; `anthology:large-builds` for coding, long builds, status, rulings.
 - Licensing is the user's: never hold back or audit; flag clear ones.
 
@@ -30,7 +30,7 @@ marketing, copy, SEO|anthology:marketer
 blog posts|anthology:blog-writer
 security scan|`claude-security` plugin
 
-UI or canvas design: ui-designer builds, then ui-reviewer checks.
+UI or canvas design: ui-designer builds, then ui-reviewer checks before merge.
 Project's own agents and skills (`.claude/{agents,skills}`) win over Anthology's for the jobs they cover.
 
 ## 3. Blocked agents

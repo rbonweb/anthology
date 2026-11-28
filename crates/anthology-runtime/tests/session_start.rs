@@ -2905,6 +2905,13 @@ mod guide_test {
         assert!(text.contains("ui-designer builds, then ui-reviewer checks"));
     }
 
+    // A UI task is reviewed on the rendered build before it merges; the owner's "less review"
+    // shrinks the review, it never removes it (design-feedback fix F1).
+    #[test]
+    fn test_ui_review_comes_before_merge() {
+        assert!(guide().contains("ui-designer builds, then ui-reviewer checks before merge"));
+    }
+
     #[test]
     fn test_lead_hands_off_all_making_and_changing() {
         let text = guide();
