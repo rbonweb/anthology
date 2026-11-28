@@ -17,11 +17,11 @@ trap 'exit 0' HUP INT TERM
 if [ "${ANTHOLOGY_COMMIT_PRIVACY-}" = 0 ]; then
     exit 0
 fi
-anth_nl='
+anth_eol='
 '
 anth_in=
 while IFS= read -r anth_line || [ -n "$anth_line" ]; do
-    anth_in=$anth_in$anth_line$anth_nl
+    anth_in=$anth_in$anth_line$anth_eol
 done
 # The input is JSON: `git` and `commit` in this order is all it takes to look closer.
 case $anth_in in
