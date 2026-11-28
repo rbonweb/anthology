@@ -54,14 +54,47 @@ const SHA_WORDED = /\b(?:commit(?:ted)?|head|sha)\b[^\n]{0,20}?\b[0-9a-f]{7,40}\
 const NOT_COMMITTED = /\b(?:not|never|nothing|no)\s+committed\b/gi
 const COMMITTED = /\bcommitted\b/i
 
-// Test evidence. The negations are cut out first, so word order does not matter.
-const TESTED = /\b(?:tests?|tested|testing|pytest|jest|vitest|clippy|lint\w*|tsc|validat\w+)\b/i
+// Test evidence: any way a report says it checked its work, not only a test word. A research, docs
+// or UI report has no test run, but it says "verified", "hash matched", "curl 200", "screenshot
+// checked". The bare nouns "check" and "verification" are not evidence (a report heading or a
+// feature name), the past tense is. The negations are cut out first, so word order does not matter.
+const TESTED = new RegExp(
+  [
+    // a test or a checker by name
+    String.raw`\b(?:tests?|tested|testing|pytest|jest|vitest|clippy|lint\w*|tsc|validat\w+)\b`,
+    // the act of checking, run or compared
+    String.raw`\b(?:verif(?:y|ied|ies|ying)|checked|confirmed|compared|re-?ran|ran|re-?run|smoke)\b`,
+    // a hash, checksum or digest that matched, in either order
+    String.raw`\b(?:hash\w*|checksums?|sha-?\d+|digests?)\b[^.\n]{0,40}\b(?:match\w*|equal|identical|agree\w*|check\w*|compar\w*|ok)\b`,
+    String.raw`\b(?:match(?:ed|es)|identical)\b[^.\n]{0,40}\b(?:hash\w*|checksums?|sha-?\d+|digests?)\b`,
+    // a service answered: curl with a status, HTTP 200, status code 204, 200 OK
+    String.raw`\bcurl(?:ed)?\b[^.\n]{0,60}\b[1-5]\d\d\b`,
+    String.raw`\bhttp(?:/[\d.]+)?\s*[1-5]\d\d\b`,
+    String.raw`\bstatus(?:\s+code)?\s*[:=]?\s*[1-5]\d\d\b`,
+    String.raw`\b[1-5]\d\d\s+ok\b`,
+    // a screenshot looked at, in either order
+    String.raw`\bscreenshots?\b[^.\n]{0,40}\b(?:inspected|reviewed|viewed|looks?|looked|matches|matched)\b`,
+    String.raw`\b(?:inspected|reviewed|viewed|looked at)\b[^.\n]{0,40}\bscreenshots?\b`,
+    // a count or a state that passed: "12 passed", "all green", "build ok", "exit code 0"
+    String.raw`\b\d+\s+(?:\w+\s+)?(?:passed|passing)\b`,
+    String.raw`\b(?:all|ci|checks?|build)\s+(?:green|passed|passing|pass|ok)\b`,
+    String.raw`\b(?:builds?|built)\s+(?:clean\w*|successfully)\b|\bcompiles\b`,
+    String.raw`\bexit(?:ed)?(?:\s+code)?\s+0\b`,
+  ].join('|'),
+  'i',
+)
+const DID_NOT = String.raw`(?:\b(?:not|never|no|without|nothing|unable\s+to)|n't)`
 const NOT_TESTED: readonly RegExp[] = [
   /\b(?:not|never|no|without)\s+(?:\w+\s+){0,2}(?:tests?|tested|testing)\b/gi,
   /\btests?\b[^.\n]{0,20}\b(?:not|never)\s+(?:run|ran|executed)\b/gi,
   /\btests?\s*[:-]?\s*(?:none|n\/a|skipped|not run)\b/gi,
   /\b(?:skipped|skipping)\s+(?:the\s+)?tests?\b/gi,
   /\btests?\b[^.\n]{0,20}\b(?:were|was|are|is)\s+skipped\b/gi,
+  // "not verified", "did not check anything", "couldn't run it", "nothing was checked"
+  new RegExp(
+    String.raw`${DID_NOT}\s+(?:\w+\s+){0,2}(?:verif(?:y|ied|ying)|check(?:ed|ing)?|confirm(?:ed)?|compared?|re-?ran|re-?run|ran|run)\b`,
+    'gi',
+  ),
 ]
 
 const ATTRIBUTION = /^[\s>*\-\u{1F916}]*(?:co-authored-by:|generated with\b)[^\n]*(?:claude|anthropic)/imu

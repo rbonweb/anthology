@@ -1,0 +1,1 @@
+- Fix: the after-work check no longer says "nothing about what was tested" for a report that did check its work in other words: verified, checked, confirmed, compared, ran or re-ran, hash or checksum matched, curl status, screenshot inspected, "N passed", build ok. A report that says nothing about checking, or says it did not check, still gets the note.
