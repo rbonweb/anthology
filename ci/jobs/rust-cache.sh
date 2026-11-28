@@ -2,7 +2,7 @@
 # Keeps the Linux Rust shards' build state between runs (ci.yml, actions/cache). scripts/rust-test.sh
 # runs cargo in a container with named docker volumes: the cargo registry, the toolchain components
 # of rust-toolchain.toml and, with ANTHOLOGY_SCCACHE=1, an sccache of what the dependencies
-# compiled (its target volume lasts for one run). A fresh runner has none of them, so every shard
+# compiled (the checkout's target volume is not cached: the runner is gone after the job). A fresh runner has none of them, so every shard
 # downloaded the registry and the toolchain and compiled every dependency again. This binds the
 # three volumes to folders on the runner that actions/cache restores and saves.
 #

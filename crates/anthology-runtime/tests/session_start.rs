@@ -2871,7 +2871,9 @@ mod guide_test {
         // 4000: blog-writer row (copy plan Task C, 2026-11-28); the guide was 3975 with it.
         // 4050: the implementer resolves a merge conflict in its own worktree (lead, 2026-11-28);
         // the guide is 4041.
-        assert!(text.chars().count() <= 4050);
+        // 4100: Docker cache rule (owner, 2026-11-28); the guide is 4084 with it. Every other
+        // line is pinned by a test, so none could give up the characters.
+        assert!(text.chars().count() <= 4100);
         assert!(!text.starts_with("---"));
         for n in 1..9 {
             let head = format!("## {n}. ");

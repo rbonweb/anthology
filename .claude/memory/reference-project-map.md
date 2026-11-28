@@ -33,7 +33,7 @@ Three Claude Code plugins, one static Rust binary, `anthology`; ATL (`atl/`, a f
 ## Checks
 - All: `scripts/rust-test.sh`; one crate: `... test -p <crate>`. One-shots and `session-stop` drop the target volume (`ANTHOLOGY_KEEP_TARGET=1` keeps it); `session-start` runs `gc`; `anthology-sccache` is shared. Remote: `ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh <args>`: one folder and volume per run, flock locks, a cap on concurrent builds; `--clean-ours` cleans this checkout's dead runs, `--clean-all-ours` all of ours (refuses while a run is live).
 - CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also: `release.sh`, `rust-test.sh`, `remote-build.sh`). On a PR `rust-scope.sh` (rules, `job:` and `crate:` rows: `ci/scope-rules.tsv`; weights `ci/test-weights.tsv`; graph `rust-graph.mjs`) picks the crates a change reaches, their golden surfaces, atl, fuzz, macOS and the repo jobs that read it; gitleaks, deny, shellcheck always run. `rust-test-linux`/`-macos` gate. A push, the `full-ci` label, `[full-ci]` in a commit or a test-machinery change runs all. A PR in merge conflict runs no CI: merge `origin/build`.
-- Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps inherited tests to Rust tests or drop reasons. Budgets: guide ≤4050 characters, session-start output ≤9000 (`session_start.rs`).
+- Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps inherited tests to Rust tests or drop reasons. Budgets: guide ≤4100 characters, session-start output ≤9000 (`session_start.rs`).
 
 ## Cleanup duties
 - Workspace version bump: also update `Cargo.lock`, `fuzz/Cargo.lock` (else `ci/jobs/fuzz.sh` fails). Then follow Binary release.

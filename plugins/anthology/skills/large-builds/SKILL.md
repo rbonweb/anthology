@@ -181,10 +181,15 @@ Read this before the first task of a large or long build (many tasks, several ag
   5–10 minutes and lift the limit once the load is gone; never let a
   momentary limit become a standing rule. Why: a 5-minute spike turned into
   a permanent throttle costs hours of build time.
-- After any container work (tests, builds), remove the containers, the
-  images you built, and the volumes they used once you no longer need them.
-  Touch only your own: other projects share the same Docker. Why: leftover
-  build volumes fill the disk fast (hundreds of GB in one day).
+- After any container work (tests, builds), remove your containers, your
+  per-run volumes, and the images you built only for this worktree (tagged per
+  worktree). Keep pulled base images and shared caches (toolchains, cargo,
+  sccache, npm, pnpm and pip stores, build caches): later runs reuse them.
+  Prune a kept cache only under disk pressure (disk over 85% full, or a cache
+  over 40 GB), least recently used first. Touch only your own: other projects
+  share the same Docker. Why: leftover build volumes fill the disk fast
+  (hundreds of GB in one day). Why keep the rest: a deleted image or cache is
+  downloaded or rebuilt on every run, which costs minutes each time.
 
 ## Test at the cheapest level that catches the bug, once
 

@@ -136,18 +136,31 @@ case $1 in
             mv "$FAKE_STATE/images.new" "$FAKE_STATE/images"
         done
         ;;
+    run)
+        # The size read of a cache volume: `run --rm -v VOL:/v:ro --entrypoint du IMAGE -sk /v`.
+        # `sizes` holds `<volume> <KB>` lines.
+        for a in "$@"; do
+            case $a in *:/v:ro) v=${a%%:*} ;; esac
+        done
+        awk -v v="$v" '$1 == v { printf "%s\t/v\n", $2 }' "$FAKE_STATE/sizes" 2>/dev/null
+        ;;
     system | prune | *prune) echo "fake docker: $1 refused" >&2; exit 1 ;;
     info) printf '%s\n' "$FAKE_DOCKER_ROOT" ;;
 esac
 "#;
 
 /// `df -Pk PATH`: the free space is `FAKE_DF_KB`, or `FAKE_DF_DOCKER_KB` for the Docker data dir.
+/// The disk is `FAKE_DF_USE` percent full (1 when unset), and every volume or image the script has
+/// removed since (in docker.log) frees 10 points, so a trim stops once it has made enough room.
 const FAKE_DF: &str = r#"#!/bin/sh
 for last; do :; done
 kb=${FAKE_DF_KB:-999999999}
 [ "$last" != "$FAKE_DOCKER_ROOT" ] || kb=${FAKE_DF_DOCKER_KB:-$kb}
+removed=$(grep -c '^volume rm\|^rmi' "$FAKE_STATE/docker.log" 2>/dev/null || true)
+use=$(( ${FAKE_DF_USE:-1} - ${removed:-0} * 10 ))
+[ "$use" -ge 1 ] || use=1
 echo "Filesystem 1024-blocks Used Available Capacity Mounted on"
-echo "fake 1000000000 1 $kb 1% /"
+echo "fake 1000000000 1 $kb ${use}% /"
 "#;
 
 /// Starts a container on the volume the real runner would name: the cksum of its root path.
@@ -167,8 +180,6 @@ fi
 echo "rust-test cwd: $(pwd)"
 echo "keep-target=${ANTHOLOGY_KEEP_TARGET:-unset}"
 echo "jobs=${CARGO_BUILD_JOBS:-unset}"
-[ -z "$(find "$HOME/anthology-remote/.last-used" -mmin -5 2>/dev/null)" ] || echo "last-used is fresh"
-[ -z "${FAKE_AGE_LAST_USED:-}" ] || touch -d '5 hours ago' "$HOME/anthology-remote/.last-used"
 root=$(cd "$(dirname "$0")/.." && pwd)
 vol=anthology-rust-target-$(printf '%s' "$root" | cksum | cut -d' ' -f1)
 image=$(awk '$1 == "FROM" {print $NF; exit}' "$root/ci/images/rust.Dockerfile")
@@ -341,8 +352,8 @@ impl Rig {
         dirs.remove(0)
     }
 
-    /// What is under `~/anthology-remote` besides the hidden bookkeeping files (`.last-used`, the
-    /// locks, the build slots, the toolchain marker, the record of the pulled image).
+    /// What is under `~/anthology-remote` besides the hidden bookkeeping files (the locks, the
+    /// build slots, the toolchain marker, the use records, the record of the pulled image).
     fn left_under_root(&self) -> Vec<String> {
         let Ok(entries) = fs::read_dir(self.remote_root()) else {
             return Vec::new();
@@ -353,13 +364,20 @@ impl Rig {
             .collect()
     }
 
-    /// The `.last-used` file of the shared caches, last touched `hours_ago` hours ago.
-    fn seed_last_used(&self, hours_ago: u32) -> PathBuf {
-        fs::create_dir_all(self.remote_root()).unwrap();
-        let file = self.remote_root().join(".last-used");
+    /// The record that a run used the kept item `name` (a volume, or `image_key()`), `hours_ago`
+    /// hours ago: the trim under disk pressure removes the oldest first.
+    fn seed_used(&self, name: &str, hours_ago: u32) -> PathBuf {
+        let dir = self.remote_root().join(".used");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(name);
         fs::write(&file, "").unwrap();
         sh(&format!("touch -d '{hours_ago} hours ago' \"$0\""), &file);
         file
+    }
+
+    /// The size of a cache volume as the throwaway `du` container reports it, in KB.
+    fn seed_size(&self, volume: &str, kb: u64) {
+        self.append("sizes", &format!("{volume} {kb}\n"));
     }
 
     /// Where this checkout's folder is, or will be, on the fake host.
@@ -969,7 +987,7 @@ fn clean_all_ours_removes_what_we_created_and_the_image_we_pulled() {
         rig.pulled_images()
     );
 
-    let out = rig.run(&["--clean-all-ours"]);
+    let out = rig.run(&["--clean-all-ours", "--with-caches"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
     let left: Vec<String> = fs::read_dir(rig.remote_root())
         .unwrap()
@@ -1027,79 +1045,287 @@ fn seed_caches(rig: &Rig) {
     rig.seed_pulled_image();
 }
 
-#[test]
-fn caches_unused_for_48_hours_are_swept_with_the_image() {
-    let rig = rig!();
-    seed_caches(&rig);
-    let last_used = rig.seed_last_used(49);
-    let out = rig.run(&["lint"]);
-    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
-    let docker = rig.log("docker.log");
-    // The run then creates what it needs again, so the proof is in the calls.
-    assert!(docker.contains("volume rm anthology-cargo"), "{docker}");
-    assert!(docker.contains("volume rm anthology-sccache"), "{docker}");
-    assert!(
-        docker.contains("volume rm anthology-rustup-abc"),
-        "{docker}"
-    );
-    assert!(docker.contains(&format!("rmi {IMAGE}")), "{docker}");
-    assert!(!docker.contains("volume rm other-project-data"), "{docker}");
-    assert!(rig.volumes().contains("other-project-data"));
-    assert!(
-        text(&out.stdout).contains("last-used is fresh"),
-        "the file is written at the start: {}",
-        all_output(&out)
-    );
-    assert!(!sh("find \"$0\" -mmin -5", &last_used).is_empty());
+/// The name of the file under `.used` that records a use of `image`.
+fn image_key(image: &str) -> String {
+    format!(
+        "image-{}",
+        sh(r#"printf '%s' "$0" | cksum | cut -d' ' -f1"#, Path::new(image))
+    )
+}
+
+/// The cache volumes and the image, the way the pressure tests seed them: `anthology-cargo` used
+/// 5 days ago, the image 3 days ago, the toolchain 2 days ago and `anthology-sccache` 1 day ago.
+fn seed_by_use(rig: &Rig) {
+    seed_caches(rig);
+    rig.seed_used("anthology-cargo", 120);
+    rig.seed_used(&image_key(IMAGE), 72);
+    rig.seed_used("anthology-rustup-abc", 48);
+    rig.seed_used("anthology-sccache", 24);
+}
+
+/// The kept items the script removed so far, in order: cache volume names and `image`. The run
+/// volumes (`anthology-rust-target-*`) are not among them: they are the run's own.
+fn trimmed(rig: &Rig) -> Vec<String> {
+    rig.log("docker.log")
+        .lines()
+        .filter_map(|l| match l.strip_prefix("volume rm ") {
+            Some(v) if v.starts_with("anthology-rust-target-") => None,
+            Some(v) => Some(v.to_owned()),
+            None => l.starts_with("rmi ").then(|| "image".to_owned()),
+        })
+        .collect()
 }
 
 #[test]
-fn caches_used_within_48_hours_or_with_no_record_are_kept() {
-    for hours in [Some(47), None] {
-        let rig = rig!();
-        seed_caches(&rig);
-        if let Some(h) = hours {
-            rig.seed_last_used(h);
-        }
-        let out = rig.run(&["lint"]);
-        assert_eq!(out.status.code(), Some(0), "{hours:?}");
-        let volumes = rig.volumes();
-        assert!(volumes.contains("anthology-cargo"), "{hours:?}: {volumes}");
-        assert!(volumes.contains("anthology-rustup-abc"), "{hours:?}");
-        let docker = rig.log("docker.log");
-        assert!(!docker.contains("rmi"), "{hours:?}: {docker}");
+fn a_run_and_clean_ours_keep_the_image_and_the_caches_however_old() {
+    let rig = rig!();
+    seed_caches(&rig);
+    for volume in [
+        "anthology-cargo",
+        "anthology-sccache",
+        "anthology-rustup-abc",
+    ] {
+        rig.seed_used(volume, 5000);
+    }
+    // A normal run, kept and not kept, and a clean-ours, in any order.
+    for args in [
+        &["lint"][..],
+        &["--clean-ours"],
+        &["test", "-p", "x"],
+        &["--clean"],
+    ] {
+        let out = rig
+            .command(args)
+            .env_remove("ANTHOLOGY_KEEP_REMOTE")
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", all_output(&out));
+        assert_eq!(trimmed(&rig), Vec::<String>::new(), "{args:?}");
+    }
+    let volumes = rig.volumes();
+    for kept in ["anthology-cargo ", "anthology-sccache ", "anthology-rustup-abc "] {
+        assert!(volumes.contains(kept), "{kept}was removed:\n{volumes}");
+    }
+    assert!(rig.images().contains(IMAGE), "{}", rig.images());
+    assert!(rig.pulled_images().contains(IMAGE), "the record stays");
+    // What the runs themselves made is gone: only the shared caches remain.
+    assert!(!volumes.contains("anthology-rust-target-"), "{volumes}");
+}
+
+#[test]
+fn a_run_records_what_it_used_for_the_trim_order() {
+    let rig = rig!();
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    let used = rig.remote_root().join(".used");
+    for name in [
+        "anthology-cargo",
+        "anthology-sccache",
+        "anthology-rustup-0123456789ab",
+        &image_key(IMAGE),
+    ] {
         assert!(
-            rig.remote_root().join(".last-used").is_file(),
-            "{hours:?}: the clock starts"
+            !sh("find \"$0\" -mmin -5", &used.join(name)).is_empty(),
+            "{name}"
         );
     }
 }
 
 #[test]
-fn a_cache_a_running_container_uses_is_kept() {
+fn a_disk_over_85_percent_trims_the_least_recently_used_first_and_stops_when_it_has_room() {
     let rig = rig!();
-    seed_caches(&rig);
-    rig.seed_last_used(49);
+    seed_by_use(&rig);
+    // 90% full; each removal frees 10 points in the stand-in df, so one removal is enough.
+    let out = rig
+        .command(&["lint"])
+        .env("FAKE_DF_USE", "90")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(
+        text(&out.stderr).contains("over 85%"),
+        "{}",
+        all_output(&out)
+    );
+    // The cargo registry was used longest ago: it alone goes.
+    assert_eq!(trimmed(&rig), ["anthology-cargo"]);
+    // 115% (a stand-in): the next two go, in the order of their last use, and then the disk has
+    // room, so the most recently used cache stays.
+    let rig = rig!();
+    seed_by_use(&rig);
+    let out = rig
+        .command(&["lint"])
+        .env("FAKE_DF_USE", "115")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert_eq!(
+        trimmed(&rig),
+        ["anthology-cargo", "image", "anthology-rustup-abc"]
+    );
+}
+
+#[test]
+fn a_disk_at_or_under_85_percent_trims_nothing() {
+    let rig = rig!();
+    seed_by_use(&rig);
+    for use_pct in ["85", "40"] {
+        let out = rig
+            .command(&["lint"])
+            .env("FAKE_DF_USE", use_pct)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+        assert_eq!(trimmed(&rig), Vec::<String>::new(), "{use_pct}");
+    }
+}
+
+#[test]
+fn the_trim_takes_only_our_labelled_volumes_and_the_image_we_pulled() {
+    let rig = rig!();
+    seed_by_use(&rig);
+    // Names like ours without our label, and an unrelated volume.
+    for name in ["anthology-rustup-zzz", "other-project-data"] {
+        rig.seed_foreign_volume(name, 9000);
+    }
+    let out = rig
+        .command(&["lint"])
+        .env("FAKE_DF_USE", "300")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    let volumes = rig.volumes();
+    for kept in ["anthology-rustup-zzz ", "other-project-data "] {
+        assert!(volumes.contains(kept), "{kept}was removed:\n{volumes}");
+    }
+    // Everything of ours that was a candidate went, nothing else.
+    assert_eq!(
+        trimmed(&rig)[..4],
+        ["anthology-cargo", "image", "anthology-rustup-abc", "anthology-sccache"]
+    );
+    // An image that was on the host before us (no record that we pulled it) is never a candidate.
+    let rig = rig!();
+    seed_by_use(&rig);
+    fs::remove_file(rig.remote_root().join(".pulled-images")).unwrap();
+    let out = rig
+        .command(&["lint"])
+        .env("FAKE_DF_USE", "300")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(!trimmed(&rig).contains(&"image".to_owned()), "{:?}", trimmed(&rig));
+    assert!(rig.images().contains(IMAGE), "{}", rig.images());
+    assert!(!rig.log("docker.log").contains("rmi"));
+}
+
+#[test]
+fn a_cache_a_running_container_uses_is_kept_under_pressure() {
+    let rig = rig!();
+    seed_by_use(&rig);
     rig.seed_container("busy", "anthology-cargo", "running");
-    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
-    assert!(rig.volumes().contains("anthology-cargo"));
+    let out = rig
+        .command(&["lint"])
+        .env("FAKE_DF_USE", "90")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    // The oldest is in use, so the next oldest went instead.
+    assert_eq!(trimmed(&rig), ["image"]);
     assert!(rig.containers().contains("busy"));
 }
 
 #[test]
-fn the_end_of_a_run_writes_last_used_even_when_the_folder_is_removed() {
+fn nothing_is_trimmed_while_another_run_is_live() {
     let rig = rig!();
-    let last_used = rig.seed_last_used(10);
-    // The stand-in run ages the file, so only a write at the end can make it fresh again.
+    seed_by_use(&rig);
+    let first = rig.spawn_run("a", &[("FAKE_SLEEP", "6")], &["lint"]);
+    wait_until("the build to start", 60, || !rig.spans("spans").is_empty());
+    // This run starts, and ends, with the first one holding the runs lock: it must not trim.
     let out = rig
         .command(&["lint"])
-        .env_remove("ANTHOLOGY_KEEP_REMOTE")
-        .env("FAKE_AGE_LAST_USED", "1")
+        .env("FAKE_DF_USE", "300")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
-    assert!(rig.left_under_root().is_empty());
-    assert!(!sh("find \"$0\" -mmin -5", &last_used).is_empty());
+    assert_eq!(trimmed(&rig), Vec::<String>::new());
+    assert_eq!(rig.finish("a", first), Some(0));
+}
+
+#[test]
+fn a_cache_volume_over_40_gb_is_removed_once_an_hour() {
+    let rig = rig!();
+    seed_by_use(&rig);
+    let gb = 1024 * 1024;
+    rig.seed_size("anthology-cargo", 41 * gb);
+    rig.seed_size("anthology-sccache", 40 * gb);
+    rig.seed_size("anthology-rustup-abc", 3 * gb);
+    let out = rig.run(&["lint"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(
+        text(&out.stderr).contains("over 40 GB"),
+        "{}",
+        all_output(&out)
+    );
+    // Only the one over the cap goes (40 GB exactly is within it); no disk is short.
+    assert_eq!(trimmed(&rig), ["anthology-cargo"]);
+    let size_reads = |rig: &Rig| {
+        let docker = rig.log("docker.log");
+        docker.lines().filter(|l| l.contains("--entrypoint du")).count()
+    };
+    assert_eq!(size_reads(&rig), 3, "{}", rig.log("docker.log"));
+    // A second run within the hour does not read the sizes again.
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert_eq!(size_reads(&rig), 3, "{}", rig.log("docker.log"));
+}
+
+#[test]
+fn clean_all_ours_keeps_the_caches_and_the_image_unless_asked_with_caches() {
+    let rig = rig!();
+    seed_caches(&rig);
+    rig.seed_used("anthology-cargo", 1);
+    rig.seed_dir("1111", 1);
+    rig.seed_volume("anthology-rust-target-1", 1);
+    rig.seed_container("c1", "anthology-rust-target-1", "running");
+    let out = rig.run(&["--clean-all-ours"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(text(&out.stderr).contains("caches and image kept"));
+    // The run folder and its volume and containers went; the caches and the image did not.
+    assert!(rig.remote_dirs().is_empty());
+    assert!(!rig.volumes().contains("anthology-rust-target-1"));
+    assert!(!rig.containers().contains("c1 "));
+    assert_eq!(trimmed(&rig), Vec::<String>::new());
+    assert!(rig.images().contains(IMAGE));
+    assert!(rig.pulled_images().contains(IMAGE));
+    assert!(rig.remote_root().join(".used/anthology-cargo").is_file());
+
+    // With the flag it is the full wipe.
+    let out = rig.run(&["--clean-all-ours", "--with-caches"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert_eq!(
+        trimmed(&rig),
+        [
+            "anthology-cargo",
+            "anthology-sccache",
+            "anthology-rustup-abc",
+            "image"
+        ]
+    );
+    assert!(!rig.images().contains(IMAGE), "{}", rig.images());
+    assert!(rig.volumes().contains("other-project-data"));
+}
+
+#[test]
+fn with_caches_belongs_to_clean_all_ours_alone() {
+    let rig = rig!();
+    for args in [
+        &["--clean-ours", "--with-caches"][..],
+        &["--clean", "--with-caches"],
+        &["--clean-all-ours", "--bogus"],
+        &["--clean-all-ours", "--with-caches", "x"],
+    ] {
+        let out = rig.run(args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+    }
+    assert!(rig.log("ssh.log").is_empty(), "ssh was called");
 }
 
 #[test]
@@ -1140,13 +1366,17 @@ fn nothing_unlabelled_or_unrelated_is_ever_touched() {
     rig.seed_container_of("u1", "unrelated-data", "running", "rust:unrelated");
     rig.seed_container_of("u2", "anthology-cargo", "exited", "rust:unrelated");
     rig.seed_container("u3", "anthology-rust-target-777", "exited");
-    rig.seed_last_used(100);
     rig.seed_dir("1111", 100);
     let outside = rig.home.join("not-ours");
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("file"), "x").unwrap();
 
-    for args in [&["lint"][..], &["--clean-ours"], &["--clean-all-ours"]] {
+    for args in [
+        &["lint"][..],
+        &["--clean-ours"],
+        &["--clean-all-ours"],
+        &["--clean-all-ours", "--with-caches"],
+    ] {
         let out = rig
             .command(args)
             .env_remove("ANTHOLOGY_KEEP_REMOTE")
@@ -1196,7 +1426,7 @@ fn an_image_we_pulled_stays_while_a_container_that_is_not_ours_uses_it() {
     let rig = rig!();
     rig.seed_pulled_image();
     rig.seed_container_of("theirs", "their-data", "running", IMAGE);
-    let out = rig.run(&["--clean-all-ours"]);
+    let out = rig.run(&["--clean-all-ours", "--with-caches"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
     assert!(rig.images().contains(IMAGE), "{}", rig.images());
     assert!(!rig.log("docker.log").contains("rmi"));
@@ -1329,7 +1559,7 @@ fn clean_all_ours_refuses_while_a_run_is_live_and_works_after() {
     assert!(!rig.log("docker.log").contains("volume rm"));
     assert_eq!(rig.finish("a", run), Some(0));
 
-    let out = rig.run(&["--clean-all-ours"]);
+    let out = rig.run(&["--clean-all-ours", "--with-caches"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
     assert!(!rig.volumes().contains("anthology-cargo"));
 }

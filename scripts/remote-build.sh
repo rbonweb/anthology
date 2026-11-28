@@ -5,7 +5,7 @@
 #   ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh test -p anthology-guard
 #   ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh lint
 #   ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-ours
-#   ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-all-ours
+#   ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-all-ours [--with-caches]
 #
 # The host is an ssh alias or name, taken only from the environment: no host detail belongs in the
 # repo. Key-based login must already work (ssh -o BatchMode=yes); the script never prompts, never
@@ -14,8 +14,15 @@
 # both ends have it.
 #
 # The host is shared by many agents at once, so every run is its own: it has its own folder and
-# target volume, takes the locks below, and removes only what it made. What we create, and how we
-# tell it from the rest:
+# target volume, takes the locks below, and removes only what it made.
+#
+# What a run keeps and what it removes. Kept for the next run, because downloading and rebuilding
+# them costs minutes each time: the Rust image we pulled, the toolchain volume (anthology-rustup-*)
+# and the dependency caches (anthology-cargo, anthology-sccache). Removed when the run ends: its
+# containers, its folder and its target volume. The kept items go only under disk pressure (below)
+# or with --clean-all-ours --with-caches.
+#
+# What we create, and how we tell it from the rest:
 #   - the folders under ~/anthology-remote (a path nothing else uses), one per run: <checkout>-<run>,
 #     where <checkout> is a hash of the checkout's path. With ANTHOLOGY_KEEP_REMOTE=1 the folder is
 #     <checkout> alone, so a re-run of that checkout finds it again;
@@ -28,7 +35,8 @@
 #     containers, so the volume is the handle);
 #   - the Rust image, only if it was absent when we started a run: then we record it in
 #     ~/anthology-remote/.pulled-images. We remove it only from that record, only when no container
-#     that is not ours uses it, and never with a forced removal.
+#     that is not ours uses it, and never with a forced removal. An image that was on the host
+#     before us is never removed.
 # No unfiltered cleanup command is ever used, and nothing outside ~/anthology-remote and the items
 # above is touched.
 #
@@ -37,7 +45,7 @@
 # one, with no PID or clock to go stale.
 #   - <folder>.lock: held by a run for its whole life. Whatever sweeps or cleans skips a folder
 #     whose lock is held, and reclaims one whose lock is free;
-#   - .runs.lock: held shared by every run. --clean-all-ours and the 48-hour cache sweep take it
+#   - .runs.lock: held shared by every run. --clean-all-ours and the disk-pressure trim take it
 #     exclusive and no-wait, so they refuse (or skip) while any run is live;
 #   - .slots/<i>: a counting semaphore. At most `slots` runs build at once, each with `jobs` cargo
 #     jobs (CARGO_BUILD_JOBS), both derived from the host's cores and memory (3 GB per job): more
@@ -48,9 +56,8 @@
 #     installs into one volume at once leave a half-installed component; a failed install is
 #     retried once on a fresh volume.
 #
-#   1. at its start a run takes its locks. When nothing else is running it also sweeps the shared
-#      caches and the pulled image, if nothing of ours has run for 48 hours (the time of
-#      ~/anthology-remote/.last-used, written at the start and the end of each run);
+#   1. at its start a run takes its locks. When nothing else is running it also checks the disk
+#      (below);
 #   2. it sweeps the leftovers of other runs: folders (and their volumes) of runs that died, and
 #      kept folders and volumes unused for 12 hours (a folder's age is that of its .stamp file, a
 #      volume without a folder goes by its creation time), and stopped containers. A volume that a
@@ -68,9 +75,19 @@
 #      side does it by itself: this script sends a line every 10 seconds, and when they stop it
 #      stops the run and cleans up.
 #   --clean-ours removes what this checkout left on the host: its folders, volumes and containers,
-#   except those of a run that is still going (--clean is the same).
-#   --clean-all-ours removes everything of ours there, as defined above: every folder, our volumes
-#   with their containers, the caches and the image we pulled. It refuses while any run is live.
+#   except those of a run that is still going (--clean is the same). It keeps the image and the
+#   shared caches.
+#   --clean-all-ours removes every folder of ours there, our run volumes and their containers; it
+#   keeps the image and the shared caches too. With --with-caches it is the full wipe: also the
+#   caches, the toolchain, and the image we pulled. Either way it refuses while any run is live.
+#
+# Disk pressure. The kept caches and the image are trimmed only when a disk is short, never by age.
+# When no run is live, at the start and at the end of a run, the host trims if the home disk or the
+# Docker data disk is over 85% full: the kept volumes and the image we pulled, least recently used
+# first (each run touches a file under ~/anthology-remote/.used), until the disk is under 85%
+# again. Once an hour, at the start, it also removes a kept cache volume that is over 40 GB (the
+# size is read with `du` in a throwaway container). Only our own labelled volumes and recorded
+# images are ever trimmed, never one a running container uses.
 #
 # ANTHOLOGY_REMOTE_SYNC=tar forces the tar copy even where rsync exists (the tests use it).
 set -eu
@@ -80,14 +97,16 @@ usage() {
     cat >&2 <<'EOF'
 usage: ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh <rust-test.sh args...>
        ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-ours
-       ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-all-ours
+       ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh --clean-all-ours [--with-caches]
 
   <alias> is the ssh alias of the build host. The arguments are those of scripts/rust-test.sh,
   for example `test -p anthology-guard` or `lint`. After the run the host's copy of this checkout
-  and its target volume are removed; ANTHOLOGY_KEEP_REMOTE=1 keeps them for the next run.
+  and its target volume are removed; ANTHOLOGY_KEEP_REMOTE=1 keeps them for the next run. The Rust
+  image and the shared caches stay, so the next run does not download or rebuild them.
   --clean-ours (also --clean) removes what this checkout left on the host, never a run that is
-  still going. --clean-all-ours removes everything of ours on the host, caches and the Rust image
-  we pulled included, and nothing else; it refuses while any run is live.
+  still going. --clean-all-ours removes every folder and run volume of ours on the host, and
+  nothing else; it refuses while any run is live. With --with-caches it also removes the shared
+  caches, the toolchain and the Rust image we pulled: a full wipe.
   ANTHOLOGY_REMOTE_SLOTS=<n> and ANTHOLOGY_REMOTE_JOBS=<n> set how many runs build at once on the
   host and how many cargo jobs each gets (the defaults follow the host's cores and memory).
 EOF
@@ -105,9 +124,19 @@ case $host in
 esac
 
 clean=
+# 1 makes --clean-all-ours remove the shared caches and the pulled image too.
+with_caches=0
 case ${1:-} in
-    --clean | --clean-ours | --clean-all-ours)
+    --clean | --clean-ours)
         [ "$#" -eq 1 ] || usage
+        clean=$1
+        ;;
+    --clean-all-ours)
+        case $# in
+            1) ;;
+            2) [ "$2" = --with-caches ] || usage; with_caches=1 ;;
+            *) usage ;;
+        esac
         clean=$1
         ;;
     --clean-all)
@@ -134,8 +163,6 @@ done
 # (12 hours, in seconds).
 min_free_kb=20971520
 max_age_s=43200
-# How long nothing of ours may have run before we remove the shared caches and the image (48 hours).
-cache_age_s=172800
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 # One name per checkout; each run adds its own suffix below. The volume name comes from the folder's
@@ -234,31 +261,98 @@ drop_image() {
         mv "$pulled.new" "$pulled"
     fi
 }
-# idle_sweep AGE: the shared caches and the image, once nothing of ours has run for AGE seconds. With
-# no record of the last run, they stay: the record starts now. Call it only while no run is live.
-idle_sweep() {
-    last=$root/.last-used
-    [ -e "$last" ] || return 0
-    [ "$(stat -c %Y "$last")" -lt "$(($(date +%s) - $1))" ] || return 0
-    for v in $(docker volume ls -q --filter "label=$label" 2>/dev/null); do
-        case $v in anthology-cargo | anthology-sccache | anthology-rustup-*) drop_volume "$v" || true ;; esac
+
+# The kept items (the image, the toolchain and the dependency caches) are trimmed only when a disk
+# is short: a disk over 85% full, or a cache volume over 40 GB.
+pressure_pct=85
+cap_kb=41943040
+# touch_used NAME: a run used the kept item NAME (a volume, or image_key of an image) just now.
+touch_used() {
+    mkdir -p "$root/.used"
+    touch "$root/.used/$1" 2>/dev/null || true
+}
+# used_at NAME: when a run last used NAME (0: never recorded, so the oldest).
+used_at() {
+    stat -c %Y "$root/.used/$1" 2>/dev/null || echo 0
+}
+image_key() {
+    printf "image-%s" "$(printf "%s" "$1" | cksum | cut -d" " -f1)"
+}
+# pressure: a disk of the host (the home disk, the Docker data disk) is over 85% full.
+pressure() {
+    docker_root=$(docker info -f "{{.DockerRootDir}}" 2>/dev/null || true)
+    for p in "$HOME" "$docker_root"; do
+        [ -n "$p" ] && [ -e "$p" ] || continue
+        pct=$(df -Pk "$p" 2>/dev/null | awk "NR == 2 { print \$5 }")
+        pct=${pct%\%}
+        case $pct in "" | *[!0-9]*) continue ;; esac
+        [ "$pct" -le "$pressure_pct" ] || return 0
     done
-    drop_image "$image"
+    return 1
+}
+# candidates: the kept items we may trim, "<last used> <volume|image> <name>", oldest first. Our
+# labelled caches, and the images recorded as pulled by us; never a run volume.
+candidates() {
+    {
+        for v in $(docker volume ls -q --filter "label=$label" 2>/dev/null); do
+            case $v in
+                anthology-cargo | anthology-sccache | anthology-rustup-*)
+                    printf "%s volume %s\n" "$(used_at "$v")" "$v"
+                    ;;
+            esac
+        done
+        if [ -s "$pulled" ]; then
+            while read -r ref; do
+                [ -z "$ref" ] || printf "%s image %s\n" "$(used_at "$(image_key "$ref")")" "$ref"
+            done < "$pulled"
+        fi
+    } | sort -n
+}
+# volume_kb V: the size of volume V in KB, read in a throwaway container of the Rust image.
+volume_kb() {
+    [ -n "$image" ] || return 0
+    docker run --rm -v "$1:/v:ro" --entrypoint du "$image" -sk /v 2>/dev/null | cut -f1
+}
+# make_room MODE: trim the kept items if a disk is short. MODE size also looks (at most once an
+# hour) for a cache volume over the cap. Call it only while no run is live: it holds the runs lock.
+make_room() {
+    if [ "$1" = size ]; then
+        checked=$root/.size-checked
+        due_at=$(($(date +%s) - 3600))
+        if [ ! -e "$checked" ] || [ "$(stat -c %Y "$checked")" -lt "$due_at" ]; then
+            touch "$checked" 2>/dev/null || true
+            for v in $(docker volume ls -q --filter "label=$label" 2>/dev/null); do
+                case $v in anthology-cargo | anthology-sccache | anthology-rustup-*) ;; *) continue ;; esac
+                kb=$(volume_kb "$v")
+                case $kb in "" | *[!0-9]*) continue ;; esac
+                [ "$kb" -le "$cap_kb" ] || { echo "remote-build: $v is over 40 GB; removing it" >&2; drop_volume "$v" || true; }
+            done
+        fi
+    fi
+    pressure || return 0
+    echo "remote-build: a disk of the build host is over ${pressure_pct}% full; removing the least recently used caches" >&2
+    while read -r _ kind name; do
+        pressure || break
+        case $kind in
+            volume) drop_volume "$name" || true ;;
+            image) drop_image "$name" ;;
+        esac
+    done < <(candidates)
 }
 '
 
 # The holder: the first thing a run starts, and the last to end. It takes the run's locks, makes the
 # folder, says so, and stays until its stdin ends (the local script sends a line every 10 seconds; no
 # line for 90 seconds, or the end of the stream, means the run is over). Then it removes what the run
-# made. Because it lives on the host, a killed local script or a dropped link still gets cleaned up.
-# The argument is the age for the cache sweep.
+# made, and keeps the image and the shared caches. Because it lives on the host, a killed local
+# script or a dropped link still gets cleaned up.
 # shellcheck disable=SC2016 # expanded on the host, not here
 hold_body='
 export LC_ALL=C
 mkdir -p "$root"
 exec 7>>"$root/.runs.lock" || exit 1
-# Taken exclusive only when no run holds it: nothing is running, so the caches may be swept.
-if flock -n -x 7; then idle_sweep "$1"; fi
+# Taken exclusive only when no run holds it: nothing is running, so a short disk may be trimmed.
+if flock -n -x 7; then make_room size; fi
 flock -s -w 120 7 || { echo "remote-build: the build host is busy with a cleanup; try again" >&2; exit 4; }
 exec 6>>"$dir.lock" || exit 1
 if ! flock -x -w 5 6; then
@@ -267,19 +361,23 @@ if ! flock -x -w 5 6; then
 fi
 leave() {
     sweep
-    touch "$root/.last-used" 2>/dev/null || true
     if [ "$keep" = 1 ]; then
         touch "$dir.stamp" 2>/dev/null || true
-        return 0
+    else
+        cd "$HOME"
+        if is_ours "$vol"; then docker volume rm "$vol" >/dev/null 2>&1 || true; fi
+        rm -rf -- "$dir" "$dir.stamp" "$dir.lock"
     fi
-    cd "$HOME"
-    if is_ours "$vol"; then docker volume rm "$vol" >/dev/null 2>&1 || true; fi
-    rm -rf -- "$dir" "$dir.stamp" "$dir.lock"
+    # The last run out looks at the disk: give up our shared hold, and if no other run holds the
+    # lock, trim when a disk is short.
+    exec 7>&-
+    exec 7>>"$root/.runs.lock" || return 0
+    if flock -n -x 7; then make_room nosize; fi
 }
 trap "exit 255" INT TERM HUP
 trap leave EXIT
 mkdir -p "$dir"
-touch "$dir.stamp" "$root/.last-used"
+touch "$dir.stamp"
 echo remote-build-held
 while read -r -t 90 _; do :; done
 '
@@ -343,7 +441,7 @@ check_free() {
     free=$(df -Pk "$2" | awk "NR == 2 { print \$4 }")
     if [ -z "$free" ] || [ "$free" -lt "$min_kb" ]; then
         low=1
-        echo "remote-build: the build host has less than $((min_kb / 1048576)) GB free on its $1; free space there or run --clean-all-ours, then try again" >&2
+        echo "remote-build: the build host has less than $((min_kb / 1048576)) GB free on its $1; free space there or run --clean-all-ours --with-caches, then try again" >&2
     fi
 }
 check_free "home disk" "$HOME"
@@ -352,7 +450,7 @@ docker_root=$(docker info -f "{{.DockerRootDir}}" 2>/dev/null || true)
 [ -z "$low" ] || exit 3
 
 mkdir -p "$dir"
-touch "$dir.stamp" "$root/.last-used"
+touch "$dir.stamp"
 
 # Create our volumes ourselves, with our label: rust-test.sh would create them bare. A volume that
 # is already there stays as it is (and is not ours unless it already has the label).
@@ -365,9 +463,17 @@ make_volume anthology-sccache
 digest=${image##*@sha256:}
 [ -z "$image" ] || make_volume "anthology-rustup-${digest:0:12}"
 
-# An image that is not on the host yet is pulled by the run: record that it is ours to remove.
+# An image that is not on the host yet is pulled by the run: record that we pulled it, so that only
+# a trim under disk pressure or --clean-all-ours --with-caches ever removes it.
 if [ -n "$image" ] && ! docker image inspect "$image" >/dev/null 2>&1; then
     grep -qxF -- "$image" "$pulled" 2>/dev/null || echo "$image" >> "$pulled"
+fi
+# The kept items this run uses, for the least-recently-used order of a trim.
+touch_used anthology-cargo
+touch_used anthology-sccache
+if [ -n "$image" ]; then
+    touch_used "anthology-rustup-${digest:0:12}"
+    touch_used "$(image_key "$image")"
 fi
 if command -v rsync >/dev/null 2>&1; then echo remote-build-rsync; fi
 '
@@ -513,10 +619,11 @@ for d in "$dir" "$dir"-*; do
 done
 '
 
-# --clean-all-ours: everything of ours on the host, as the head defines it: every folder, our volumes
-# with their containers, and the image if we pulled it. Nothing else is touched. It takes the runs
-# lock exclusive and refuses when any run holds it. The lock file stays: a run that is starting may
-# already have it open.
+# --clean-all-ours: every folder of ours on the host and our run volumes with their containers, as the
+# head defines them. The shared caches, the toolchain and the pulled image stay, unless with_caches
+# is 1: then they go too, and so does every other file of ours (the full wipe). Nothing else is
+# touched. It takes the runs lock exclusive and refuses when any run holds it. The lock file stays:
+# a run that is starting may already have it open.
 # shellcheck disable=SC2016 # expanded on the host, not here
 clean_all_body='
 [ "${root##*/}" = anthology-remote ] || exit 2
@@ -530,11 +637,19 @@ if [ -d "$root" ]; then
 fi
 for v in $(docker volume ls -q --filter "label=$label" 2>/dev/null); do
     is_ours "$v" || continue
+    case $v in
+        anthology-cargo | anthology-sccache | anthology-rustup-*) [ "$with_caches" = 1 ] || continue ;;
+    esac
     drop_containers "$v"
     docker volume rm "$v" >/dev/null 2>&1 || true
 done
-drop_image "$image"
-[ ! -d "$root" ] || find "$root" -mindepth 1 ! -name .runs.lock -delete
+if [ "$with_caches" = 1 ]; then
+    drop_image "$image"
+    [ ! -d "$root" ] || find "$root" -mindepth 1 ! -name .runs.lock -delete
+elif [ -d "$root" ]; then
+    # The run folders, with their .stamp and .lock files: every name that starts with a digit.
+    find "$root" -mindepth 1 -maxdepth 1 -name "[0-9]*" -exec rm -rf -- {} +
+fi
 '
 
 # The command string for the host: one of the scripts above, its folder under the host's $HOME
@@ -543,6 +658,7 @@ remote_command() {
     local body=$1 cmd prefix arg
     shift
     prefix="keep=$keep
+with_caches=$with_caches
 image=$(q "$image")
 jobs_set=$jobs_set
 slots_set=$slots_set"
@@ -561,7 +677,11 @@ case $clean in
         ;;
     --clean-all-ours)
         rssh "$(remote_command "$clean_all_body")"
-        echo "remote-build: removed everything of ours from the build host" >&2
+        if [ "$with_caches" = 1 ]; then
+            echo "remote-build: removed everything of ours from the build host, caches and image included" >&2
+        else
+            echo "remote-build: removed our folders and run volumes from the build host; caches and image kept" >&2
+        fi
         exit 0
         ;;
 esac
@@ -618,7 +738,7 @@ git -C "$root" ls-files -z --cached --others --exclude-standard |
 mkfifo "$tmp/hold" "$tmp/run"
 beat > "$tmp/hold" &
 beat_hold=$!
-rssh "$(remote_command "$hold_body" "$cache_age_s")" < "$tmp/hold" > "$tmp/held" &
+rssh "$(remote_command "$hold_body")" < "$tmp/hold" > "$tmp/held" &
 hold_pid=$!
 until grep -qx remote-build-held "$tmp/held" 2>/dev/null; do
     if ! kill -0 "$hold_pid" 2>/dev/null; then

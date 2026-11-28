@@ -24,15 +24,18 @@
 # from rust-toolchain.toml (per image digest) and a target directory per checkout, so parallel
 # checkouts do not share build artifacts. CARGO_BUILD_JOBS passes through when it is set.
 #
-# Target volumes do not outlive their use. The target volume of a checkout (anthology-rust-target-N)
-# lives while a session of it runs, so its builds stay incremental; session-stop removes it. A
-# one-shot run (no $ANTHOLOGY_RUST_SESSION) removes it when the run ends, so use a session, or set
-# ANTHOLOGY_KEEP_TARGET=1 (any value but empty or 0), to keep builds incremental across runs and
-# stops. A volume still mounted by another container stays: Docker refuses to remove it.
-# `gc` removes the leftovers of killed runs: dangling volumes (no container) named
-# anthology-rust-target-* whose checkout is no longer a git worktree of this repository, and
-# those and anthology-atl-target when created more than $ANTHOLOGY_GC_HOURS hours ago (default
-# 48). It never touches anthology-cargo, anthology-rustup-* or any other volume.
+# The target volume of a checkout (anthology-rust-target-N) is kept for as long as the checkout
+# exists, so that repeated runs from it stay incremental: downloading and rebuilding it costs
+# minutes each time. A one-shot run (no $ANTHOLOGY_RUST_SESSION) keeps it unless
+# ANTHOLOGY_KEEP_TARGET=0 asks for it to go when the run ends (remote-build.sh does, for its
+# per-run folders). session-stop removes it, unless ANTHOLOGY_KEEP_TARGET=1. A volume still
+# mounted by another container stays: Docker refuses to remove it.
+# `gc` removes the leftovers: dangling volumes (no container) named anthology-rust-target-* whose
+# checkout is no longer a git worktree of this repository, and, when git cannot list the
+# worktrees (so "gone" is unknown), those and anthology-atl-target created more than
+# $ANTHOLOGY_GC_HOURS hours ago (default 48); anthology-atl-target always goes by that age. A
+# target volume of a live worktree is never removed by age. It never touches anthology-cargo,
+# anthology-rustup-* or any other volume: those are shared caches that later runs reuse.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -81,12 +84,19 @@ checkout=$(printf '%s' "$root" | cksum | cut -d' ' -f1)
 target_volume="anthology-rust-target-$checkout"
 
 # Removes this checkout's target volume unless the user keeps it (ANTHOLOGY_KEEP_TARGET set and not
-# 0). Docker refuses while a container still mounts it (another session of this checkout), and
-# there is nothing to do when it is gone: neither is an error.
+# 0): for the end of a session and a failed session setup. Docker refuses while a container still
+# mounts it (another session of this checkout), and there is nothing to do when it is gone:
+# neither is an error.
 drop_target() {
     case ${ANTHOLOGY_KEEP_TARGET:-} in
         "" | 0) docker volume rm "$target_volume" >/dev/null 2>&1 || true ;;
     esac
+}
+# The end of a one-shot run: the volume stays, so the next run is incremental, unless the caller
+# asks for it to go with ANTHOLOGY_KEEP_TARGET=0.
+# shellcheck disable=SC2329 # run by the EXIT trap
+drop_target_if_asked() {
+    [ "${ANTHOLOGY_KEEP_TARGET:-}" != 0 ] || docker volume rm "$target_volume" >/dev/null 2>&1 || true
 }
 
 # The creation time of volume $1 in epoch seconds, read from Docker's RFC 3339 `CreatedAt` (a zone
@@ -157,7 +167,9 @@ gc_volumes() {
                 *) case "$live " in *" $id "*) ;; *) stale=1 ;; esac ;;
             esac
         fi
-        if [ "$stale" = 0 ]; then
+        # A target volume of a live worktree is kept whatever its age; age only judges the one
+        # volume that has no worktree, and every volume when the worktrees cannot be listed.
+        if [ "$stale" = 0 ] && { [ "$have_live" = 0 ] || [ "$name" = anthology-atl-target ]; }; then
             created=$(created_epoch "$name")
             [ -z "$created" ] || [ "$created" -gt "$cutoff" ] || stale=1
         fi
@@ -304,9 +316,9 @@ if [ -n "${ANTHOLOGY_RUST_SESSION:-}" ]; then
         "$ANTHOLOGY_RUST_SESSION" sh -c "$launch" rust-test "$mode" "$@"
 fi
 
-# A one-shot run: its target volume goes when it ends, whatever way it ends, unless kept. Not
-# `exec`: this shell has to be there to remove the volume.
-trap drop_target EXIT
+# A one-shot run: its target volume stays when it ends, whatever way it ends, unless the caller
+# set ANTHOLOGY_KEEP_TARGET=0. Not `exec`: this shell has to be there to remove the volume then.
+trap drop_target_if_asked EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 ran=0
