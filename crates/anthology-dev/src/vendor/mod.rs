@@ -5,7 +5,7 @@
 //! Python tests port one to one and `vendor check` reports what `vendor.py check` reports.
 //!
 //! - [`manifest`]: `vendor/sources.json` (load, save, validate).
-//! - [`transforms`]: `rename-plugin`, `strip-connectors`, `rename-skill`.
+//! - [`transforms`]: `rename-plugin`, `strip-connectors`, `rename-skill`, `drop-paths`.
 //! - [`compare`]: copying, snapshotting and comparing trees.
 //! - [`py`]: the Python semantics vendor.py relies on.
 
@@ -51,7 +51,8 @@ pub use patch::apply_patch;
 pub use portmap::{load_portmap, portmap_problems, portmap_scripts};
 pub use sync::{Resolve, SyncReport, sync};
 pub use transforms::{
-    TRANSFORMS, rename_plugin, rename_skill, run_transform, strip_connectors, strip_markdown,
+    TRANSFORMS, drop_paths, rename_plugin, rename_skill, run_transform, strip_connectors,
+    strip_markdown,
 };
 
 /// vendor.py's `VendorError`: the message is Python's, verbatim.
