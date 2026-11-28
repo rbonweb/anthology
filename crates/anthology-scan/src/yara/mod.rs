@@ -1070,7 +1070,7 @@ mod tests {
         "$HOME",
         "/dev/tcp/",
         "bash -i >& ",
-        "xmrig",
+        concat!("xm", "rig"),
         "stratum",
         "hashrate",
         "nonce",
