@@ -49,6 +49,8 @@ pub const NOTICE: &str = include_str!("../NOTICE");
 
 /// Blocks the text report prints before it stops listing levels below HIGH.
 const MAX_BLOCKS: usize = 200;
+/// Triage items in the JSON; CRITICAL and HIGH items are never dropped, even past this.
+const MAX_TRIAGE_ITEMS: usize = 200;
 /// Characters of `seen` the report shows.
 const SEEN_CHARS: usize = 160;
 /// Characters of `why`, `do`, paths and other one-line fields.
@@ -430,12 +432,38 @@ pub fn render_json(s: &Scan, m: &Meta, nonce: &str) -> String {
         })
         .collect();
 
-    // One read of each file, for every MEDIUM or higher finding in it.
+    // Triage items: every CRITICAL and HIGH finding, then MEDIUM ones fill what is left of
+    // MAX_TRIAGE_ITEMS, most severe first, then by path. The text report and `findings` stay whole.
+    let mut chosen: Vec<usize> = (0..findings.len())
+        .filter(|&i| findings[i].severity >= Severity::High)
+        .collect();
+    let mut lower: Vec<usize> = (0..findings.len())
+        .filter(|&i| findings[i].severity == Severity::Medium)
+        .collect();
+    lower.sort_by(|&a, &b| {
+        findings[b]
+            .severity
+            .cmp(&findings[a].severity)
+            .then_with(|| findings[a].path.cmp(&findings[b].path))
+            .then(findings[a].line.cmp(&findings[b].line))
+            .then(a.cmp(&b))
+    });
+    let room = MAX_TRIAGE_ITEMS.saturating_sub(chosen.len());
+    if lower.len() > room {
+        notes.push(format!(
+            "{} more lower-severity findings not sent for triage; see the text report.",
+            lower.len() - room
+        ));
+    }
+    chosen.extend(lower.into_iter().take(room));
+
+    // One read of each file, for every chosen finding in it.
     let mut by_path: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (i, f) in findings.iter().enumerate() {
-        if f.severity >= Severity::Medium {
-            by_path.entry(f.path.as_str()).or_default().push(i);
-        }
+    for i in chosen {
+        by_path
+            .entry(findings[i].path.as_str())
+            .or_default()
+            .push(i);
     }
     let mut excerpts: BTreeMap<usize, String> = BTreeMap::new();
     for (path, ids) in &by_path {
@@ -902,6 +930,94 @@ mod tests {
         assert!(!text.contains('\u{1B}'), "{text}");
         let js = render_json(&s, &meta("/r"), NONCE);
         assert!(!js.contains('\u{202E}'), "{js}");
+    }
+
+    fn many(n: usize, sev: Severity, tag: &str) -> Vec<Finding> {
+        (0..n)
+            .map(|i| {
+                finding(
+                    sev,
+                    Group::Autorun,
+                    &format!("{tag}.{i:04}"),
+                    &format!("f{i:04}"),
+                    1,
+                )
+            })
+            .collect()
+    }
+
+    fn note_list(v: &Value) -> Vec<String> {
+        get(v, "notes")
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n.as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn triage_items_cap_at_200_and_say_so() {
+        let v = parse(&scan_of(many(250, Severity::Medium, "m")), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        assert_eq!(items.len(), 200);
+        let notes = note_list(&v);
+        let want = "50 more lower-severity findings not sent for triage; see the text report.";
+        assert!(notes.iter().any(|n| n == want), "{notes:?}");
+        // The findings list itself is not capped.
+        assert_eq!(get(&v, "findings").as_array().unwrap().len(), 250);
+    }
+
+    #[test]
+    fn triage_items_never_drop_high_or_critical() {
+        let mut all = many(210, Severity::High, "h");
+        all.extend(many(5, Severity::Critical, "c"));
+        all.extend(many(30, Severity::Medium, "m"));
+        let v = parse(&scan_of(all), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        // 215 HIGH and CRITICAL, no room left for the 30 MEDIUM.
+        assert_eq!(items.len(), 215);
+        let notes = note_list(&v);
+        let want = "30 more lower-severity findings not sent for triage; see the text report.";
+        assert!(notes.iter().any(|n| n == want), "{notes:?}");
+        // Exactly 210 HIGH: all of them, and no note.
+        let v = parse(&scan_of(many(210, Severity::High, "h")), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        assert_eq!(items.len(), 210);
+        assert!(
+            !note_list(&v)
+                .iter()
+                .any(|n| n.contains("not sent for triage"))
+        );
+    }
+
+    #[test]
+    fn triage_items_fill_the_rest_with_the_most_severe_then_by_path() {
+        let mut all = many(190, Severity::High, "h");
+        let mut med = many(30, Severity::Medium, "m");
+        med.iter_mut().for_each(|f| f.path = format!("z{}", f.path));
+        all.extend(med);
+        all.extend(many(30, Severity::Medium, "n"));
+        let v = parse(&scan_of(all), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        assert_eq!(items.len(), 200);
+        // Ten MEDIUM slots go to the paths that sort first (f0000..f0009), not the z-paths.
+        let findings = get(&v, "findings").as_array().unwrap();
+        let ids: Vec<&str> = items
+            .iter()
+            .map(|i| get(i, "id").as_str().unwrap())
+            .collect();
+        let mut medium_paths: Vec<&str> = findings
+            .iter()
+            .filter(|f| get(f, "severity").as_str() == Some("MEDIUM"))
+            .filter(|f| ids.contains(&get(f, "id").as_str().unwrap()))
+            .map(|f| get(f, "path").as_str().unwrap())
+            .collect();
+        medium_paths.sort();
+        assert_eq!(medium_paths.len(), 10);
+        assert!(
+            medium_paths.iter().all(|p| p.starts_with('f')),
+            "{medium_paths:?}"
+        );
     }
 
     #[test]
