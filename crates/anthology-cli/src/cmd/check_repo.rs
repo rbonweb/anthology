@@ -18,17 +18,18 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, PipeWriter, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anthology_core::Env;
 use anthology_core::sys;
+use anthology_pycompat::json::{self, DumpOpts, Value};
 use anthology_scan::escape::escape;
 use anthology_scan::fetch::{self, FetchPlan};
 use anthology_scan::report::{self, Meta, Source};
@@ -53,20 +54,225 @@ const URL_START: [&str; 3] = ["https://", "ssh://", "git@"];
 /// Runs `anthology check-repo …`; `args` are the arguments after `check-repo`.
 pub fn run(args: &[OsString], _stdin: &mut dyn Read) -> Output {
     let env = Env::from_process();
+    let guard = Arc::new(Guard::default());
+    watch_signals(&guard);
     let runner = RealRunner {
         path: env
             .get_os("PATH")
             .map(OsStr::to_os_string)
             .unwrap_or_default(),
+        guard: Arc::clone(&guard),
     };
-    run_with(args, &env, &runner)
+    run_with(args, &env, &runner, &guard)
 }
 
-/// The command with its environment and its way of starting programs given.
-fn run_with(args: &[OsString], env: &Env, runner: &dyn Runner) -> Output {
-    match execute(args, env, runner) {
+/// The command with its environment, its way of starting programs and its cleanup list given.
+fn run_with(args: &[OsString], env: &Env, runner: &dyn Runner, guard: &Guard) -> Output {
+    match execute(args, env, runner, guard) {
         Ok(out) => out,
         Err(message) => fail(&message),
+    }
+}
+
+/// Catches `SIGINT`, `SIGTERM` and `SIGHUP`: a thread stops every child, removes every folder the
+/// run made (the half-made quarantine, the scratch folder) and exits with `128 + signal`, as a
+/// shell reports a death by that signal. If the handlers cannot be installed the run goes on
+/// without: the watchdogs of the children still stop them and remove the folders.
+fn watch_signals(guard: &Arc<Guard>) {
+    let Ok(mut pipe) = sys::catch_termination() else {
+        return;
+    };
+    let guard = Arc::clone(guard);
+    std::thread::spawn(move || {
+        let mut byte = [0u8; 1];
+        if pipe.read_exact(&mut byte).is_err() {
+            return;
+        }
+        let sig = i32::from(byte[0]);
+        guard.shutdown();
+        let name = match sig {
+            1 => "SIGHUP",
+            2 => "SIGINT",
+            15 => "SIGTERM",
+            _ => "a signal",
+        };
+        let _ = writeln!(
+            io::stderr(),
+            "anthology check-repo: interrupted by {name}; the programs it started were stopped and its quarantine and scratch folders removed"
+        );
+        std::process::exit(128 + sig);
+    });
+}
+
+/// What an interrupt, or the death of this process, has to clean up: the process groups of the
+/// children that run now (each with a watchdog) and the folders this run made.
+#[derive(Default)]
+struct Guard {
+    state: Mutex<GuardState>,
+}
+
+#[derive(Default)]
+struct GuardState {
+    /// Set by `shutdown`: no child starts after it.
+    down: bool,
+    next: u64,
+    paths: Vec<PathBuf>,
+    kids: Vec<Kid>,
+}
+
+struct Kid {
+    id: u64,
+    group: u32,
+    watchdog: Watchdog,
+}
+
+/// A child that is registered with its guard until this value is dropped.
+struct Registered<'a> {
+    guard: &'a Guard,
+    id: u64,
+}
+
+impl Drop for Registered<'_> {
+    fn drop(&mut self) {
+        self.guard.finish(self.id);
+    }
+}
+
+impl Guard {
+    fn lock(&self) -> MutexGuard<'_, GuardState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// `path` is a folder this run made; an interrupt removes it. Only a folder that did not exist
+    /// before the run belongs here: the list is what `rm -rf` runs on.
+    fn add_path(&self, path: &Path) {
+        // Absolute: the watchdog runs in `/`, so a relative path would name another folder there.
+        if let Ok(path) = std::path::absolute(path) {
+            self.lock().paths.push(path);
+        }
+    }
+
+    /// `path` is done with: it was removed, or it is the result and stays.
+    fn forget_path(&self, path: &Path) {
+        if let Ok(path) = std::path::absolute(path) {
+            self.lock().paths.retain(|p| *p != path);
+        }
+    }
+
+    /// Starts `cmd` (a session leader, see `sys::new_session`) and puts it under a watchdog.
+    fn spawn(&self, cmd: &mut Command) -> io::Result<(Child, Registered<'_>)> {
+        let mut st = self.lock();
+        if st.down {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "the run was interrupted",
+            ));
+        }
+        let mut child = cmd.spawn()?;
+        let group = child.id();
+        let watchdog = match Watchdog::start(group, &st.paths) {
+            Ok(w) => w,
+            Err(e) => {
+                sys::kill_group(group);
+                let _ = child.wait();
+                return Err(io::Error::new(
+                    e.kind(),
+                    format!("cannot start the watchdog of a program: {e}"),
+                ));
+            }
+        };
+        st.next += 1;
+        let id = st.next;
+        st.kids.push(Kid {
+            id,
+            group,
+            watchdog,
+        });
+        Ok((child, Registered { guard: self, id }))
+    }
+
+    /// The child `id` ended: its watchdog stands down.
+    fn finish(&self, id: u64) {
+        let kid = {
+            let mut st = self.lock();
+            st.kids
+                .iter()
+                .position(|k| k.id == id)
+                .map(|at| st.kids.remove(at))
+        };
+        if let Some(kid) = kid {
+            kid.watchdog.finish();
+        }
+    }
+
+    /// Stops every child, removes every registered folder and refuses new children. The lock is
+    /// held throughout, so a child being started waits and then finds the run down.
+    fn shutdown(&self) {
+        let mut st = self.lock();
+        st.down = true;
+        for kid in st.kids.drain(..) {
+            sys::kill_group(kid.group);
+            kid.watchdog.finish();
+        }
+        for path in st.paths.drain(..) {
+            let _ = fs::remove_dir_all(path);
+        }
+    }
+
+    #[cfg(test)]
+    fn running(&self) -> usize {
+        self.lock().kids.len()
+    }
+
+    #[cfg(test)]
+    fn registered(&self) -> Vec<PathBuf> {
+        self.lock().paths.clone()
+    }
+}
+
+/// What the watchdog of a child runs: wait for a line from the run (it ended normally, stand
+/// down), or for the pipe to close without one (the run died: stop the group, remove the folders).
+const WATCHDOG: &str = "read -r line && exit 0\nkill -s KILL -- \"-$1\" 2>/dev/null\nshift\n[ \"$#\" -gt 0 ] && rm -rf -- \"$@\"\nexit 0\n";
+
+/// A shell in a session of its own that outlives a run killed by `SIGKILL`, which no handler can
+/// catch, and cleans up: macOS has nothing like `PR_SET_PDEATHSIG`, so the pipe does it. It holds
+/// the read end of a pipe; this process holds the only write end (no child inherits it: pipes are
+/// close-on-exec), so it sees the end of the pipe when this process is gone, whatever the cause.
+struct Watchdog {
+    child: Child,
+    pipe: PipeWriter,
+}
+
+impl Watchdog {
+    /// Watches the process group `group` and the absolute folders `paths`.
+    fn start(group: u32, paths: &[PathBuf]) -> io::Result<Watchdog> {
+        let (reader, pipe) = io::pipe()?;
+        let mut cmd = Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(WATCHDOG)
+            .arg("anthology-watchdog")
+            .arg(group.to_string())
+            .args(paths)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .current_dir("/")
+            .stdin(Stdio::from(reader))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        sys::new_session(&mut cmd);
+        let child = cmd.spawn()?;
+        Ok(Watchdog { child, pipe })
+    }
+
+    /// The run is over in an orderly way: the watchdog exits and touches nothing.
+    fn finish(self) {
+        let Watchdog {
+            mut child,
+            mut pipe,
+        } = self;
+        let _ = pipe.write_all(b"done\n");
+        drop(pipe);
+        let _ = child.wait();
     }
 }
 
@@ -149,9 +355,16 @@ struct Prepared {
     target: String,
     /// A quarantine folder this run made; removed if the run then fails.
     made: Option<PathBuf>,
+    /// What the report adds as notes (an old git).
+    notes: Vec<String>,
 }
 
-fn execute(args: &[OsString], env: &Env, runner: &dyn Runner) -> Result<Output, String> {
+fn execute(
+    args: &[OsString],
+    env: &Env,
+    runner: &dyn Runner,
+    guard: &Guard,
+) -> Result<Output, String> {
     let o = parse(args)?;
     if o.notice {
         return Ok(Output {
@@ -164,16 +377,18 @@ fn execute(args: &[OsString], env: &Env, runner: &dyn Runner) -> Result<Output, 
         .clone()
         .ok_or("needs a TARGET: a folder, or a git URL (https://, ssh:// or git@host:path)")?;
     let prepared = if is_url(&target) {
-        open_url(&o, &target, env, runner)?
+        open_url(&o, &target, env, runner, guard)?
     } else {
         open_folder(&o, &target)?
     };
     let made = prepared.made.clone();
-    let result = scan_and_report(&o, prepared, env, runner);
-    if result.is_err()
-        && let Some(dest) = made
-    {
-        let _ = fs::remove_dir_all(dest);
+    let result = scan_and_report(&o, prepared, env, runner, guard);
+    if let Some(dest) = made {
+        // The quarantine is the result of a finished run, and of nothing else.
+        if result.is_err() {
+            let _ = fs::remove_dir_all(&dest);
+        }
+        guard.forget_path(&dest);
     }
     result
 }
@@ -207,11 +422,18 @@ fn open_folder(o: &Opts, target: &OsStr) -> Result<Prepared, String> {
         source: Source::Path,
         target: canonical,
         made: None,
+        notes: Vec::new(),
     })
 }
 
 /// A URL, fetched into the quarantine folder.
-fn open_url(o: &Opts, target: &OsStr, env: &Env, runner: &dyn Runner) -> Result<Prepared, String> {
+fn open_url(
+    o: &Opts,
+    target: &OsStr,
+    env: &Env,
+    runner: &dyn Runner,
+    guard: &Guard,
+) -> Result<Prepared, String> {
     let url = target
         .to_str()
         .ok_or("the URL is not valid UTF-8")
@@ -221,18 +443,40 @@ fn open_url(o: &Opts, target: &OsStr, env: &Env, runner: &dyn Runner) -> Result<
         Some(into) => into.clone(),
         None => default_dest(env, &url)?,
     };
+    let dest = std::path::absolute(&dest)
+        .map_err(|e| format!("cannot resolve {}: {e}", shown(dest.as_os_str())))?;
+    // An interrupt removes the quarantine and the template folder next to it. Only a folder that
+    // does not exist yet is ours to remove: the fetch refuses one that does and never touches it.
+    let template = fetch::template_path(&dest);
+    if dest.symlink_metadata().is_err() {
+        guard.add_path(&dest);
+        if let Some(t) = &template {
+            guard.add_path(t);
+        }
+    }
     let plan = FetchPlan {
         url: url.clone(),
         rev: o.rev.clone(),
-        dest,
+        dest: dest.clone(),
     };
-    let modes = fetch::fetch(&plan, runner, FETCH_TIMEOUT)?;
-    // The fetch made the folder and removes it itself on failure; from here this run does.
-    let dest = std::path::absolute(&plan.dest).unwrap_or_else(|_| plan.dest.clone());
-    let tree = match DiskTree::open(&dest, &walk_opts(o), Some(&modes)) {
+    let done = fetch::fetch_with_notes(&plan, runner, FETCH_TIMEOUT);
+    // The fetch removes the template folder itself, and the quarantine too when it fails.
+    if let Some(t) = &template {
+        guard.forget_path(t);
+    }
+    let done = match done {
+        Ok(done) => done,
+        Err(e) => {
+            guard.forget_path(&dest);
+            return Err(e);
+        }
+    };
+    // From here this run removes the folder if it fails.
+    let tree = match DiskTree::open(&dest, &walk_opts(o), Some(&done.modes)) {
         Ok(tree) => tree,
         Err(e) => {
             let _ = fs::remove_dir_all(&dest);
+            guard.forget_path(&dest);
             return Err(format!("cannot read the fetched folder: {e}"));
         }
     };
@@ -245,6 +489,7 @@ fn open_url(o: &Opts, target: &OsStr, env: &Env, runner: &dyn Runner) -> Result<
         },
         target: url,
         made: Some(dest),
+        notes: done.notes,
     })
 }
 
@@ -276,17 +521,19 @@ fn scan_and_report(
     prepared: Prepared,
     env: &Env,
     runner: &dyn Runner,
+    guard: &Guard,
 ) -> Result<Output, String> {
     let Prepared {
         tree,
         source,
         target,
+        notes,
         ..
     } = prepared;
     let mut scan = anthology_scan::scan(&tree);
     let mut tool_runs: Vec<ToolRun> = Vec::new();
     if !o.no_tools {
-        let scratch = Scratch::new(env, tree.root())?;
+        let scratch = Scratch::new(env, tree.root(), guard)?;
         let (runs, found) = tools::run_tools(tree.root(), scratch.path(), runner);
         tool_runs = runs;
         scan.findings.extend(found);
@@ -300,7 +547,7 @@ fn scan_and_report(
     let mut text = if o.json {
         let nonce = report::new_nonce()
             .map_err(|e| format!("cannot read random bytes for the report: {e}"))?;
-        report::render_json(&scan, &meta, &nonce)
+        with_notes(report::render_json(&scan, &meta, &nonce), &notes)
     } else {
         report::render_text(&scan, &meta)
     };
@@ -308,25 +555,64 @@ fn scan_and_report(
         text.push('\n');
     }
     let code = report::exit_code(&scan);
-    let stderr = if code == 3 {
-        b"anthology check-repo: the scan is partial or hit an error (exit 3); see the report\n"
-            .to_vec()
-    } else {
-        Vec::new()
-    };
+    // A note is never an error: the scan ran, and its exit code is the report's.
+    let mut stderr = String::new();
+    for note in &notes {
+        stderr.push_str(&format!("anthology check-repo: note: {}\n", one_line(note)));
+    }
+    if code == 3 {
+        stderr.push_str(
+            "anthology check-repo: the scan is partial or hit an error (exit 3); see the report\n",
+        );
+    }
     Ok(Output {
         stdout: text.into_bytes(),
-        stderr,
+        stderr: stderr.into_bytes(),
         code,
     })
 }
 
-/// A new folder for the tools' config files and reports, outside the target, removed when the
-/// value is dropped.
-struct Scratch(PathBuf);
+/// `report` (the JSON) with `notes` added to its `notes` array, before the standing last note.
+/// A document that does not parse is returned as it is.
+fn with_notes(report: String, notes: &[String]) -> String {
+    if notes.is_empty() {
+        return report;
+    }
+    let Ok(mut doc) = json::loads(&report) else {
+        return report;
+    };
+    let Some(list) = doc
+        .as_object_mut()
+        .and_then(|m| m.get_mut("notes"))
+        .and_then(Value::as_array_mut)
+    else {
+        return report;
+    };
+    let at = list.len().saturating_sub(1);
+    for (i, note) in notes.iter().enumerate() {
+        list.insert(at + i, Value::Str(one_line(note)));
+    }
+    json::dumps(
+        &doc,
+        &DumpOpts {
+            indent: None,
+            sort_keys: false,
+            ensure_ascii: true,
+            item_sep: ",",
+            key_sep: ":",
+        },
+    )
+}
 
-impl Scratch {
-    fn new(env: &Env, target: &Path) -> Result<Scratch, String> {
+/// A new folder for the tools' config files and reports, outside the target, removed when the
+/// value is dropped. While it exists an interrupt removes it too.
+struct Scratch<'a> {
+    path: PathBuf,
+    guard: &'a Guard,
+}
+
+impl<'a> Scratch<'a> {
+    fn new(env: &Env, target: &Path, guard: &'a Guard) -> Result<Scratch<'a>, String> {
         let base = env
             .get_os("TMPDIR")
             .filter(|t| !t.is_empty())
@@ -342,7 +628,10 @@ impl Scratch {
                 .map_err(|e| format!("cannot read random bytes for a scratch folder: {e}"))?;
             let path = base.join(format!("anthology-check-repo-{nonce}"));
             match fs::DirBuilder::new().mode(0o700).create(&path) {
-                Ok(()) => return Ok(Scratch(path)),
+                Ok(()) => {
+                    guard.add_path(&path);
+                    return Ok(Scratch { path, guard });
+                }
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(e) => {
                     return Err(format!(
@@ -356,13 +645,14 @@ impl Scratch {
     }
 
     fn path(&self) -> &Path {
-        &self.0
+        &self.path
     }
 }
 
-impl Drop for Scratch {
+impl Drop for Scratch<'_> {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+        let _ = fs::remove_dir_all(&self.path);
+        self.guard.forget_path(&self.path);
     }
 }
 
@@ -373,6 +663,8 @@ impl Drop for Scratch {
 struct RealRunner {
     /// `PATH` as the process got it.
     path: OsString,
+    /// Every child it starts is registered here, with a watchdog.
+    guard: Arc<Guard>,
 }
 
 impl Runner for RealRunner {
@@ -408,7 +700,9 @@ impl Runner for RealRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         sys::new_session(&mut cmd);
-        let mut child = cmd.spawn()?;
+        // Registered until this call ends, whichever way: an interrupt or the death of this
+        // process stops the group while it runs.
+        let (mut child, _registered) = self.guard.spawn(&mut cmd)?;
         // The child leads its own group, so its process id is the group's.
         let group = child.id();
         let (tx, rx) = mpsc::channel::<(usize, Vec<u8>)>();
@@ -499,7 +793,130 @@ mod tests {
     fn runner() -> RealRunner {
         RealRunner {
             path: OsString::from("/usr/bin:/bin"),
+            guard: Arc::new(Guard::default()),
         }
+    }
+
+    /// Waits up to `limit` for `child` to end.
+    fn wait_for(
+        child: &mut std::process::Child,
+        limit: Duration,
+    ) -> Option<std::process::ExitStatus> {
+        let end = Instant::now() + limit;
+        while Instant::now() < end {
+            if let Some(status) = child.try_wait().expect("try_wait") {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        None
+    }
+
+    /// A `sleep` that leads its own session, like every child of the runner.
+    fn sleeper() -> std::process::Child {
+        let mut cmd = Command::new("/bin/sleep");
+        cmd.arg("60");
+        sys::new_session(&mut cmd);
+        cmd.spawn().expect("spawn sleep")
+    }
+
+    fn gone(path: &Path) -> bool {
+        for _ in 0..100 {
+            if path.symlink_metadata().is_err() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn a_watchdog_kills_the_group_and_removes_the_paths_when_the_parent_goes_away() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let victim = dir.path().join("victim");
+        fs::create_dir(&victim).expect("make folder");
+        fs::write(victim.join("file"), "x").expect("write");
+        let mut child = sleeper();
+        let watchdog =
+            Watchdog::start(child.id(), std::slice::from_ref(&victim)).expect("start the watchdog");
+        // Closing the pipe without a word is what the death of the parent looks like.
+        drop(watchdog);
+        let status = wait_for(&mut child, Duration::from_secs(10)).expect("the group was killed");
+        assert_eq!(status.signal(), Some(9));
+        assert!(gone(&victim), "the watchdog left {}", victim.display());
+    }
+
+    #[test]
+    fn a_finished_watchdog_spares_the_group_and_the_paths() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keep = dir.path().join("keep");
+        fs::create_dir(&keep).expect("make folder");
+        let mut child = sleeper();
+        let watchdog =
+            Watchdog::start(child.id(), std::slice::from_ref(&keep)).expect("start the watchdog");
+        watchdog.finish();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            child.try_wait().expect("try_wait").is_none(),
+            "the group was killed"
+        );
+        assert!(keep.is_dir(), "the folder was removed");
+        sys::kill_group(child.id());
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn shutdown_kills_every_group_removes_every_path_and_refuses_new_children() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let victim = dir.path().join("quarantine");
+        fs::create_dir(&victim).expect("make folder");
+        let r = Arc::new(runner());
+        r.guard.add_path(&victim);
+        let busy = Arc::clone(&r);
+        let run = std::thread::spawn(move || {
+            busy.run(
+                Path::new("/bin/sleep"),
+                &[os("60")],
+                Path::new("/"),
+                &[],
+                Duration::from_secs(60),
+            )
+        });
+        for _ in 0..200 {
+            if r.guard.running() == 1 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(r.guard.running(), 1, "the child never registered");
+        r.guard.shutdown();
+        // The run ends at once: killed, so 128 + 9.
+        let (code, _, _) = run.join().expect("thread").expect("the run returns");
+        assert_eq!(code, 137);
+        assert!(!victim.exists(), "the registered folder was not removed");
+        assert_eq!(r.guard.running(), 0);
+        let err = r
+            .run(
+                Path::new("/bin/true"),
+                &[],
+                Path::new("/"),
+                &[],
+                Duration::from_secs(5),
+            )
+            .expect_err("no new child after shutdown");
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn a_path_that_is_forgotten_is_not_removed_by_shutdown() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keep = dir.path().join("kept-quarantine");
+        fs::create_dir(&keep).expect("make folder");
+        let guard = Guard::default();
+        guard.add_path(&keep);
+        guard.forget_path(&keep);
+        guard.shutdown();
+        assert!(keep.is_dir());
     }
 
     fn os(s: &str) -> OsString {
@@ -639,18 +1056,29 @@ mod tests {
         let base = tempfile::tempdir().expect("temp dir");
         let target = tempfile::tempdir().expect("temp dir");
         let env = Env::default().with_os("TMPDIR", base.path());
+        let guard = Guard::default();
         let made = {
-            let s = Scratch::new(&env, &fs::canonicalize(target.path()).expect("canonical"))
-                .expect("a scratch folder");
+            let s = Scratch::new(
+                &env,
+                &fs::canonicalize(target.path()).expect("canonical"),
+                &guard,
+            )
+            .expect("a scratch folder");
             let mode = fs::metadata(s.path())
                 .expect("scratch")
                 .permissions()
                 .mode();
             assert_eq!(mode & 0o777, 0o700);
             assert!(s.path().starts_with(base.path()));
+            // An interrupt removes it too, while it is in use.
+            assert_eq!(guard.registered(), [s.path().to_path_buf()]);
             s.path().to_path_buf()
         };
         assert!(!made.exists(), "the scratch folder outlived its guard");
+        assert!(
+            guard.registered().is_empty(),
+            "a dropped scratch stays registered"
+        );
     }
 
     #[test]
@@ -659,9 +1087,14 @@ mod tests {
         let inside = target.path().join("tmp");
         fs::create_dir(&inside).expect("make folder");
         let env = Env::default().with_os("TMPDIR", &inside);
-        let err = Scratch::new(&env, &fs::canonicalize(target.path()).expect("canonical"))
-            .err()
-            .expect("refused");
+        let guard = Guard::default();
+        let err = Scratch::new(
+            &env,
+            &fs::canonicalize(target.path()).expect("canonical"),
+            &guard,
+        )
+        .err()
+        .expect("refused");
         assert!(err.contains("inside the target"), "{err}");
         assert_eq!(
             fs::read_dir(&inside).expect("list").count(),
@@ -694,6 +1127,7 @@ mod tests {
                 dir.path(),
             ])
             .expect("join"),
+            guard: Arc::new(Guard::default()),
         };
         assert_eq!(r.find("a-tool"), None, "not executable yet");
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod");

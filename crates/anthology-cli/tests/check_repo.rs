@@ -14,6 +14,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anthology_pycompat::json::{self, Value};
 use anthology_testkit::http::TestServer;
@@ -71,16 +72,16 @@ impl Sandbox {
         self.run_in(args, front, &self.tmp())
     }
 
-    /// `run` with `TMPDIR` set to `tmp`.
-    fn run_in(&self, args: &[&str], front: &[&Path], tmp: &Path) -> Out {
+    /// The command of `run`: `TMPDIR` is `tmp`, `PATH` is `front` before `/usr/bin:/bin`.
+    fn command(&self, args: &[&str], front: &[&Path], tmp: &Path) -> Command {
         let mut path = String::new();
         for p in front {
             path.push_str(&p.to_string_lossy());
             path.push(':');
         }
         path.push_str("/usr/bin:/bin");
-        let out = Command::new(BIN)
-            .arg("check-repo")
+        let mut cmd = Command::new(BIN);
+        cmd.arg("check-repo")
             .args(args)
             .env_clear()
             .env("HOME", self.home())
@@ -90,7 +91,23 @@ impl Sandbox {
             .env("GITHUB_TOKEN", "must-not-reach-a-child")
             .env("GH_TOKEN", "must-not-reach-a-child")
             .current_dir(self.path())
-            .stdin(Stdio::null())
+            .stdin(Stdio::null());
+        cmd
+    }
+
+    /// Starts the binary and leaves it running, for a test that signals it.
+    fn spawn(&self, args: &[&str], front: &[&Path]) -> std::process::Child {
+        self.command(args, front, &self.tmp())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("start anthology")
+    }
+
+    /// `run` with `TMPDIR` set to `tmp`.
+    fn run_in(&self, args: &[&str], front: &[&Path], tmp: &Path) -> Out {
+        let out = self
+            .command(args, front, tmp)
             .output()
             .expect("run anthology");
         Out {
@@ -275,8 +292,19 @@ fn one_line_error(out: &Out) {
     assert_eq!(out.stderr.lines().count(), 1, "{:?}", out.stderr);
 }
 
+/// A finished run says nothing on stderr but notes (an old git adds one).
+fn only_notes(out: &Out) {
+    for line in out.stderr.lines() {
+        assert!(
+            line.starts_with("anthology check-repo: note: "),
+            "stderr of a report run: {:?}",
+            out.stderr
+        );
+    }
+}
+
 fn parsed(out: &Out) -> json::Map {
-    assert_eq!(out.stderr, "", "stderr of a report run");
+    only_notes(out);
     json::loads(&out.stdout)
         .expect("one JSON object")
         .into_object()
@@ -383,7 +411,7 @@ fn url_mode_end_to_end() {
 
     let out = sb.run(&["--no-tools", "--into", into_arg, &url], &[&bin]);
     assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
-    assert_eq!(out.stderr, "");
+    only_notes(&out);
     let first = out.stdout.lines().next().expect("a verdict line");
     assert_eq!(first, "Review before opening", "{}", out.stdout);
     // The header names the URL as given, the quarantine folder and how to work in it.
@@ -807,4 +835,355 @@ fn usage_errors_escape_what_they_echo() {
         out.stderr
     );
     assert!(out.stderr.contains("\\u{202E}"), "{}", out.stderr);
+}
+
+// ---- Interrupts: nothing is left running, and no folder is left behind ----
+
+/// A program that says it started and then runs until it is killed, writing a line to `beat` in
+/// `HOME` every 50 ms. (A pid check cannot show it died: in a container nothing reaps an orphan,
+/// and a zombie still answers signal 0. A file that stops growing can.)
+fn hang(bin: &Path, name: &str) {
+    script(
+        bin,
+        name,
+        "#!/bin/sh\n: > \"$HOME/started\"\nwhile :; do echo x >> \"$HOME/beat\"; sleep 0.05; done\n",
+    );
+}
+
+fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
+    let end = Instant::now() + limit;
+    while Instant::now() < end {
+        if done() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    done()
+}
+
+/// The `beat` file has stopped growing, after it grew.
+fn heartbeat_stopped(beat: &Path) -> bool {
+    std::thread::sleep(Duration::from_millis(400));
+    let first = fs::metadata(beat).map_or(0, |m| m.len());
+    std::thread::sleep(Duration::from_millis(500));
+    let second = fs::metadata(beat).map_or(0, |m| m.len());
+    first > 0 && first == second
+}
+
+fn send(child: &std::process::Child, signal: &str) {
+    let status = Command::new("kill")
+        .args(["-s", signal, &child.id().to_string()])
+        .status()
+        .expect("run kill");
+    assert!(status.success(), "kill -s {signal} failed");
+}
+
+fn finish(child: &mut std::process::Child, limit: Duration) -> std::process::ExitStatus {
+    let end = Instant::now() + limit;
+    while Instant::now() < end {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let _ = child.kill();
+    panic!("the process did not end within {limit:?}");
+}
+
+fn stderr_of(child: &mut std::process::Child) -> String {
+    use std::io::Read;
+    let mut text = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut text);
+    }
+    text
+}
+
+/// Starts a fetch whose `ssh` never answers, waits until git is running it, and returns the
+/// pieces a test checks afterwards.
+fn hung_fetch(sb: &Sandbox) -> (std::process::Child, PathBuf, PathBuf) {
+    let bin = sb.path().join("bin");
+    hang(&bin, "ssh");
+    let into = sb.path().join("quarantine");
+    let template = sb.path().join(".quarantine.template");
+    let child = sb.spawn(
+        &[
+            "--no-tools",
+            "--into",
+            into.to_str().expect("utf-8"),
+            "ssh://example.invalid/some/repo",
+        ],
+        &[&bin],
+    );
+    assert!(
+        wait_until(Duration::from_secs(30), || sb
+            .home()
+            .join("started")
+            .exists()),
+        "git never started ssh"
+    );
+    assert!(
+        into.is_dir(),
+        "the quarantine folder should exist mid-fetch"
+    );
+    assert!(
+        template.is_dir(),
+        "the template folder should exist mid-fetch"
+    );
+    (child, into, template)
+}
+
+#[test]
+fn an_interrupt_mid_fetch_stops_git_and_removes_the_quarantine() {
+    for (signal, code) in [("INT", 130), ("TERM", 143), ("HUP", 129)] {
+        let sb = Sandbox::new();
+        let (mut child, into, template) = hung_fetch(&sb);
+        send(&child, signal);
+        let status = finish(&mut child, Duration::from_secs(30));
+        // The handler ran (a plain death by signal has no exit code) and said so.
+        assert_eq!(status.code(), Some(code), "SIG{signal}: {status:?}");
+        let err = stderr_of(&mut child);
+        assert!(err.contains("interrupted"), "SIG{signal}: {err}");
+        assert!(!into.exists(), "SIG{signal}: the quarantine was left");
+        assert!(
+            !template.exists(),
+            "SIG{signal}: the template folder was left"
+        );
+        assert!(
+            heartbeat_stopped(&sb.home().join("beat")),
+            "SIG{signal}: ssh kept running"
+        );
+    }
+}
+
+#[test]
+fn a_killed_cli_leaves_no_child_and_no_quarantine() {
+    // SIGKILL cannot be caught: the watchdog of each child does the cleaning.
+    let sb = Sandbox::new();
+    let (mut child, into, template) = hung_fetch(&sb);
+    child.kill().expect("kill the CLI");
+    let _ = child.wait();
+    assert!(
+        wait_until(Duration::from_secs(20), || !into.exists()
+            && !template.exists()),
+        "the watchdog left the quarantine"
+    );
+    assert!(
+        heartbeat_stopped(&sb.home().join("beat")),
+        "ssh kept running"
+    );
+}
+
+#[test]
+fn an_interrupt_during_the_tools_removes_the_scratch_folder() {
+    let sb = Sandbox::new();
+    let target = tempfile::tempdir().expect("temp dir");
+    folder_fixture(target.path());
+    let bin = sb.path().join("bin");
+    hang(&bin, "osv-scanner");
+    let mut child = sb.spawn(&[target.path().to_str().expect("utf-8")], &[&bin]);
+    assert!(
+        wait_until(Duration::from_secs(30), || sb
+            .home()
+            .join("started")
+            .exists()),
+        "the tool never started"
+    );
+    assert_eq!(
+        fs::read_dir(sb.tmp()).expect("tmp").count(),
+        1,
+        "one scratch folder"
+    );
+    send(&child, "TERM");
+    let status = finish(&mut child, Duration::from_secs(30));
+    assert_eq!(status.code(), Some(143), "{status:?}");
+    assert_eq!(
+        fs::read_dir(sb.tmp()).expect("tmp").count(),
+        0,
+        "the scratch folder was left"
+    );
+    assert!(
+        heartbeat_stopped(&sb.home().join("beat")),
+        "the tool kept running"
+    );
+    // The folder that was scanned is untouched.
+    assert!(target.path().join("README.md").exists());
+}
+
+#[test]
+fn a_killed_cli_leaves_no_tool_and_no_scratch_folder() {
+    let sb = Sandbox::new();
+    let target = tempfile::tempdir().expect("temp dir");
+    folder_fixture(target.path());
+    let bin = sb.path().join("bin");
+    hang(&bin, "osv-scanner");
+    let mut child = sb.spawn(&[target.path().to_str().expect("utf-8")], &[&bin]);
+    assert!(
+        wait_until(Duration::from_secs(30), || sb
+            .home()
+            .join("started")
+            .exists()),
+        "the tool never started"
+    );
+    child.kill().expect("kill the CLI");
+    let _ = child.wait();
+    assert!(
+        wait_until(Duration::from_secs(20), || {
+            fs::read_dir(sb.tmp()).is_ok_and(|mut d| d.next().is_none())
+        }),
+        "the watchdog left the scratch folder"
+    );
+    assert!(
+        heartbeat_stopped(&sb.home().join("beat")),
+        "the tool kept running"
+    );
+}
+
+// ---- Relative PATH entries, the quarantine's own config, an old git ----
+
+#[test]
+fn a_relative_path_entry_never_runs_a_program_from_the_working_folder() {
+    let sb = Sandbox::new();
+    // git runs in the parent folder of `--into`; a `.` entry would find this `ssh` there.
+    let marker = sb.path().join("ran-from-the-working-folder");
+    script(
+        sb.path(),
+        "ssh",
+        &format!("#!/bin/sh\n: > '{}'\nexit 1\n", marker.display()),
+    );
+    let into = sb.path().join("quarantine");
+    let out = sb.run(
+        &[
+            "--no-tools",
+            "--into",
+            into.to_str().expect("utf-8"),
+            "ssh://example.invalid/some/repo",
+        ],
+        &[Path::new("."), Path::new("")],
+    );
+    one_line_error(&out);
+    assert!(!marker.exists(), "a program from the working folder ran");
+    assert!(!into.exists());
+}
+
+#[test]
+fn the_quarantine_keeps_its_own_protections_in_git_config() {
+    let sb = Sandbox::new();
+    let repo = sb.path().join("remote");
+    source_repo(&repo);
+    let bin = sb.path().join("bin");
+    fake_ssh(&bin);
+    let into = sb.path().join("quarantine");
+    let out = sb.run(
+        &[
+            "--no-tools",
+            "--into",
+            into.to_str().expect("utf-8"),
+            &ssh_url(&repo),
+        ],
+        &[&bin],
+    );
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    let config = fs::read_to_string(into.join(".git/config")).expect("the quarantine's config");
+    for want in [
+        "symlinks = false",
+        "hooksPath = /dev/null",
+        "fsmonitor = false",
+    ] {
+        assert!(config.contains(want), "{want} missing in {config}");
+    }
+}
+
+/// A `git` that reports `version` and otherwise is the real one (found by its folder).
+fn git_claiming(bin: &Path, version: &str) {
+    let real = [
+        "/usr/bin/git",
+        "/bin/git",
+        "/usr/local/bin/git",
+        "/opt/homebrew/bin/git",
+    ]
+    .into_iter()
+    .find(|p| Path::new(p).is_file())
+    .expect("a git next to /usr/bin");
+    script(
+        bin,
+        "git",
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in *--version*) echo 'git version {version}' ;; *) exec {real} \"$@\" ;; esac\n"
+        ),
+    );
+}
+
+#[test]
+fn an_old_git_is_a_note_in_the_json_and_on_stderr_never_a_refusal() {
+    let sb = Sandbox::new();
+    let repo = sb.path().join("remote");
+    source_repo(&repo);
+    let bin = sb.path().join("bin");
+    fake_ssh(&bin);
+    git_claiming(&bin, "2.34.1");
+    let url = ssh_url(&repo);
+    let into = sb.path().join("quarantine");
+    let out = sb.run(
+        &[
+            "--json",
+            "--no-tools",
+            "--into",
+            into.to_str().expect("utf-8"),
+            &url,
+        ],
+        &[&bin],
+    );
+    // The scan ran to its end: the one HIGH finding gives exit 1.
+    assert_eq!(out.code, 1, "{}{}", out.stdout, out.stderr);
+    assert!(
+        out.stderr.starts_with("anthology check-repo: note: "),
+        "{}",
+        out.stderr
+    );
+    assert_eq!(out.stderr.lines().count(), 1, "{}", out.stderr);
+    assert!(
+        out.stderr.contains("2.34.1") && out.stderr.contains("2.39.1"),
+        "{}",
+        out.stderr
+    );
+    let stdout = Out {
+        code: out.code,
+        stdout: out.stdout.clone(),
+        stderr: String::new(),
+    };
+    let m = parsed(&stdout);
+    let notes: Vec<&str> = m
+        .get("notes")
+        .and_then(Value::as_array)
+        .expect("notes")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert_eq!(notes.len(), 2, "{notes:?}");
+    assert!(
+        notes[0].contains("2.34.1") && notes[0].contains("CVE-2022-23521"),
+        "{notes:?}"
+    );
+    // The standing note stays last.
+    assert_eq!(notes[1], "No findings is not proof of safety.");
+    // A current git adds nothing.
+    let again = sb.path().join("quarantine2");
+    git_claiming(&bin, "2.43.0");
+    let out = sb.run(
+        &[
+            "--json",
+            "--no-tools",
+            "--into",
+            again.to_str().expect("utf-8"),
+            &url,
+        ],
+        &[&bin],
+    );
+    assert_eq!(out.stderr, "");
+    let m = parsed(&out);
+    assert_eq!(
+        m.get("notes").and_then(Value::as_array).map(Vec::len),
+        Some(1)
+    );
 }
