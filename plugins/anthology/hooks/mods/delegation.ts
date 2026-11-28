@@ -398,6 +398,33 @@ async function refusal($: EngineInterface, file: string, why: string): Promise<s
   )
 }
 
+/** The text masking.ts puts in place of a secret starts with this. */
+const MASK_MARKER = '[masked by anthology:'
+const MARKER_REFUSAL =
+  'Blocked by anthology: this edit contains a masked secret placeholder; write the real value from its source (env file or ~/.config/<project>/<service>.env), never the marker.'
+
+/** The text a file tool is about to write: `content`, `new_string`, `new_source` and each edit's `new_string`. */
+function newTexts(e: object): string[] {
+  const o = e as { readonly [k: string]: unknown }
+  const edits = Array.isArray(o.edits) ? o.edits : []
+  const texts = [o.content, o.new_string, o.new_source, ...edits.map(x => (x as { readonly new_string?: unknown } | null)?.new_string)]
+  return texts.filter((t): t is string => typeof t === 'string')
+}
+
+/**
+ * Whether the call writes the mask marker. The text is looked at first, so a call that has none
+ * reads nothing from the session; only then do the switches (ANTHOLOGY_SECRET_MASK=0 and
+ * ANTHOLOGY_MODS=0 turn the refusal off with the masking it belongs to). Any error: not refused.
+ */
+async function writesMaskMarker($: EngineInterface, e: object): Promise<boolean> {
+  try {
+    if (!newTexts(e).some(t => t.includes(MASK_MARKER))) return false
+    return !(await modsOff($)) && (await $.env.get('ANTHOLOGY_SECRET_MASK')) !== '0'
+  } catch {
+    return false
+  }
+}
+
 export function registerDelegation(on: On): void {
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
@@ -419,7 +446,13 @@ export function registerDelegation(on: On): void {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  on('tool.call', { tool: ['Edit', 'Write', 'NotebookEdit'] }, async ($, e, next) => {
+  // Two jobs, in this order. First the mask marker (masking.ts): a Write, Edit, MultiEdit or
+  // NotebookEdit whose new text holds it is refused, whoever makes it and whatever the file is, so
+  // a placeholder never replaces a real value on disk. Then the delegation rules, which gate the
+  // lead's Edit, Write and NotebookEdit; a MultiEdit has no delegation rule and goes straight on.
+  on('tool.call', { tool: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] }, async ($, e, next) => {
+    if (await writesMaskMarker($, e)) return { deny: MARKER_REFUSAL }
+    if (e.tool === 'MultiEdit') return next(e)
     if (e.agentId !== undefined || (await delegationOff($)) || !(await isInteractive($))) return next(e)
     if (await isEmbeddedHost($)) return next(e)
     const file = field(e, e.tool === 'NotebookEdit' ? 'notebook_path' : 'file_path')
