@@ -129,17 +129,72 @@ fn is_range(text: &str, i: usize, end: usize) -> bool {
     ends_a_range(before) && ends_a_range(after)
 }
 
+/// A line whose dashes are structure, not style: a heading (`## Step 1 — Install`, up to three
+/// spaces of indent, one to six `#` and a space or the end of the line) or a table row (a line
+/// that starts with `|`).
+static STRUCTURE_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:[ ]{0,3}#{1,6}(?:[ \t]|$)|[ \t]*\|)").expect("structure line pattern")
+});
+
+/// A line that starts with a label and then a dash: group 1 is the dash. The label is a list
+/// item's bold term (`- **Install** — ...`, also after a task-list box) or code span (masked),
+/// alone or with a colon and a short value (`- **Concise**: 4/10 — ...`), or, with or without a
+/// list marker, a date
+/// (`2026-11-28`) or a version (`v1.2.3`, `[1.2.3]`) as in a changelog.
+static LEAD_DASH: LazyLock<Regex> = LazyLock::new(|| {
+    let marker = r"(?:[-*+]|\d{1,9}[.)])[ \t]+";
+    Regex::new(&format!(
+        "^[ \\t]*(?:{marker}(?:\\[[ xX]\\][ \\t]+)?(?:\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|\\x01+)\
+         (?::[^\\u{{2014}}\\u{{2013}}\\n.;!?]{{0,40}})?\
+         |(?:{marker})?(?:\\d{{4}}[-/.]\\d{{1,2}}[-/.]\\d{{1,2}}|\\[?v?\\d+(?:\\.\\d+)+\\]?))\
+         [ \\t]*([\\u{{2014}}\\u{{2013}}])"
+    ))
+    .expect("lead dash pattern")
+});
+
+/// What the dashes of one line are, read once per line that holds a dash.
+struct DashLine {
+    /// Every dash of the line is structure.
+    all: bool,
+    /// The byte offset of the dash that follows the line's label.
+    lead: Option<usize>,
+}
+
+impl DashLine {
+    /// The reading of the line of `text` that starts at `start`.
+    fn at(text: &str, start: usize) -> Self {
+        let end = text[start..].find('\n').map_or(text.len(), |n| start + n);
+        let line = &text[start..end];
+        DashLine {
+            all: STRUCTURE_LINE.is_match(line),
+            lead: LEAD_DASH
+                .captures(line)
+                .and_then(|c| c.get(1))
+                .map(|dash| start + dash.start()),
+        }
+    }
+}
+
 /// Em dashes (U+2014) and spaced en dashes (a space, U+2013, a space) outside `dash_skip`.
 /// A spaced en dash between two range ends (digits, times, day or month names) is a range.
+/// A dash in a heading or a table row, and the one after a list item's label or a changelog
+/// line's date or version, is structure and does not count.
 pub(crate) fn em_dash(view: &View, new: &[Span]) -> Vec<Hit> {
     let new = merged(new);
     let skip = merged(&view.dash_skip);
     let text = &view.text;
     let mut count = 0;
     let mut first = None;
+    let mut line_start = 0;
+    let mut line: Option<DashLine> = None;
     for (i, c) in text.char_indices() {
         let end = i + c.len_utf8();
         let dash = match c {
+            '\n' => {
+                line_start = end;
+                line = None;
+                false
+            }
             '\u{2014}' => true,
             '\u{2013}' => {
                 text[..i].ends_with(' ') && text[end..].starts_with(' ') && !is_range(text, i, end)
@@ -148,6 +203,10 @@ pub(crate) fn em_dash(view: &View, new: &[Span]) -> Vec<Hit> {
         };
         let span = Span { start: i, end };
         if dash && touches(&new, span) && !touches(&skip, span) {
+            let line = line.get_or_insert_with(|| DashLine::at(text, line_start));
+            if line.all || line.lead == Some(i) {
+                continue;
+            }
             count += 1;
             first.get_or_insert(span);
         }
@@ -162,11 +221,33 @@ pub(crate) fn em_dash(view: &View, new: &[Span]) -> Vec<Hit> {
     )
 }
 
+/// Three words of four letters or more, joined on one line: `[^\S\r\n]` is a space or a tab but
+/// never a line break, so a list does not run over a line, a paragraph or a list item.
 static LISTS_OF_THREE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b[a-z]{4,},\s+[a-z]{4,},?\s+(?:and|or)\s+[a-z]{4,}\b").expect("triad pattern")
+    Regex::new(r"(?i)\b[a-z]{4,},[^\S\r\n]+[a-z]{4,},?[^\S\r\n]+(?:and|or)[^\S\r\n]+[a-z]{4,}\b")
+        .expect("triad pattern")
 });
 
-/// Lists of three words of four letters or more ("plans, specs and roadmaps").
+/// Words that start the object of a verb: "stop and return the question".
+const OBJECT_STARTS: [&str; 13] = [
+    "the", "a", "an", "your", "their", "its", "this", "our", "his", "her", "my", "it", "them",
+];
+
+/// True when the word after `end` (on the same line) starts an object, so the three words are
+/// verbs of one clause and not a list ("If it is open, stop and return the question").
+fn takes_an_object(text: &str, end: usize) -> bool {
+    let rest = text[end..].trim_start_matches([' ', '\t']);
+    let next = rest
+        .split(|c: char| !c.is_alphabetic())
+        .next()
+        .unwrap_or("");
+    OBJECT_STARTS
+        .iter()
+        .any(|word| next.eq_ignore_ascii_case(word))
+}
+
+/// Lists of three words of four letters or more ("plans, specs and roadmaps"), inside one clause
+/// and not followed by an object.
 pub(crate) fn triad(view: &View, new: &[Span]) -> Vec<Hit> {
     let new = merged(new);
     let text = &view.text;
@@ -177,7 +258,7 @@ pub(crate) fn triad(view: &View, new: &[Span]) -> Vec<Hit> {
             start: m.start(),
             end: m.end(),
         };
-        if touches(&new, span) {
+        if touches(&new, span) && !takes_an_object(text, m.end()) {
             count += 1;
             first.get_or_insert(span);
         }
@@ -667,5 +748,221 @@ mod tests {
         let doc = format!("{old}{tail}");
         let new = [sp(old.len(), doc.len())];
         assert!(triad(&View::plain(&doc), &new).is_empty());
+    }
+
+    // --- structure is not style: headings, list labels, tables and dated lines ---
+
+    #[test]
+    fn dashes_in_headings_do_not_count() {
+        // four sections, 228 words: four dashes would be over 1 per 80
+        let doc = (1..=4)
+            .map(|n| format!("## Step {n} {DASH} Do it\n\n{}\n", filler(54)))
+            .collect::<String>();
+        assert!(dashes(&doc).is_empty());
+        // other heading depths, an indent of up to three spaces, and a bare `#` line
+        let doc = format!(
+            "# A {DASH} b\n\n   ### C {DASH} d\n\n###### E {DASH} f\n\n#\n\n{}",
+            filler(160)
+        );
+        assert!(dashes(&doc).is_empty());
+        // the control: the same four lines as prose fire
+        let doc = (1..=4)
+            .map(|n| format!("Step {n} {DASH} Do it\n\n{}\n", filler(54)))
+            .collect::<String>();
+        assert_eq!(dashes(&doc).len(), 1);
+        // a `#` without a space after it is not a heading
+        let doc = (1..=4)
+            .map(|n| format!("#Step {n} {DASH} Do it\n\n{}\n", filler(54)))
+            .collect::<String>();
+        assert_eq!(dashes(&doc).len(), 1);
+    }
+
+    #[test]
+    fn a_heading_does_not_hide_the_dashes_of_the_lines_around_it() {
+        // two prose dashes and two heading dashes make two counted dashes
+        let doc = format!(
+            "## A {DASH} b\n\nx {DASH} y\n\n## C {DASH} d\n\nz {DASH} w\n\n{}",
+            filler(160)
+        );
+        assert!(dashes(&doc).is_empty());
+        // three prose dashes and a heading make three
+        let doc = format!(
+            "## A {DASH} b\n\nx {DASH} y\n\nz {DASH} w\n\nu {DASH} v\n\n{}",
+            filler(160)
+        );
+        assert_eq!(dashes(&doc).len(), 1);
+    }
+
+    #[test]
+    fn dated_changelog_lines_do_not_count() {
+        // three entries in 189 words: three dashes would be over 1 per 80
+        let entry = format!("- 2026-11-20 {DASH} Fixed the lock check.");
+        let doc = format!("{}\n\n{}", [entry.as_str(); 3].join("\n"), filler(177));
+        assert_eq!(
+            doc.split_whitespace()
+                .filter(|w| w.chars().any(char::is_alphabetic))
+                .count(),
+            189
+        );
+        assert!(dashes(&doc).is_empty());
+        // versions, with and without brackets, and a line with no list marker
+        for line in [
+            format!("- v1.2.3 {DASH} Fixed the lock check."),
+            format!("* [1.2.3] {DASH} 2026-11-28"),
+            format!("1. 2026/11/20 {DASH} Fixed the lock check."),
+            format!("2026-11-20 {DASH} Fixed the lock check."),
+            format!("  - 1.20 {DASH} Fixed the lock check."),
+            format!("## [1.2.3] {DASH} 2026-11-28"),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert!(dashes(&doc).is_empty(), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_dated_line_counts_the_dashes_after_its_lead() {
+        // each entry has a second dash: three counted dashes in 188 words
+        let entry = format!("- 2026-11-20 {DASH} Fixed the lock {DASH} again.");
+        let doc = format!("{}\n\n{}", [entry.as_str(); 3].join("\n"), filler(176));
+        assert_eq!(dashes(&doc).len(), 1);
+        // a date in the middle of a line is not a lead
+        let entry = format!("- Fixed it on 2026-11-20 {DASH} again.");
+        let doc = format!("{}\n\n{}", [entry.as_str(); 3].join("\n"), filler(177));
+        assert_eq!(dashes(&doc).len(), 1);
+    }
+
+    #[test]
+    fn list_item_labels_before_a_dash_do_not_count() {
+        let mask = char::from(MASK);
+        for line in [
+            format!("- **Install** {DASH} put it in place."),
+            format!("* **Install**{DASH}put it in place."),
+            format!("+ __Install__ {DASH} put it in place."),
+            format!("1. **Install** {DASH} put it in place."),
+            format!("   12) **Install**: {DASH} put it in place."),
+            // a task-list box before the label
+            format!("- [ ] **Avoids blame** {DASH} put it in place."),
+            format!("- [x] **Avoids blame** {DASH} put it in place."),
+            // a short value between the label and the dash
+            format!("- **Concise**: 4/10 {DASH} put it in place."),
+            format!("- **Concise**: (a, b) {DASH} put it in place."),
+            format!("- **Install** {EN} put it in place."),
+            format!("- {mask}{mask}{mask}{mask}{mask}{mask} {DASH} put it in place."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert!(dashes(&doc).is_empty(), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_list_label_is_not_a_plain_item_or_a_bare_line() {
+        for line in [
+            format!("- Install {DASH} put it in place."),
+            format!("**Install** {DASH} put it in place."),
+            format!("- **Install** put it {DASH} in place."),
+            format!("- **Install** {DASH} put it {DASH} in place."),
+            // a long value, or a sentence, is prose and not a value
+            format!(
+                "- **Note**: {} {DASH} in place.",
+                "word ".repeat(10).trim_end()
+            ),
+            format!("- **Note**: it is done. Then {DASH} in place."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert_eq!(dashes(&doc).len(), 1, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn dashes_in_table_rows_do_not_count() {
+        let row = format!("| Install {DASH} fast | put it {DASH} here |");
+        let doc = format!("{}\n\n{}", [row.as_str(); 3].join("\n"), filler(177));
+        assert!(dashes(&doc).is_empty());
+        let doc = format!("  {}\n\n{}", [row.as_str(); 3].join("\n  "), filler(177));
+        assert!(dashes(&doc).is_empty());
+    }
+
+    #[test]
+    fn dash_lines_are_found_in_linear_time() {
+        // one very long line with many dashes, and many short lines: neither may rescan
+        let long = format!("{}\n", format!("a {DASH} ").repeat(100_000));
+        let started = std::time::Instant::now();
+        assert_eq!(dashes(&long).len(), 1);
+        let many = format!("x {DASH} y\n").repeat(100_000);
+        assert_eq!(dashes(&many).len(), 1);
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    // --- a list of three stays inside one clause ---
+
+    #[test]
+    fn a_triad_does_not_cross_a_line_break() {
+        for shape in [
+            "Plans, specs\nand roadmaps.",
+            "Plans,\nspecs and roadmaps.",
+            "Plans, specs and\nroadmaps.",
+            "Plans, specs\n\nand roadmaps.",
+            "- Plans, specs\n- and roadmaps.",
+        ] {
+            let doc = format!("{} {}", [shape; 3].join("\n\n"), filler(300));
+            assert!(triads(&doc).is_empty(), "{shape:?}");
+        }
+        // the control: on one line it fires
+        let doc = format!(
+            "{} {}",
+            ["Plans, specs and roadmaps."; 3].join("\n"),
+            filler(300)
+        );
+        assert_eq!(triads(&doc).len(), 1);
+    }
+
+    #[test]
+    fn a_triad_of_verbs_that_takes_an_object_is_not_a_list() {
+        // "open, stop and return" with its object: a clause that ends in a comma, then a verb phrase
+        let sentence = "If blocked or a decision is open, stop and return the question.";
+        let doc = format!("{} {}", [sentence; 3].join(" "), filler(300));
+        assert!(triads(&doc).is_empty());
+        for object in [
+            "the", "a", "an", "your", "their", "its", "this", "it", "them",
+        ] {
+            let shape = format!("Open, stop and return {object} question.");
+            let doc = format!("{} {}", [shape.as_str(); 3].join(" "), filler(300));
+            assert!(triads(&doc).is_empty(), "{object}");
+        }
+        // the control: the same words with the list ending the clause fire
+        let doc = format!(
+            "{} {}",
+            ["Open, stop and return."; 3].join(" "),
+            filler(300)
+        );
+        assert_eq!(triads(&doc).len(), 1);
+        // a list of nouns followed by a verb still fires
+        let doc = format!(
+            "{} {}",
+            ["Plans, specs and roadmaps go first."; 3].join(" "),
+            filler(300)
+        );
+        assert_eq!(triads(&doc).len(), 1);
+    }
+
+    #[test]
+    fn the_scout_and_marketer_agent_files_pass_as_new_files() {
+        // human-written instructions that the review found refused as new files
+        for (name, doc) in [
+            (
+                "scout.md",
+                include_str!("../../../../plugins/anthology/agents/scout.md"),
+            ),
+            (
+                "marketer.md",
+                include_str!("../../../../plugins/anthology/agents/marketer.md"),
+            ),
+        ] {
+            let found: Vec<_> = crate::check_all(crate::Kind::Markdown, doc)
+                .into_iter()
+                .filter(|f| f.rule == EM_DASH || f.rule == TRIAD)
+                .collect();
+            assert!(found.is_empty(), "{name}: {found:?}");
+        }
     }
 }
