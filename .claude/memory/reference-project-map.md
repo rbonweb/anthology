@@ -4,17 +4,19 @@ description: "How the pieces of this project connect, and the cleanups each kind
 metadata:
   node_type: memory
   type: reference
-  modified: 2026-11-27T11:30:00.000Z
+  modified: 2026-11-28T11:34:52.774Z
+  originSessionId: 1c9fb279-a45d-4d27-8e78-1ddd82c1e344
 ---
 
 ## Overview
 Three Claude Code plugins, one static Rust binary, `anthology`; ATL (`atl/`, a fork) shortens command output. Plugins are POSIX `sh` plus TypeScript mods; the rest is Rust in `crates/`. Work lands on `build`; CI gates it.
 
 ## Pieces
-- `plugins/anthology` - agents, `templates/routing-guide.md`, `hooks/`, `bin/` shims, `atl.lock`, `anthology.lock`. All 11 `agents/*.md` share a byte-identical `## Shell` section (pinned in `roster.rs`).
+- `plugins/anthology` - agents, `templates/routing-guide.md`, `hooks/`, `bin/` shims, `atl.lock`, `anthology.lock`. All 12 `agents/*.md` share a byte-identical `## Shell` section (pinned in `roster.rs`). New agent: `anthology-core` ROSTER (bin release), `repo.rs`, `smoke.rs`, `helpers.rs`, `session_start.rs` AGENTS, `BUDGET`, evals, a guide row.
+- `anthology-slop` (regex rules) -> `anthology slop hook|check`; `hooks/slop-gate.sh` (PreToolUse Write/Edit): only exit 10 blocks, a 5 s deadline allows; `docs/slop-gate.md`.
 - `plugins/anthology/hooks/mods/` - `index.ts`, the one `modules` entry in `hooks.json`, registers each shared event once, each part in `isolated`; one file per feature. `delegation.ts`: `isEmbeddedHost` skips refusal and coordinator section. New `$.state` key: `types/anthology.d.ts`.
 - `plugins/anthology-guardrails` - `hooks/guard.sh`, a fail-closed PreToolUse guard. Its `lib.sh`, `bootstrap.sh`, `anthology.lock` are byte-identical to the anthology plugin's: edit both.
-- `plugins/anthology-superpowers`, `plugins/anthology/knowledge/**` - generated from `vendor/sources.json` by `anthology-dev vendor`. Never hand-edit: change `vendor/`, run `scripts/dev.sh vendor check`, bump the plugin. Its `hooks/session-start` host check: `vendor/patches/superpowers.patch`.
+- `plugins/anthology-superpowers`, `plugins/anthology/knowledge/**` - generated from `vendor/sources.json` by `anthology-dev vendor` (`drop-paths` omits upstream files), except `FIRST_PARTY_KNOWLEDGE` in `repo.rs`. Never hand-edit: change `vendor/`, run `scripts/dev.sh vendor check`, bump the plugin. Its `hooks/session-start` host check: `vendor/patches/superpowers.patch`.
 - `anthology-cli` - the binary; `src/cmd/perm.rs`, `perm/`: `anthology perm classify`. Build graph: `pycompat` <- `core` <- `settings`, `memory`, `runtime`; `shell` (no workspace inheritance; ATL builds it too) <- `guard` <- the same three.
 - `anthology-guard/src/host.rs`: `embedded()` (ADR-037; truth table: `delegation.test.ts`, run by `repo-tests/tests/host_predicate.rs`); `path_vars.rs` there: `ANTHOLOGY_GUARD_PATH_VARS`; `anthology-shell/src/path_vars.rs`.
 - `anthology-memory`: `save.rs`, `index.rs`. `anthology-runtime/src/setup.rs`: outside a repo, `memory.repo` lists `repos_below`; setup `SKILL.md` asks which and passes `--cwd`. `anthology-runtime/src/project.rs`: after the guide, the repo's own agents, skills and `MAP_LINE`; `.claude/anthology.json` `routing_guide`/`delegation` switches (`anthology switch`); both in approved repos only.
@@ -31,7 +33,7 @@ Three Claude Code plugins, one static Rust binary, `anthology`; ATL (`atl/`, a f
 ## Checks
 - All: `scripts/rust-test.sh`; one crate: `... test -p <crate>`. One-shots and `session-stop` drop the target volume (`ANTHOLOGY_KEEP_TARGET=1` keeps it); `session-start` runs `gc`; `anthology-sccache` is shared. Remote: `ANTHOLOGY_BUILD_HOST=<alias> scripts/remote-build.sh <args>` cleans only its own items.
 - CI (`ci.yml`): one job per `ci/jobs/` script (`shellcheck.sh` also: `release.sh`, `rust-test.sh`, `remote-build.sh`). On a PR `rust-scope.sh` (rules, `job:` and `crate:` rows: `ci/scope-rules.tsv`; weights `ci/test-weights.tsv`; graph `rust-graph.mjs`) picks the crates a change reaches, their golden surfaces, atl, fuzz, macOS and the repo jobs that read it; gitleaks, deny, shellcheck always run. `rust-test-linux`/`-macos` gate. A push, the `full-ci` label, `[full-ci]` in a commit or a test-machinery change runs all. A PR in merge conflict runs no CI: merge `origin/build`.
-- Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps inherited tests to Rust tests or drop reasons. Budgets: guide ≤3800 characters, session-start output ≤9000 (`session_start.rs`).
+- Goldens: `crates/<crate>/tests/golden/*.jsonl.gz`. Ledger: `port/ledger/*.tsv` maps inherited tests to Rust tests or drop reasons. Budgets: guide ≤4050 characters, session-start output ≤9000 (`session_start.rs`).
 
 ## Cleanup duties
 - Workspace version bump: also update `Cargo.lock`, `fuzz/Cargo.lock` (else `ci/jobs/fuzz.sh` fails). Then follow Binary release.
