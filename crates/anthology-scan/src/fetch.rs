@@ -386,7 +386,8 @@ fn run_steps(
 
 /// The protections appended to the quarantine's own `.git/config`: no symlinks written to disk,
 /// no hooks and no fsmonitor command run by a later git call in the folder.
-const QUARANTINE_CONFIG: &str = "[core]\n\tsymlinks = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n";
+const QUARANTINE_CONFIG: &str =
+    "[core]\n\tsymlinks = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n";
 
 /// Appends `QUARANTINE_CONFIG` to `<dest>/.git/config`, which `git init` has just made.
 fn harden_config(dest: &Path) -> Result<(), String> {
@@ -955,7 +956,11 @@ mod tests {
         assert!(err.contains(".git"), "{err}");
         assert!(!dest.exists());
         assert_eq!(entries(tmp.path()), 0);
-        assert_eq!(r.calls().len(), 2, "nothing runs after the failed hardening");
+        assert_eq!(
+            r.calls().len(),
+            2,
+            "nothing runs after the failed hardening"
+        );
     }
 
     #[test]

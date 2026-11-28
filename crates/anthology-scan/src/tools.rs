@@ -947,7 +947,10 @@ mod tests {
                 .map(|(_, v)| v.to_string_lossy().into_owned())
         };
         // An empty entry, `.` and a relative folder would run a program from the working folder.
-        assert_eq!(path_of(":.:rel/bin:/usr/bin:../x:/bin:"), Some("/usr/bin:/bin".into()));
+        assert_eq!(
+            path_of(":.:rel/bin:/usr/bin:../x:/bin:"),
+            Some("/usr/bin:/bin".into())
+        );
         // Nothing absolute: no PATH at all, as when it is unset.
         assert_eq!(path_of(".:bin"), None);
     }
@@ -957,14 +960,21 @@ mod tests {
         // Checked with gitleaks 8.30.1: `<target>/.gitleaksignore` drops the findings it lists
         // under `--config` too, and `--gitleaks-ignore-path` does not turn it off.
         let rig = rig();
-        std::fs::write(rig.target.join(".gitleaksignore"), "/t/a.txt:github-pat:1\n").unwrap();
+        std::fs::write(
+            rig.target.join(".gitleaksignore"),
+            "/t/a.txt:github-pat:1\n",
+        )
+        .unwrap();
         let fake = quiet();
         let (runs, findings) = run_tools(&rig.target, &rig.scratch, &fake);
         assert_eq!(findings.len(), 1, "{findings:#?}");
         let f = &findings[0];
         assert_eq!(f.rule, "secrets.gitleaks-ignore");
         assert_eq!((f.severity, f.group), (Severity::Low, Group::Tool));
-        assert_eq!((f.path.as_str(), f.line, f.count), (".gitleaksignore", 0, 1));
+        assert_eq!(
+            (f.path.as_str(), f.line, f.count),
+            (".gitleaksignore", 0, 1)
+        );
         assert!(f.why.contains("drops the findings it lists"), "{}", f.why);
         assert!(!f.action.is_empty());
         // The tool's own count stays the count of what gitleaks reported.
@@ -982,7 +992,10 @@ mod tests {
         let only_zizmor = Fake::new(&["zizmor"], |_| out(0, "[]", ""));
         let (runs, findings) = run_tools(&rig.target, &rig.scratch, &only_zizmor);
         assert!(findings.is_empty(), "{findings:#?}");
-        assert!(matches!(status_of(&runs, "gitleaks"), ToolStatus::Missing(_)));
+        assert!(matches!(
+            status_of(&runs, "gitleaks"),
+            ToolStatus::Missing(_)
+        ));
     }
 
     #[test]
