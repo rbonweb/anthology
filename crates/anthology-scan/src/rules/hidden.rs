@@ -99,36 +99,131 @@ pub(super) fn is_test_path(path: &str) -> bool {
         || name.starts_with("test_")
 }
 
-/// Whether the text at `at` is in a comment: a comment line, or after a trailing `//` (not the one
-/// of a URL scheme) or, in a language with `#` comments, after a `#`.
+/// Whether the text at `at` is in a comment: a block comment line, or on its line after a comment
+/// opener that no string or regex literal holds. One line is read from its start, so a `//` or a
+/// `#` inside a quoted string, a regex literal or a word does not count, and a block comment that
+/// closes before `at` does not either.
 pub(super) fn in_comment(text: &str, at: usize, lang: Lang) -> bool {
     let at = at.min(text.len());
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
-    let prefix = &text[start..at];
-    let trimmed = prefix.trim_start();
-    if trimmed.starts_with("//")
-        || trimmed.starts_with("/*")
-        || trimmed.starts_with('*')
-        || trimmed.starts_with("<!--")
-    {
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    let line = &text[start..end];
+    let upto = at - start;
+    let trimmed = line[..upto].trim_start();
+    if trimmed.starts_with('*') || trimmed.starts_with("<!--") {
         return true;
     }
+    comment_opens_before(line, upto, lang)
+}
+
+/// Where a lexer of one line stands: in code, in a string opened by a quote, or in a regex
+/// literal (inside a character class or not).
+enum Lex {
+    Code,
+    Str(char),
+    Regex { class: bool },
+}
+
+/// Whether a `/` after this token starts a regex literal and not a division: after an operator or
+/// an opening bracket, or after a keyword that takes an expression.
+fn regex_may_start(after_word: bool, last_word: &str, last_symbol: Option<char>) -> bool {
+    if after_word {
+        return matches!(
+            last_word,
+            "return" | "typeof" | "case" | "of" | "in" | "delete" | "void" | "throw" | "new"
+        );
+    }
+    last_symbol.is_none_or(|c| "(,=:[!&|?{};+-*%<>~^".contains(c))
+}
+
+fn comment_opens_before(line: &str, upto: usize, lang: Lang) -> bool {
     let hash = matches!(
         lang,
         Lang::Py | Lang::Sh | Lang::Ps | Lang::Rb | Lang::Pl | Lang::Php
     );
-    if hash && trimmed.starts_with('#') {
-        return true;
+    let slashes = matches!(
+        lang,
+        Lang::Js | Lang::Php | Lang::Go | Lang::Rs | Lang::Jvm | Lang::Cs | Lang::C | Lang::Swift
+    );
+    let regexes = lang == Lang::Js;
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let mut state = Lex::Code;
+    let mut word = String::new();
+    let mut after_word = false;
+    let mut last_symbol: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() && chars[i].0 < upto {
+        let (pos, c) = chars[i];
+        match state {
+            Lex::Str(quote) => {
+                if c == '\\' {
+                    i += 1;
+                } else if c == quote {
+                    state = Lex::Code;
+                    after_word = false;
+                    last_symbol = Some(quote);
+                }
+            }
+            Lex::Regex { class } => {
+                if c == '\\' {
+                    i += 1;
+                } else if c == '[' {
+                    state = Lex::Regex { class: true };
+                } else if c == ']' {
+                    state = Lex::Regex { class: false };
+                } else if c == '/' && !class {
+                    state = Lex::Code;
+                    after_word = false;
+                    last_symbol = Some(')');
+                }
+            }
+            Lex::Code => {
+                let next = line[pos + c.len_utf8()..].chars().next();
+                // A lone apostrophe (a Rust lifetime) opens no string.
+                let opens_string =
+                    matches!(c, '"' | '`') || (c == '\'' && line[pos + 1..].contains('\''));
+                if opens_string {
+                    state = Lex::Str(c);
+                } else if (hash
+                    && c == '#'
+                    && line[..pos]
+                        .chars()
+                        .next_back()
+                        .is_none_or(char::is_whitespace))
+                    || (slashes && c == '/' && next == Some('/'))
+                {
+                    return true;
+                } else if slashes && c == '/' && next == Some('*') {
+                    // A block comment that closes before `upto` is skipped; any other holds `upto`.
+                    let from = pos + 2;
+                    match line[from..].find("*/") {
+                        Some(j) if from + j + 2 <= upto => {
+                            while i < chars.len() && chars[i].0 < from + j + 2 {
+                                i += 1;
+                            }
+                            after_word = false;
+                            last_symbol = Some(')');
+                            continue;
+                        }
+                        _ => return true,
+                    }
+                } else if regexes && c == '/' && regex_may_start(after_word, &word, last_symbol) {
+                    state = Lex::Regex { class: false };
+                } else if c.is_alphanumeric() || c == '_' || c == '$' {
+                    if !after_word {
+                        word.clear();
+                    }
+                    word.push(c);
+                    after_word = true;
+                } else if !c.is_whitespace() {
+                    after_word = false;
+                    last_symbol = Some(c);
+                }
+            }
+        }
+        i += 1;
     }
-    let slashes = prefix
-        .match_indices("//")
-        .any(|(i, _)| i == 0 || prefix.as_bytes()[i - 1] != b':');
-    if slashes && !hash {
-        return true;
-    }
-    hash && prefix
-        .match_indices('#')
-        .any(|(i, _)| i > 0 && prefix.as_bytes()[i - 1] == b' ')
+    false
 }
 
 /// A pattern compiled once, on first use. The patterns are fixed in the source, so they compile.
@@ -202,11 +297,26 @@ pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
     homoglyph_name(f, out);
     let Some(text) = f.text else { return };
     if !text.is_ascii() {
-        invisible_characters(f, text, out);
+        invisible_characters(f, text, true, out);
     }
     if matches!(f.kind, FileKind::Code(_)) && !f.path.ends_with(".min.js") {
         whitespace_push(f, text, out);
     }
+}
+
+/// For a code file under a test path that an auto-run command reaches: the `hidden.bidi` finding
+/// the test-path cap held back (HIGH, not MEDIUM). A test string for a control-character display
+/// is not a Trojan Source, but a test file that something runs on install or open is not just a
+/// test. The orchestrator calls this for each reached file and merges the result with the per-file
+/// findings (one per rule and path, the higher severity kept). Any other file adds nothing.
+pub(crate) fn raise_reached(f: &FileCtx, out: &mut Vec<Finding>) {
+    let Some(text) = f.text else { return };
+    if !matches!(f.kind, FileKind::Code(_)) || !is_test_path(f.path) || text.is_ascii() {
+        return;
+    }
+    let mut fresh = Vec::new();
+    invisible_characters(f, text, false, &mut fresh);
+    out.extend(fresh.into_iter().filter(|x| x.rule == "hidden.bidi"));
 }
 
 fn is_emoji(c: char) -> bool {
@@ -250,7 +360,7 @@ fn flag_sequence_end(text: &str, from: usize) -> Option<usize> {
     None
 }
 
-fn invisible_characters(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
+fn invisible_characters(f: &FileCtx, text: &str, capped: bool, out: &mut Vec<Finding>) {
     let (mut bidi, mut zero, mut tag, mut variation) = (
         Hits::default(),
         Hits::default(),
@@ -295,7 +405,7 @@ fn invisible_characters(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
     let code = matches!(f.kind, FileKind::Code(_));
     // A test string for a control-character display is not a Trojan Source: still reported, not
     // blocking. An agent file is HIGH wherever it is.
-    let bidi_level = if agent || (code && !is_test_path(f.path)) {
+    let bidi_level = if agent || (code && !(capped && is_test_path(f.path))) {
         Severity::High
     } else {
         Severity::Medium
@@ -646,6 +756,118 @@ mod tests {
         assert_eq!(one(&v, "hidden.bidi").severity, Severity::High);
         let v = run("tests/CLAUDE.md", FileKind::Agent, t);
         assert_eq!(one(&v, "hidden.bidi").severity, Severity::High);
+    }
+
+    /// Whether the first `NEEDLE` of `line` is in a comment.
+    fn commented(line: &str, lang: Lang) -> bool {
+        let at = line.find("NEEDLE").expect("a needle");
+        in_comment(line, at, lang)
+    }
+
+    #[test]
+    fn a_comment_is_a_comment() {
+        for line in [
+            "// NEEDLE",
+            "  // NEEDLE",
+            "x(); // NEEDLE",
+            "const r = a / b; // NEEDLE",
+            "x(); /* NEEDLE */",
+            "/* a */ x(); // NEEDLE",
+            " * NEEDLE",
+            "const s = \"a\"; // it's NEEDLE",
+        ] {
+            assert!(commented(line, Lang::Js), "{line}");
+        }
+        for line in ["# NEEDLE", "x = 1  # NEEDLE", "s = '#'  # NEEDLE"] {
+            assert!(commented(line, Lang::Py), "{line}");
+        }
+        for line in ["cmd # NEEDLE", "# NEEDLE", "echo a # NEEDLE"] {
+            assert!(commented(line, Lang::Sh), "{line}");
+        }
+        assert!(commented("fn f<'a>() {} // NEEDLE", Lang::Rs));
+        assert!(commented("$x = 1; # NEEDLE", Lang::Php));
+        assert!(commented("$x = 1; // NEEDLE", Lang::Php));
+    }
+
+    #[test]
+    fn a_double_slash_inside_a_string_or_a_regex_is_not_a_comment() {
+        // N4: a `//` that a string or a regex literal holds must not hide the code after it.
+        for line in [
+            "const a = \"//\"; read(NEEDLE);",
+            "const a = '//'; read(NEEDLE);",
+            "const a = `//`; read(NEEDLE);",
+            "const u = 'http://x'; read(NEEDLE);",
+            "fetch(\"https://x/NEEDLE\");",
+            "const re = /\\/\\//; read(NEEDLE);",
+            "const re = /[/]/; read(NEEDLE);",
+            "x = y.replace(/a\\/\\/b/g, '/'); read(NEEDLE);",
+            "return /x/.test(s) && read(NEEDLE);",
+            "const s = \"a \\\" // b\"; read(NEEDLE);",
+            "/* done */ read(NEEDLE);",
+            "const r = a / b / c; read(NEEDLE);",
+        ] {
+            assert!(!commented(line, Lang::Js), "{line}");
+        }
+        assert!(!commented("p = '//'; open(NEEDLE)", Lang::Go));
+        assert!(!commented("let s = \"//\"; f(NEEDLE);", Lang::Rs));
+        assert!(!commented("fn f<'a>(x: &'a str) { g(NEEDLE) }", Lang::Rs));
+    }
+
+    #[test]
+    fn a_hash_inside_a_string_or_a_word_is_not_a_comment() {
+        for line in [
+            "s = \"# not\"; open(NEEDLE)",
+            "s = '#'; open(NEEDLE)",
+            "x = f'{a}#{b}'; open(NEEDLE)",
+        ] {
+            assert!(!commented(line, Lang::Py), "{line}");
+        }
+        for line in [
+            "echo \"$#\" NEEDLE",
+            "echo ${#x} NEEDLE",
+            "echo a#b NEEDLE",
+            "echo '# x' NEEDLE",
+        ] {
+            assert!(!commented(line, Lang::Sh), "{line}");
+        }
+        // A language with no `//` comments: a double slash is floor division or a path.
+        assert!(!commented("x = a // b; open(NEEDLE)", Lang::Py));
+    }
+
+    #[test]
+    fn a_reached_file_under_a_test_folder_loses_the_bidi_cap() {
+        let t = "const s = \"\u{202E}abc\";\nexpect(show(s)).toBe('x');\n";
+        let f = FileCtx {
+            path: "tests/a.test.ts",
+            bytes: t.as_bytes(),
+            text: Some(t),
+            kind: FileKind::Code(Lang::Js),
+            truncated: false,
+        };
+        let mut out = Vec::new();
+        check(&f, &mut out);
+        assert_eq!(one(&out, "hidden.bidi").severity, Severity::Medium);
+        raise_reached(&f, &mut out);
+        let highest = out
+            .iter()
+            .filter(|x| x.rule == "hidden.bidi")
+            .map(|x| x.severity)
+            .max();
+        assert_eq!(highest, Some(Severity::High));
+        // Only the bidi finding is added, and only for a code file under a test path.
+        assert!(out.iter().all(|x| x.rule == "hidden.bidi"));
+        let mut none = Vec::new();
+        let other = FileCtx {
+            path: "src/a.ts",
+            ..f
+        };
+        raise_reached(&other, &mut none);
+        let doc = FileCtx {
+            kind: FileKind::Doc,
+            ..f
+        };
+        raise_reached(&doc, &mut none);
+        assert!(none.is_empty());
     }
 
     #[test]
