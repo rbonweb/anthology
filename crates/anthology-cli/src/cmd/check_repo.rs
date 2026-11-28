@@ -54,7 +54,10 @@ const URL_START: [&str; 3] = ["https://", "ssh://", "git@"];
 pub fn run(args: &[OsString], _stdin: &mut dyn Read) -> Output {
     let env = Env::from_process();
     let runner = RealRunner {
-        path: env.get_os("PATH").map(OsStr::to_os_string).unwrap_or_default(),
+        path: env
+            .get_os("PATH")
+            .map(OsStr::to_os_string)
+            .unwrap_or_default(),
     };
     run_with(args, &env, &runner)
 }
@@ -295,8 +298,8 @@ fn scan_and_report(
         tools: tool_runs,
     };
     let mut text = if o.json {
-        let nonce =
-            report::new_nonce().map_err(|e| format!("cannot read random bytes for the report: {e}"))?;
+        let nonce = report::new_nonce()
+            .map_err(|e| format!("cannot read random bytes for the report: {e}"))?;
         report::render_json(&scan, &meta, &nonce)
     } else {
         report::render_text(&scan, &meta)
@@ -533,7 +536,10 @@ mod tests {
             .expect("run cat");
         assert_eq!(code, 0);
         assert!(out.is_empty());
-        assert!(started.elapsed() < Duration::from_secs(10), "cat waited for input");
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "cat waited for input"
+        );
     }
 
     #[test]
@@ -571,10 +577,16 @@ mod tests {
             )
             .expect_err("the deadline passes");
         assert_eq!(err.kind(), io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
         let beat = dir.path().join("beat");
         std::thread::sleep(Duration::from_millis(300));
-        let first = fs::metadata(&beat).expect("the loop ran before the deadline").len();
+        let first = fs::metadata(&beat)
+            .expect("the loop ran before the deadline")
+            .len();
         assert!(first > 0);
         std::thread::sleep(Duration::from_millis(500));
         assert_eq!(
@@ -598,7 +610,11 @@ mod tests {
             )
             .expect("run sh");
         assert_eq!(code, 0);
-        assert!(started.elapsed() < Duration::from_secs(10), "{:?}", started.elapsed());
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]
@@ -612,7 +628,10 @@ mod tests {
                 Duration::from_secs(10),
             )
             .expect("run sh");
-        assert_eq!((code, out.as_slice(), err.as_slice()), (7, &b"out\n"[..], &b"err\n"[..]));
+        assert_eq!(
+            (code, out.as_slice(), err.as_slice()),
+            (7, &b"out\n"[..], &b"err\n"[..])
+        );
     }
 
     #[test]
@@ -623,7 +642,10 @@ mod tests {
         let made = {
             let s = Scratch::new(&env, &fs::canonicalize(target.path()).expect("canonical"))
                 .expect("a scratch folder");
-            let mode = fs::metadata(s.path()).expect("scratch").permissions().mode();
+            let mode = fs::metadata(s.path())
+                .expect("scratch")
+                .permissions()
+                .mode();
             assert_eq!(mode & 0o777, 0o700);
             assert!(s.path().starts_with(base.path()));
             s.path().to_path_buf()
@@ -641,7 +663,11 @@ mod tests {
             .err()
             .expect("refused");
         assert!(err.contains("inside the target"), "{err}");
-        assert_eq!(fs::read_dir(&inside).expect("list").count(), 0, "a folder was made anyway");
+        assert_eq!(
+            fs::read_dir(&inside).expect("list").count(),
+            0,
+            "a folder was made anyway"
+        );
     }
 
     #[test]
@@ -656,10 +682,18 @@ mod tests {
             relative.push("..");
         }
         relative.push(dir.path().strip_prefix("/").expect("absolute"));
-        assert_eq!(fs::canonicalize(&relative).ok(), fs::canonicalize(dir.path()).ok());
+        assert_eq!(
+            fs::canonicalize(&relative).ok(),
+            fs::canonicalize(dir.path()).ok()
+        );
         let r = RealRunner {
-            path: std::env::join_paths([Path::new(""), Path::new("."), relative.as_path(), dir.path()])
-                .expect("join"),
+            path: std::env::join_paths([
+                Path::new(""),
+                Path::new("."),
+                relative.as_path(),
+                dir.path(),
+            ])
+            .expect("join"),
         };
         assert_eq!(r.find("a-tool"), None, "not executable yet");
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).expect("chmod");
