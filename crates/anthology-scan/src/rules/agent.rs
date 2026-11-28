@@ -30,7 +30,7 @@ const CREDENTIAL_HELPERS: &[&str] = &[
 /// its tools start: CRITICAL.
 static ENV_REDIRECT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^(?:ANTHROPIC_(?:.*_)?(?:BASE_URL|API_KEY|AUTH_TOKEN)|CLAUDE_CONFIG_DIR|CLAUDE_.*_BASE_URL|HTTPS?_PROXY|ALL_PROXY|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|CODEX_HOME)$",
+        r"(?i)^(?:ANTHROPIC_(?:.*_)?(?:BASE_URL|API_KEY|AUTH_TOKEN)|CLAUDE_CONFIG_DIR|CLAUDE_.*_BASE_URL|HTTPS?_PROXY|ALL_PROXY|NODE_EXTRA_CA_CERTS|CODEX_HOME)$",
     )
     .expect("the env redirect pattern compiles")
 });
@@ -40,9 +40,23 @@ static ENV_REDIRECT: LazyLock<Regex> = LazyLock::new(|| {
 /// `PATH` is judged by its value (`runs_code`).
 static ENV_EXEC: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)^(?:BASH_ENV|ENV|ZDOTDIR|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|SSH_ASKPASS|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|PYTHONPATH|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS)$",
+        r"(?i)^(?:BASH_ENV|ENV|ZDOTDIR|LD_PRELOAD|DYLD_INSERT_LIBRARIES|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|SSH_ASKPASS|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|PYTHONSTARTUP)$",
     )
     .expect("the env exec pattern compiles")
+});
+
+/// Keys that hold command-line options for a language runtime. They run a program only when the
+/// value has a load flag (`has_load_flag`): CRITICAL then, else LOW as an inventory entry.
+static ENV_OPTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:NODE_OPTIONS|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|PERL5OPT|RUBYOPT)$")
+        .expect("the env option pattern compiles")
+});
+
+/// Keys that add a folder to a module or library search path. MEDIUM: a repo folder here lets a
+/// file of the repo stand in for a library, but the repo often sets it for its own tests.
+static ENV_SEARCH_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:PYTHONPATH|PERL5LIB|RUBYLIB|LD_LIBRARY_PATH|DYLD_LIBRARY_PATH)$")
+        .expect("the env search path pattern compiles")
 });
 
 /// Any other `*_BASE_URL` key. Ordinary dev settings use these (`API_BASE_URL=http://localhost`),
@@ -353,11 +367,105 @@ fn unquote(quoted: &str) -> String {
     out
 }
 
-/// True when an environment variable makes a tool load or start a program: a shell start file, a
-/// preload, an askpass or ssh command, a git config injection, a language path or option hook, or a
-/// `PATH` with a relative or repo entry.
-fn runs_code(key: &str, value: &str) -> bool {
-    ENV_EXEC.is_match(key) || (key.eq_ignore_ascii_case("PATH") && path_has_repo_entry(value))
+/// How an environment variable set by the repo rates.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EnvClass {
+    /// Makes a tool load or start a program the repo supplies: CRITICAL.
+    Exec,
+    /// Sends the agent's traffic or credentials to a host of the repo's choosing: CRITICAL.
+    Redirect,
+    /// Any other `*_BASE_URL`: MEDIUM.
+    BaseUrl,
+    /// Adds a folder to a module or library search path: MEDIUM.
+    SearchPath,
+    /// Runtime options with no load flag: LOW, an inventory entry.
+    Option,
+}
+
+/// The class of an environment variable, or `None` for an ordinary one. A key that makes a tool
+/// run a program is a shell start file, a preload, an askpass or ssh command, a git config
+/// injection, a `PATH` with a relative or repo entry, or an option key with a load flag.
+fn env_class(key: &str, value: &str) -> Option<EnvClass> {
+    if ENV_EXEC.is_match(key)
+        || (key.eq_ignore_ascii_case("PATH") && path_has_repo_entry(value))
+        || (ENV_OPTION.is_match(key) && has_load_flag(value))
+    {
+        Some(EnvClass::Exec)
+    } else if ENV_REDIRECT.is_match(key) {
+        Some(EnvClass::Redirect)
+    } else if ENV_OPTION.is_match(key) {
+        Some(EnvClass::Option)
+    } else if ENV_SEARCH_PATH.is_match(key) {
+        Some(EnvClass::SearchPath)
+    } else if ENV_BASE_URL.is_match(key) {
+        Some(EnvClass::BaseUrl)
+    } else {
+        None
+    }
+}
+
+/// True when an options value loads code: node `-r`, `--require`, `--import`, `--loader`,
+/// `--experimental-loader`; java `-javaagent`, `-agentpath`, `-agentlib`; perl and ruby `-M`, `-m`,
+/// `-I` (and ruby `-r`, which is the same flag as node's). A short flag may have its argument
+/// attached (`-r./x`, `-MFoo`).
+fn has_load_flag(value: &str) -> bool {
+    value.split_whitespace().any(|token| {
+        let t = token.trim_matches(['"', '\'']);
+        let long = ["--require", "--import", "--loader", "--experimental-loader"]
+            .iter()
+            .any(|f| t == *f || t.strip_prefix(f).is_some_and(|r| r.starts_with('=')));
+        let agent = ["-javaagent", "-agentpath", "-agentlib"].iter().any(|f| {
+            t.strip_prefix(f)
+                .is_some_and(|r| r.is_empty() || r.starts_with([':', '=']))
+        });
+        let short = ["-r", "-M", "-m", "-I"].iter().any(|f| t.starts_with(f));
+        long || agent || short
+    })
+}
+
+/// A finding for an environment variable of a class; the rule, the level and the text follow it.
+fn env_finding(s: &mut Sink, class: EnvClass, key: &str, value: &str, line: usize) {
+    let (severity, rule, why, action) = match class {
+        EnvClass::Exec => (
+            Severity::Critical,
+            "agent.env-exec",
+            format!(
+                "The repo sets {key} for the agent, which makes a tool load or run a program the repo supplies."
+            ),
+            "Do not open this repo in an agent until the setting is removed.",
+        ),
+        EnvClass::Redirect => (
+            Severity::Critical,
+            "agent.env-redirect",
+            format!(
+                "The repo sets {key} for the agent, which can send its traffic or credentials to a host the repo chooses."
+            ),
+            "Do not open this repo in an agent until the setting is removed.",
+        ),
+        EnvClass::BaseUrl => (
+            Severity::Medium,
+            "agent.env-base-url",
+            format!(
+                "The repo sets {key} for the agent. It is often a local dev server, but it can point requests at a host the repo chooses."
+            ),
+            "Check the host before opening the repo in an agent.",
+        ),
+        EnvClass::SearchPath => (
+            Severity::Medium,
+            "agent.env-search-path",
+            format!(
+                "The repo sets {key}, which adds a folder to a module or library search path. A file of the repo can then stand in for a library."
+            ),
+            "Check what the folder holds before opening the repo in an agent.",
+        ),
+        EnvClass::Option => (
+            Severity::Low,
+            "agent.env-option",
+            format!("The repo sets {key}, which holds runtime options. None of them loads code."),
+            "Nothing to do unless the options change.",
+        ),
+    };
+    s.finding(severity, rule, line, why, &format!("{key}={value}"), action);
 }
 
 /// True when a `PATH` value names a folder that is not a fixed absolute one: an empty entry (the
@@ -392,42 +500,6 @@ fn path_has_repo_entry(value: &str) -> bool {
     })
 }
 
-/// A finding for an `env` key that redirects traffic or credentials or makes a tool run a program;
-/// nothing for any other key.
-fn env_finding(s: &mut Sink, key: &str, value: &str, line: usize) {
-    let (severity, rule, why, action) = if runs_code(key, value) {
-        (
-            Severity::Critical,
-            "agent.env-exec",
-            format!(
-                "The repo sets {key} for the agent, which makes a tool load or run a program the repo supplies."
-            ),
-            "Do not open this repo in an agent until the setting is removed.",
-        )
-    } else if ENV_REDIRECT.is_match(key) {
-        (
-            Severity::Critical,
-            "agent.env-redirect",
-            format!(
-                "The repo sets {key} for the agent, which can send its traffic or credentials to a host the repo chooses."
-            ),
-            "Do not open this repo in an agent until the setting is removed.",
-        )
-    } else if ENV_BASE_URL.is_match(key) {
-        (
-            Severity::Medium,
-            "agent.env-base-url",
-            format!(
-                "The repo sets {key} for the agent. It is often a local dev server, but it can point requests at a host the repo chooses."
-            ),
-            "Check the host before opening the repo in an agent.",
-        )
-    } else {
-        return;
-    };
-    s.finding(severity, rule, line, why, &format!("{key}={value}"), action);
-}
-
 /// Settings that did not parse: the `key: "string"` pairs are read from the raw text.
 fn raw_settings(s: &mut Sink) {
     let text = s.text;
@@ -447,7 +519,9 @@ fn raw_settings(s: &mut Sink) {
                 s.surface("agent.credential-helper", &value, Severity::High, line);
             }
         } else {
-            env_finding(s, key, &value, line);
+            if let Some(class) = env_class(key, &value) {
+                env_finding(s, class, key, &value, line);
+            }
         }
     }
 }
@@ -490,9 +564,9 @@ fn settings(s: &mut Sink) {
     if let Some(env) = root.get("env").and_then(Value::as_object) {
         for (key, value) in env.iter() {
             let value = value.as_str().unwrap_or("");
-            if runs_code(key, value) || ENV_REDIRECT.is_match(key) || ENV_BASE_URL.is_match(key) {
+            if let Some(class) = env_class(key, value) {
                 let line = s.json_line(key, key);
-                env_finding(s, key, value, line);
+                env_finding(s, class, key, value, line);
             }
         }
     }
@@ -1143,15 +1217,14 @@ fn env_file(s: &mut Sink) {
                 &format!("{key}={value}"),
                 "Do not open this repo in an agent until the line is removed.",
             );
-        } else if runs_code(key, value.trim_matches(['"', '\''])) {
-            s.finding(
-                Severity::Critical,
-                "agent.env-exec",
-                i + 1,
-                format!("A .env file sets {key}, which makes a tool load or run a program the repo supplies."),
-                &format!("{key}={value}"),
-                "Do not open this repo in an agent until the line is removed.",
-            );
+        } else if let Some(class) = env_class(key, value.trim_matches(['"', '\'']))
+            && matches!(
+                class,
+                EnvClass::Exec | EnvClass::SearchPath | EnvClass::Option
+            )
+        {
+            // The proxy and base URL keys are a settings rule; a .env file is the app's own.
+            env_finding(s, class, key, value, i + 1);
         }
     }
 }
@@ -1571,7 +1644,6 @@ mod tests {
             "HTTPS_PROXY",
             "https_proxy",
             "ALL_PROXY",
-            "NODE_OPTIONS",
             "CLAUDE_CONFIG_DIR",
             "CODEX_HOME",
             "NODE_EXTRA_CA_CERTS",
@@ -2176,9 +2248,7 @@ mod tests {
             "ENV",
             "ZDOTDIR",
             "LD_PRELOAD",
-            "LD_LIBRARY_PATH",
             "DYLD_INSERT_LIBRARIES",
-            "DYLD_LIBRARY_PATH",
             "GIT_SSH_COMMAND",
             "GIT_SSH",
             "GIT_ASKPASS",
@@ -2189,14 +2259,7 @@ mod tests {
             "GIT_CONFIG_VALUE_12",
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_SYSTEM",
-            "PYTHONPATH",
             "PYTHONSTARTUP",
-            "PERL5OPT",
-            "PERL5LIB",
-            "RUBYOPT",
-            "RUBYLIB",
-            "JAVA_TOOL_OPTIONS",
-            "_JAVA_OPTIONS",
             "bash_env",
         ] {
             let text = format!(r#"{{"env": {{"{key}": "./x"}}}}"#);
@@ -2209,6 +2272,122 @@ mod tests {
             assert_eq!(hits[0].line, 1);
             assert_eq!(hits[0].seen, format!("{key}=./x"));
         }
+    }
+
+    /// The findings of one env entry in the settings file.
+    fn env_hits(key: &str, value: &str) -> Vec<Finding> {
+        let text = format!(r#"{{"env": {{"{key}": "{value}"}}}}"#);
+        run(SETTINGS, &text).1
+    }
+
+    #[test]
+    fn search_path_keys_are_medium() {
+        for key in [
+            "PYTHONPATH",
+            "PERL5LIB",
+            "RUBYLIB",
+            "LD_LIBRARY_PATH",
+            "DYLD_LIBRARY_PATH",
+            "pythonpath",
+        ] {
+            let out = env_hits(key, "src");
+            assert_eq!(out.len(), 1, "{key}: {out:?}");
+            assert_eq!(out[0].rule, "agent.env-search-path", "{key}");
+            assert_eq!(out[0].severity, Severity::Medium, "{key}");
+            assert_eq!(out[0].seen, format!("{key}=src"));
+        }
+    }
+
+    #[test]
+    fn an_option_key_with_a_load_flag_is_critical() {
+        for (key, value) in [
+            ("NODE_OPTIONS", "--require ./x.js"),
+            ("NODE_OPTIONS", "--require=./x.js"),
+            ("NODE_OPTIONS", "-r ./x.js"),
+            ("NODE_OPTIONS", "--import ./x.mjs"),
+            ("NODE_OPTIONS", "--loader ./l.mjs"),
+            ("NODE_OPTIONS", "--experimental-loader=./l.mjs"),
+            ("NODE_OPTIONS", "--max-old-space-size=4096 --require ./x.js"),
+            ("JAVA_TOOL_OPTIONS", "-javaagent:./a.jar"),
+            ("JAVA_TOOL_OPTIONS", "-Xmx2g -agentpath:/tmp/x.so"),
+            ("JAVA_TOOL_OPTIONS", "-agentlib:jdwp=transport=dt_socket"),
+            ("_JAVA_OPTIONS", "-javaagent:./a.jar"),
+            ("PERL5OPT", "-MFoo"),
+            ("PERL5OPT", "-mFoo"),
+            ("PERL5OPT", "-I./lib"),
+            ("RUBYOPT", "-r./x"),
+            ("RUBYOPT", "-rfoo"),
+            ("RUBYOPT", "-I lib"),
+        ] {
+            let out = env_hits(key, value);
+            assert_eq!(out.len(), 1, "{key}={value}: {out:?}");
+            assert_eq!(out[0].rule, "agent.env-exec", "{key}={value}");
+            assert_eq!(out[0].severity, Severity::Critical, "{key}={value}");
+        }
+    }
+
+    #[test]
+    fn an_option_key_without_a_load_flag_is_low() {
+        for (key, value) in [
+            ("NODE_OPTIONS", "--max-old-space-size=4096"),
+            ("NODE_OPTIONS", "--enable-source-maps --no-warnings"),
+            ("JAVA_TOOL_OPTIONS", "-Xmx2g"),
+            ("_JAVA_OPTIONS", "-Xmx512m -Dfile.encoding=UTF-8"),
+            ("PERL5OPT", "-w"),
+            ("RUBYOPT", "-W0"),
+            ("RUBYOPT", "--enable-frozen-string-literal"),
+        ] {
+            let out = env_hits(key, value);
+            assert_eq!(out.len(), 1, "{key}={value}: {out:?}");
+            assert_eq!(out[0].rule, "agent.env-option", "{key}={value}");
+            assert_eq!(out[0].severity, Severity::Low, "{key}={value}");
+            assert_eq!(out[0].seen, format!("{key}={value}"));
+        }
+    }
+
+    #[test]
+    fn option_and_search_path_keys_in_env_files_follow_the_same_ruling() {
+        let cases = [
+            (
+                "NODE_OPTIONS=--require ./x.js",
+                "agent.env-exec",
+                Severity::Critical,
+            ),
+            (
+                "export NODE_OPTIONS=\"--max-old-space-size=4096\"",
+                "agent.env-option",
+                Severity::Low,
+            ),
+            (
+                "JAVA_TOOL_OPTIONS=-javaagent:./a.jar",
+                "agent.env-exec",
+                Severity::Critical,
+            ),
+            (
+                "JAVA_TOOL_OPTIONS=-Xmx2g",
+                "agent.env-option",
+                Severity::Low,
+            ),
+            ("PYTHONPATH=src", "agent.env-search-path", Severity::Medium),
+        ];
+        for (line, id, severity) in cases {
+            let (_, out) = run(".env", &format!("{line}\n"));
+            assert_eq!(out.len(), 1, "{line}: {out:?}");
+            assert_eq!(out[0].rule, id, "{line}");
+            assert_eq!(out[0].severity, severity, "{line}");
+        }
+        // The other redirect keys stay a settings-only rule.
+        let (_, out) = run(".env", "HTTP_PROXY=http://x\nOPENAI_BASE_URL=http://x\n");
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn a_broken_settings_file_rates_option_and_search_path_keys_the_same_way() {
+        let text = r#"{"env": {"NODE_OPTIONS": "--require ./x.js", "PYTHONPATH": "src", "RUBYOPT": "-W0"} oops"#;
+        let (_, out) = run(SETTINGS, text);
+        assert_eq!(rule(&out, "agent.env-exec").len(), 1, "{out:?}");
+        assert_eq!(rule(&out, "agent.env-search-path").len(), 1, "{out:?}");
+        assert_eq!(rule(&out, "agent.env-option").len(), 1, "{out:?}");
     }
 
     #[test]
