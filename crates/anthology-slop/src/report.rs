@@ -1,18 +1,44 @@
 //! The gate's messages: the refusal the agent reads, the lines `slop check` prints, and the
 //! rules table.
 
-use crate::{Finding, Waiver};
+use crate::{Finding, Kind, Waiver};
 use std::fmt::Write;
 
 /// The most findings a block message lists.
 pub const MAX_SHOWN: usize = 20;
 
-/// What a refusal tells the agent to do, after the list of tells.
-const ADVICE: &str = "Rewrite each passage in plain, specific words, then retry; a synonym swap is not a fix. Put a quoted specimen in a code span or between <!-- slop-ignore-start --> and <!-- slop-ignore-end -->. Add <!-- slop-ok: <rule> <reason> --> only for wording the user asked for word for word; the lead is told about each one.\n";
+/// What a refusal tells the agent to do, after the list of tells, in the comment syntax of `kind`.
+/// The checker reads `<!-- -->` in Markdown and HTML, `{/* */}` in JSX and `/* */` in CSS.
+fn advice(kind: Kind) -> String {
+    let (specimen, start, end, waiver) = match kind {
+        Kind::Markdown | Kind::Html => (
+            "in a code span or between",
+            "<!-- slop-ignore-start -->",
+            "<!-- slop-ignore-end -->",
+            "<!-- slop-ok: <rule> <reason> -->",
+        ),
+        Kind::Jsx => (
+            "between",
+            "{/* slop-ignore-start */}",
+            "{/* slop-ignore-end */}",
+            "{/* slop-ok: <rule> <reason> */}",
+        ),
+        Kind::Css => (
+            "between",
+            "/* slop-ignore-start */",
+            "/* slop-ignore-end */",
+            "/* slop-ok: <rule> <reason> */",
+        ),
+    };
+    format!(
+        "Rewrite each passage in plain, specific words, then retry; a synonym swap is not a fix. Put a quoted specimen {specimen} {start} and {end}. Add {waiver} only for wording the user asked for word for word; the lead is told about each one.\n"
+    )
+}
 
-/// The stderr message of a refused edit. `findings` holds only unwaived findings; at most
-/// `MAX_SHOWN` are listed, then the count of the rest. The message ends with a newline.
-pub fn hook_message(tool: &str, shown: &str, findings: &[Finding]) -> String {
+/// The stderr message of a refused edit to a file of `kind`. `findings` holds only unwaived
+/// findings; at most `MAX_SHOWN` are listed, then the count of the rest. The closing advice shows
+/// the waiver and ignore-region syntax of `kind`. The message ends with a newline.
+pub fn hook_message(tool: &str, shown: &str, kind: Kind, findings: &[Finding]) -> String {
     let mut out = format!(
         "anthology slop gate: the {tool} of {shown} was not applied. Its new text has these AI tells:\n"
     );
@@ -26,7 +52,7 @@ pub fn hook_message(tool: &str, shown: &str, findings: &[Finding]) -> String {
     if findings.len() > MAX_SHOWN {
         let _ = writeln!(out, "  and {} more", findings.len() - MAX_SHOWN);
     }
-    out.push_str(ADVICE);
+    out.push_str(&advice(kind));
     out
 }
 
@@ -64,6 +90,7 @@ pub fn rules_table() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Span;
 
     fn finding(rule: &'static str, line: usize, excerpt: &str) -> Finding {
         Finding {
@@ -88,6 +115,7 @@ mod tests {
         let got = hook_message(
             "Write",
             "docs/a.md",
+            Kind::Markdown,
             &[
                 finding("text.ai-vocab", 3, "delve"),
                 finding("text.hype-cta", 7, "to the next level"),
@@ -106,11 +134,90 @@ mod tests {
 
     #[test]
     fn hook_message_names_the_tool() {
-        let got = hook_message("MultiEdit", "src/a.html", &[finding("ui.glow-orb", 1, "x")]);
+        let got = hook_message(
+            "MultiEdit",
+            "src/a.html",
+            Kind::Html,
+            &[finding("ui.glow-orb", 1, "x")],
+        );
         assert!(
             got.starts_with("anthology slop gate: the MultiEdit of src/a.html was not applied. Its new text has these AI tells:\n  line 1: ui.glow-orb \"x\": remove the orb"),
             "{got}"
         );
+    }
+
+    /// The closing paragraph of a message for `kind`.
+    fn advice_for(kind: Kind) -> String {
+        let got = hook_message("Edit", "a", kind, &[finding("text.ai-vocab", 1, "delve")]);
+        got.lines().last().unwrap().to_string()
+    }
+
+    #[test]
+    fn markdown_and_html_show_the_html_comment_syntax() {
+        let want = "Rewrite each passage in plain, specific words, then retry; a synonym swap is not a fix. Put a quoted specimen in a code span or between <!-- slop-ignore-start --> and <!-- slop-ignore-end -->. Add <!-- slop-ok: <rule> <reason> --> only for wording the user asked for word for word; the lead is told about each one.";
+        assert_eq!(advice_for(Kind::Markdown), want);
+        assert_eq!(advice_for(Kind::Html), want);
+    }
+
+    #[test]
+    fn jsx_shows_the_jsx_comment_syntax() {
+        assert_eq!(
+            advice_for(Kind::Jsx),
+            "Rewrite each passage in plain, specific words, then retry; a synonym swap is not a fix. Put a quoted specimen between {/* slop-ignore-start */} and {/* slop-ignore-end */}. Add {/* slop-ok: <rule> <reason> */} only for wording the user asked for word for word; the lead is told about each one."
+        );
+    }
+
+    #[test]
+    fn css_shows_the_block_comment_syntax() {
+        assert_eq!(
+            advice_for(Kind::Css),
+            "Rewrite each passage in plain, specific words, then retry; a synonym swap is not a fix. Put a quoted specimen between /* slop-ignore-start */ and /* slop-ignore-end */. Add /* slop-ok: <rule> <reason> */ only for wording the user asked for word for word; the lead is told about each one."
+        );
+    }
+
+    #[test]
+    fn the_advice_names_no_other_kinds_comment() {
+        for kind in [Kind::Jsx, Kind::Css] {
+            assert!(!advice_for(kind).contains("<!--"), "{kind:?}");
+        }
+        for kind in [Kind::Markdown, Kind::Html] {
+            assert!(!advice_for(kind).contains("/*"), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn every_waiver_the_message_shows_is_read_by_the_checker() {
+        // the syntax in the advice must be one the engine accepts, for the kind it is shown for
+        let cases = [
+            (
+                Kind::Markdown,
+                "A <!-- slop-ok: text.ai-vocab the user named it --> delve here.",
+            ),
+            (
+                Kind::Html,
+                "<p>delve <!-- slop-ok: text.ai-vocab the user named it --></p>",
+            ),
+            (
+                Kind::Jsx,
+                "const a = <p>delve {/* slop-ok: text.ai-vocab the user named it */}</p>;",
+            ),
+            (
+                Kind::Css,
+                "a { top: 0 } /* slop-ok: ui.purple-gradient the user named it */",
+            ),
+        ];
+        for (kind, doc) in cases {
+            let waivers = crate::waivers_in(
+                kind,
+                doc,
+                &[Span {
+                    start: 0,
+                    end: doc.len(),
+                }],
+            );
+            assert_eq!(waivers.len(), 1, "{kind:?}: {waivers:?}");
+            assert!(waivers[0].valid, "{kind:?}");
+        }
     }
 
     #[test]
@@ -128,30 +235,40 @@ mod tests {
         };
         assert_eq!(MAX_SHOWN, 20);
 
-        let got = lines_of(&hook_message("Edit", "a.md", &many(23)));
+        let got = lines_of(&hook_message("Edit", "a.md", Kind::Markdown, &many(23)));
         assert_eq!(got.len(), 21, "{got:?}");
         assert!(got[19].starts_with("  line 20: "), "{}", got[19]);
         assert_eq!(got[20], "  and 3 more");
 
-        let got = lines_of(&hook_message("Edit", "a.md", &many(21)));
+        let got = lines_of(&hook_message("Edit", "a.md", Kind::Markdown, &many(21)));
         assert_eq!(got.len(), 21);
         assert_eq!(got[20], "  and 1 more");
 
-        let got = lines_of(&hook_message("Edit", "a.md", &many(20)));
+        let got = lines_of(&hook_message("Edit", "a.md", Kind::Markdown, &many(20)));
         assert_eq!(got.len(), 20, "{got:?}");
         assert!(got.iter().all(|l| l.starts_with("  line ")));
     }
 
     #[test]
     fn hook_message_ends_with_one_newline_after_the_closing_paragraph() {
-        let got = hook_message("Edit", "a.md", &[finding("text.ai-vocab", 1, "delve")]);
+        let got = hook_message(
+            "Edit",
+            "a.md",
+            Kind::Markdown,
+            &[finding("text.ai-vocab", 1, "delve")],
+        );
         assert!(got.ends_with("the lead is told about each one.\n"), "{got}");
         assert!(!got.ends_with("\n\n"));
     }
 
     #[test]
     fn an_unknown_rule_shows_no_hint() {
-        let got = hook_message("Edit", "a.md", &[finding("text.no-such", 4, "x")]);
+        let got = hook_message(
+            "Edit",
+            "a.md",
+            Kind::Markdown,
+            &[finding("text.no-such", 4, "x")],
+        );
         assert!(got.contains("\n  line 4: text.no-such \"x\"\n"), "{got}");
     }
 
