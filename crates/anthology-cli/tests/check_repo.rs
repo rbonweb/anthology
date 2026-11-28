@@ -956,6 +956,34 @@ fn an_interrupt_mid_fetch_stops_git_and_removes_the_quarantine() {
     }
 }
 
+/// The signal thread kills git's group, and the main thread sees git die. If the main thread
+/// reported the failed fetch and exited 3 before the signal thread exited, the exit code would be
+/// 3, not 128 plus the signal. Fifty interrupts, five at a time so the machine is busy, and no
+/// sleep between the signal and the check: the exit code and the folders must be right at once.
+#[test]
+fn an_interrupt_mid_fetch_always_exits_with_the_signal_code() {
+    let workers: Vec<_> = (0..5)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for round in 0..10 {
+                    let sb = Sandbox::new();
+                    let (mut child, into, template) = hung_fetch(&sb);
+                    send(&child, "TERM");
+                    let status = finish(&mut child, Duration::from_secs(30));
+                    assert_eq!(status.code(), Some(143), "round {round}: {status:?}");
+                    let err = stderr_of(&mut child);
+                    assert!(err.contains("interrupted"), "round {round}: {err}");
+                    assert!(!into.exists(), "round {round}: the quarantine was left");
+                    assert!(!template.exists(), "round {round}: the template was left");
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().expect("a round failed");
+    }
+}
+
 #[test]
 fn a_killed_cli_leaves_no_child_and_no_quarantine() {
     // SIGKILL cannot be caught: the watchdog of each child does the cleaning.
