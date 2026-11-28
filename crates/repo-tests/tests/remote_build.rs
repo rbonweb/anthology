@@ -7,7 +7,7 @@ use std::env;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use repo_tests::repo;
@@ -46,6 +46,9 @@ HOME=$FAKE_REMOTE_HOME exec sh -c "$*"
 /// script does that could touch more than ours (a prune, a `system` call, a forced image removal)
 /// is a failure here.
 const FAKE_DOCKER: &str = r#"#!/bin/sh
+# Runs at once from several runs: one call at a time, as a docker daemon orders them.
+exec 9>"$FAKE_STATE/.lock"
+flock 9
 printf '%s\n' "$*" >> "$FAKE_STATE/docker.log"
 touch "$FAKE_STATE/containers" "$FAKE_STATE/volumes" "$FAKE_STATE/images"
 drop_line() { # drop_line FILE KEY: remove the lines whose first word is KEY
@@ -150,22 +153,41 @@ echo "fake 1000000000 1 $kb 1% /"
 /// Starts a container on the volume the real runner would name: the cksum of its root path.
 const FAKE_RUST_TEST: &str = r#"#!/bin/sh
 echo "rust-test args: $*"
+# The script's toolchain install is `run true`: one line per call in `installs`, its start and end
+# in `install-spans`, and a failure when `install-fail` exists (once).
+if [ "$1" = run ]; then
+    echo "install" >> "$FAKE_STATE/installs"
+    echo "start $$ $(date +%s%N)" >> "$FAKE_STATE/install-spans"
+    sleep "${FAKE_INSTALL_SECS:-0}"
+    echo "end $$ $(date +%s%N)" >> "$FAKE_STATE/install-spans"
+    [ ! -e "$FAKE_STATE/install-fail-always" ] || exit 1
+    if [ -e "$FAKE_STATE/install-fail" ]; then rm -f "$FAKE_STATE/install-fail"; exit 1; fi
+    exit 0
+fi
 echo "rust-test cwd: $(pwd)"
 echo "keep-target=${ANTHOLOGY_KEEP_TARGET:-unset}"
+echo "jobs=${CARGO_BUILD_JOBS:-unset}"
 [ -z "$(find "$HOME/anthology-remote/.last-used" -mmin -5 2>/dev/null)" ] || echo "last-used is fresh"
 [ -z "${FAKE_AGE_LAST_USED:-}" ] || touch -d '5 hours ago' "$HOME/anthology-remote/.last-used"
 root=$(cd "$(dirname "$0")/.." && pwd)
 vol=anthology-rust-target-$(printf '%s' "$root" | cksum | cut -d' ' -f1)
 image=$(awk '$1 == "FROM" {print $NF; exit}' "$root/ci/images/rust.Dockerfile")
 rustup=anthology-rustup-$(printf '%s' "${image##*@sha256:}" | cut -c1-12)
-# `docker run` pulls a missing image and creates a missing volume, with no label.
+# `docker run` pulls a missing image and creates a missing volume, with no label. Runs at once
+# share these files: one at a time.
+exec 8>"$FAKE_STATE/.lock"
+flock 8
 touch "$FAKE_STATE/images" "$FAKE_STATE/volumes"
 grep -qxF -- "$image" "$FAKE_STATE/images" || echo "$image" >> "$FAKE_STATE/images"
 for v in "$vol" anthology-cargo anthology-sccache "$rustup"; do
     grep -q "^$v " "$FAKE_STATE/volumes" || echo "$v $(date -u +%Y-%m-%dT%H:%M:%SZ) -" >> "$FAKE_STATE/volumes"
 done
 echo "cont1 $vol running $image" >> "$FAKE_STATE/containers"
+flock -u 8
+echo "start $$ $(date +%s%N)" >> "$FAKE_STATE/spans"
 [ -z "${FAKE_HANG:-}" ] || exec sleep 30
+sleep "${FAKE_SLEEP:-0}"
+echo "end $$ $(date +%s%N)" >> "$FAKE_STATE/spans"
 exit "${FAKE_EXIT:-0}"
 "#;
 
@@ -173,7 +195,7 @@ const DOCKERFILE: &str = "FROM rust@sha256:0123456789abcdef\n";
 const IMAGE: &str = "rust@sha256:0123456789abcdef";
 
 /// The fake host is this machine, so the remote half needs GNU tools (`stat -c`, `date -d`, `find
-/// -printf`, `sort -z`): the Linux test container has them, macOS does not. Skip there.
+/// -printf`, `sort -z`) and `flock`: the Linux test container has them, macOS does not. Skip there.
 fn gnu_userland() -> bool {
     let ok = |cmd: &str| {
         Command::new("sh")
@@ -183,7 +205,7 @@ fn gnu_userland() -> bool {
             .unwrap_or(false)
     };
     ok(
-        "date -d '1 hour ago' +%s && stat -c %Y . && find . -maxdepth 0 -printf x && printf 'a\\0' | sort -z",
+        "date -d '1 hour ago' +%s && stat -c %Y . && find . -maxdepth 0 -printf x && printf 'a\\0' | sort -z && command -v flock",
     )
 }
 
@@ -280,6 +302,9 @@ impl Rig {
             .env("ANTHOLOGY_REMOTE_SYNC", "tar")
             // The tests look at the remote folder after a run; the default removes it.
             .env("ANTHOLOGY_KEEP_REMOTE", "1")
+            // The fake host is this machine, whatever its size: fix the caps.
+            .env("ANTHOLOGY_REMOTE_SLOTS", "4")
+            .env("ANTHOLOGY_REMOTE_JOBS", "2")
             .env("FAKE_DOCKER_ROOT", self.home.join("docker-root"))
             .env("FAKE_STATE", &self.state)
             .env("FAKE_REMOTE_HOME", &self.home)
@@ -295,14 +320,15 @@ impl Rig {
         self.home.join("anthology-remote")
     }
 
-    /// The folders under `~/anthology-remote` on the fake host (not the `.stamp` files).
+    /// The folders under `~/anthology-remote` on the fake host (not the `.stamp` and `.lock` files,
+    /// not the hidden `.slots`).
     fn remote_dirs(&self) -> Vec<PathBuf> {
         let Ok(entries) = fs::read_dir(self.remote_root()) else {
             return Vec::new();
         };
         let mut dirs = entries
             .map(|e| e.unwrap().path())
-            .filter(|p| p.is_dir())
+            .filter(|p| p.is_dir() && !p.file_name().unwrap().to_string_lossy().starts_with('.'))
             .collect::<Vec<_>>();
         dirs.sort();
         dirs
@@ -315,14 +341,15 @@ impl Rig {
         dirs.remove(0)
     }
 
-    /// What is under `~/anthology-remote` besides the `.last-used` file.
+    /// What is under `~/anthology-remote` besides the hidden bookkeeping files (`.last-used`, the
+    /// locks, the build slots, the toolchain marker, the record of the pulled image).
     fn left_under_root(&self) -> Vec<String> {
         let Ok(entries) = fs::read_dir(self.remote_root()) else {
             return Vec::new();
         };
         entries
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .filter(|n| n != ".last-used" && n != ".pulled-images")
+            .filter(|n| !n.starts_with('.'))
             .collect()
     }
 
@@ -413,6 +440,64 @@ impl Rig {
         let mut text = self.log(file);
         text.push_str(line);
         fs::write(self.state.join(file), text).unwrap();
+    }
+
+    /// The runs the stand-in `rust-test.sh` recorded in `file` (`spans` or `install-spans`): its
+    /// start and, once it is over, its end, in nanoseconds.
+    fn spans(&self, file: &str) -> Vec<(u128, Option<u128>)> {
+        let mut by_pid: Vec<(String, u128, Option<u128>)> = Vec::new();
+        for line in self.log(file).lines() {
+            let mut words = line.split_whitespace();
+            let (Some(kind), Some(pid), Some(ns)) = (words.next(), words.next(), words.next())
+            else {
+                continue;
+            };
+            let ns: u128 = ns.parse().unwrap();
+            match kind {
+                "start" => by_pid.push((pid.to_owned(), ns, None)),
+                "end" => {
+                    if let Some(span) = by_pid.iter_mut().find(|s| s.0 == pid) {
+                        span.2 = Some(ns);
+                    }
+                }
+                _ => {}
+            }
+        }
+        by_pid.into_iter().map(|(_, s, e)| (s, e)).collect()
+    }
+
+    /// Starts the script in the background with its output in `<tag>.out` under the state folder.
+    /// The run is not kept (the default of the script) unless `envs` says so.
+    fn spawn_run(&self, tag: &str, envs: &[(&str, &str)], args: &[&str]) -> Child {
+        let out = fs::File::create(self.state.join(format!("{tag}.out"))).unwrap();
+        let err = out.try_clone().unwrap();
+        let mut cmd = self.command(args);
+        cmd.env_remove("ANTHOLOGY_KEEP_REMOTE");
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        cmd.stdout(out).stderr(err).spawn().expect("script started")
+    }
+
+    /// What a background run printed.
+    fn output_of(&self, tag: &str) -> String {
+        self.log(&format!("{tag}.out"))
+    }
+
+    /// Waits for a background run to end; its exit code.
+    fn finish(&self, tag: &str, mut child: Child) -> Option<i32> {
+        let status = child.wait().unwrap();
+        eprintln!("{tag}: {}", self.output_of(tag));
+        status.code()
+    }
+}
+
+/// Polls `ok` for up to `secs` seconds.
+fn wait_until(what: &str, secs: u64, mut ok: impl FnMut() -> bool) {
+    let end = Instant::now() + Duration::from_secs(secs);
+    while !ok() {
+        assert!(Instant::now() < end, "timed out waiting for {what}");
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -715,9 +800,17 @@ fn a_run_removes_its_folder_stamp_and_volume_by_default() {
         assert_eq!(out.status.code(), code.parse::<i32>().ok(), "exit {code}");
         let left = rig.left_under_root();
         assert!(left.is_empty(), "left under ~/anthology-remote: {left:?}");
-        let volume = volume_for(&rig.own_remote_dir());
+        // The folder is this run's own, so its volume has a name of its own.
         let docker = rig.log("docker.log");
-        assert!(docker.contains(&format!("volume rm {volume}")), "{docker}");
+        assert!(
+            docker.contains("volume rm anthology-rust-target-"),
+            "{docker}"
+        );
+        assert!(
+            !rig.volumes().contains("anthology-rust-target-"),
+            "{}",
+            rig.volumes()
+        );
         assert_eq!(rig.containers().trim(), "");
     }
 }
@@ -814,7 +907,12 @@ fn a_host_with_under_20_gb_free_refuses_to_start() {
         ("FAKE_DF_KB", "20971519"),
         ("FAKE_DF_DOCKER_KB", "20971519"),
     ] {
-        let out = rig.command(&["test"]).env(var, kb).output().unwrap();
+        let out = rig
+            .command(&["test"])
+            .env_remove("ANTHOLOGY_KEEP_REMOTE")
+            .env(var, kb)
+            .output()
+            .unwrap();
         let shown = all_output(&out);
         assert_ne!(out.status.code(), Some(0), "{var}={kb}: {shown}");
         assert!(text(&out.stderr).contains("20 GB"), "{shown}");
@@ -846,7 +944,7 @@ fn exactly_20_gb_free_is_enough() {
 }
 
 #[test]
-fn clean_ours_removes_what_we_created_and_the_image_we_pulled() {
+fn clean_all_ours_removes_what_we_created_and_the_image_we_pulled() {
     let rig = rig!();
     rig.seed_dir("1111", 13);
     rig.seed_dir("2222", 1);
@@ -871,9 +969,14 @@ fn clean_ours_removes_what_we_created_and_the_image_we_pulled() {
         rig.pulled_images()
     );
 
-    let out = rig.run(&["--clean-ours"]);
+    let out = rig.run(&["--clean-all-ours"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
-    assert!(!rig.remote_root().exists(), "~/anthology-remote is gone");
+    let left: Vec<String> = fs::read_dir(rig.remote_root())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    // The runs lock stays: a run that is starting may already have it open.
+    assert_eq!(left, [".runs.lock"], "~/anthology-remote is empty");
     let volumes = rig.volumes();
     let left: Vec<&str> = volumes
         .lines()
@@ -893,11 +996,13 @@ fn clean_ours_removes_what_we_created_and_the_image_we_pulled() {
 }
 
 #[test]
-fn clean_ours_before_any_run_succeeds_and_takes_no_other_arguments() {
+fn the_clean_commands_before_any_run_succeed_and_take_no_other_arguments() {
     let rig = rig!();
-    assert_eq!(rig.run(&["--clean-ours"]).status.code(), Some(0));
-    let out = rig.run(&["--clean-ours", "lint"]);
-    assert_eq!(out.status.code(), Some(2));
+    for flag in ["--clean-ours", "--clean-all-ours"] {
+        assert_eq!(rig.run(&[flag]).status.code(), Some(0), "{flag}");
+        let out = rig.run(&[flag, "lint"]);
+        assert_eq!(out.status.code(), Some(2), "{flag}");
+    }
 }
 
 #[test]
@@ -905,7 +1010,7 @@ fn the_old_name_clean_all_is_refused_not_passed_on() {
     let rig = rig!();
     let out = rig.run(&["--clean-all"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(text(&out.stderr).contains("--clean-ours"));
+    assert!(text(&out.stderr).contains("--clean-all-ours"));
     assert!(rig.log("ssh.log").is_empty(), "ssh was called");
 }
 
@@ -1041,7 +1146,7 @@ fn nothing_unlabelled_or_unrelated_is_ever_touched() {
     fs::create_dir_all(&outside).unwrap();
     fs::write(outside.join("file"), "x").unwrap();
 
-    for args in [&["lint"][..], &["--clean-ours"]] {
+    for args in [&["lint"][..], &["--clean-ours"], &["--clean-all-ours"]] {
         let out = rig
             .command(args)
             .env_remove("ANTHOLOGY_KEEP_REMOTE")
@@ -1091,7 +1196,7 @@ fn an_image_we_pulled_stays_while_a_container_that_is_not_ours_uses_it() {
     let rig = rig!();
     rig.seed_pulled_image();
     rig.seed_container_of("theirs", "their-data", "running", IMAGE);
-    let out = rig.run(&["--clean-ours"]);
+    let out = rig.run(&["--clean-all-ours"]);
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
     assert!(rig.images().contains(IMAGE), "{}", rig.images());
     assert!(!rig.log("docker.log").contains("rmi"));
@@ -1138,4 +1243,361 @@ fn the_runner_keeps_its_target_volume_only_when_the_run_is_kept() {
         "{}",
         all_output(&dropped)
     );
+}
+
+/// The name of this checkout's folder (the hash of its path), as the script names it.
+fn own_hash(rig: &Rig) -> String {
+    rig.own_remote_dir()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// A folder name for a run, as the script makes them: the checkout's hash and a suffix.
+fn seed_run_dir(rig: &Rig, name: &str, hours_ago: u32) -> PathBuf {
+    let dir = rig.seed_dir(name, hours_ago);
+    rig.seed_volume(&volume_for(&dir), 1);
+    dir
+}
+
+fn lock_of(dir: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.lock", dir.display()))
+}
+
+#[test]
+fn runs_at_once_get_a_folder_and_volume_each_and_clean_ours_leaves_a_live_one() {
+    let rig = rig!();
+    let envs = [("FAKE_SLEEP", "8")];
+    let a = rig.spawn_run("a", &envs, &["test", "-p", "x"]);
+    let b = rig.spawn_run("b", &envs, &["test", "-p", "x"]);
+    wait_until("both builds to start", 60, || rig.spans("spans").len() == 2);
+
+    // Each run has a folder and a target volume of its own, named for this checkout.
+    let dirs = rig.remote_dirs();
+    assert_eq!(dirs.len(), 2, "{dirs:?}");
+    let hash = own_hash(&rig);
+    for dir in &dirs {
+        let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(&format!("{hash}-")), "{name}");
+    }
+    let volumes: Vec<String> = dirs.iter().map(|d| volume_for(d)).collect();
+    assert_ne!(volumes[0], volumes[1]);
+
+    // Another agent cleans this checkout while both build: both runs and their volumes survive.
+    let out = rig.run(&["--clean-ours"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(text(&out.stderr).contains("alone"), "{}", all_output(&out));
+    assert_eq!(rig.remote_dirs(), dirs, "a live run's folder was removed");
+    let have = rig.volumes();
+    for volume in &volumes {
+        assert!(have.contains(volume), "{volume} was removed:\n{have}");
+    }
+    assert!(rig.containers().contains("cont1"), "{}", rig.containers());
+
+    assert_eq!(rig.finish("a", a), Some(0));
+    assert_eq!(rig.finish("b", b), Some(0));
+    // Each removed only its own: nothing is left, and each build ran to its end.
+    assert_eq!(rig.left_under_root(), Vec::<String>::new());
+    assert!(
+        !rig.volumes().contains("anthology-rust-target-"),
+        "{}",
+        rig.volumes()
+    );
+    assert_eq!(rig.containers().trim(), "");
+    assert!(rig.spans("spans").iter().all(|s| s.1.is_some()));
+}
+
+#[test]
+fn clean_all_ours_refuses_while_a_run_is_live_and_works_after() {
+    let rig = rig!();
+    let run = rig.spawn_run("a", &[("FAKE_SLEEP", "6")], &["lint"]);
+    wait_until("the build to start", 60, || !rig.spans("spans").is_empty());
+    let out = rig.run(&["--clean-all-ours"]);
+    assert_eq!(out.status.code(), Some(4), "{}", all_output(&out));
+    assert!(
+        text(&out.stderr).contains("refusing"),
+        "{}",
+        all_output(&out)
+    );
+    assert_eq!(rig.remote_dirs().len(), 1, "the live run's folder is gone");
+    assert!(
+        rig.volumes().contains("anthology-cargo"),
+        "{}",
+        rig.volumes()
+    );
+    assert!(!rig.log("docker.log").contains("volume rm"));
+    assert_eq!(rig.finish("a", run), Some(0));
+
+    let out = rig.run(&["--clean-all-ours"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(!rig.volumes().contains("anthology-cargo"));
+}
+
+#[test]
+fn clean_ours_removes_only_this_checkouts_folders_and_volumes() {
+    let rig = rig!();
+    let hash = own_hash(&rig);
+    let mine = [
+        rig.seed_dir(&hash, 1),
+        seed_run_dir(&rig, &format!("{hash}-1-1-1"), 1),
+    ];
+    rig.seed_volume(&volume_for(&mine[0]), 1);
+    // Another checkout, one of whose hash starts with ours, and shared caches.
+    let theirs = [
+        seed_run_dir(&rig, "7777-1-1-1", 1),
+        seed_run_dir(&rig, &format!("{hash}9-1-1-1"), 1),
+    ];
+    for cache in ["anthology-cargo", "anthology-rustup-abc"] {
+        rig.seed_volume(cache, 1);
+    }
+    rig.seed_pulled_image();
+
+    let out = rig.run(&["--clean-ours"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    let volumes = rig.volumes();
+    for dir in &mine {
+        assert!(!dir.exists(), "{dir:?}");
+        assert!(!lock_of(dir).exists() && !stamp_of(dir).exists());
+        assert!(!volumes.contains(&volume_for(dir)), "{volumes}");
+    }
+    for dir in &theirs {
+        assert!(dir.exists(), "{dir:?} belongs to another checkout");
+        assert!(volumes.contains(&volume_for(dir)), "{volumes}");
+    }
+    for cache in ["anthology-cargo", "anthology-rustup-abc"] {
+        assert!(volumes.contains(cache), "{volumes}");
+    }
+    assert!(rig.images().contains(IMAGE));
+}
+
+#[test]
+fn a_dead_runs_leftovers_are_reclaimed_at_once_and_a_live_runs_are_not() {
+    let rig = rig!();
+    // Both folders were used a minute ago; only the lock tells a dead run from a live one.
+    let dead = seed_run_dir(&rig, "4444-1-1-1", 0);
+    let live = seed_run_dir(&rig, "5555-2-2-2", 0);
+    fs::write(lock_of(&dead), "").unwrap();
+    fs::write(lock_of(&live), "").unwrap();
+    // A running run holds its lock with flock(1), as the script does; so does this stand-in.
+    let mut holder = Command::new("flock")
+        .arg("-x")
+        .arg(lock_of(&live))
+        .args(["sleep", "60"])
+        .spawn()
+        .unwrap();
+    wait_until("the lock to be held", 10, || {
+        !Command::new("flock")
+            .arg("-n")
+            .arg(lock_of(&live))
+            .arg("true")
+            .status()
+            .unwrap()
+            .success()
+    });
+
+    let out = rig.run(&["lint"]);
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert!(!dead.exists(), "a dead run's folder stays");
+    assert!(!lock_of(&dead).exists() && !stamp_of(&dead).exists());
+    assert!(!rig.volumes().contains(&volume_for(&dead)));
+    assert!(live.exists(), "a live run's folder was removed");
+    assert!(rig.volumes().contains(&volume_for(&live)));
+}
+
+#[test]
+fn a_dead_run_that_left_no_lock_waits_for_the_12_hour_rule() {
+    let rig = rig!();
+    let young = seed_run_dir(&rig, "4444-1-1-1", 1);
+    let old = seed_run_dir(&rig, "5555-2-2-2", 13);
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert!(young.exists(), "no lock and 1 hour old");
+    assert!(!old.exists(), "no lock and 13 hours old");
+}
+
+#[test]
+fn a_slot_cap_makes_extra_runs_wait_and_every_run_gets_the_job_count() {
+    let rig = rig!();
+    let envs = [
+        ("ANTHOLOGY_REMOTE_SLOTS", "1"),
+        ("ANTHOLOGY_REMOTE_JOBS", "3"),
+        ("FAKE_SLEEP", "1"),
+    ];
+    let runs: Vec<(String, Child)> = (0..3)
+        .map(|i| {
+            let tag = format!("r{i}");
+            let child = rig.spawn_run(&tag, &envs, &["lint"]);
+            (tag, child)
+        })
+        .collect();
+    let mut waited = false;
+    for (tag, child) in runs {
+        assert_eq!(rig.finish(&tag, child), Some(0), "{tag}");
+        let shown = rig.output_of(&tag);
+        assert!(shown.contains("jobs=3"), "{tag}: {shown}");
+        waited |= shown.contains("waiting for one");
+    }
+    assert!(waited, "no run had to wait for a slot");
+    // One slot: the builds never overlap.
+    let mut spans = rig.spans("spans");
+    spans.sort();
+    assert_eq!(spans.len(), 3);
+    for pair in spans.windows(2) {
+        assert!(
+            pair[1].0 >= pair[0].1.unwrap(),
+            "two builds overlapped: {spans:?}"
+        );
+    }
+}
+
+#[test]
+fn the_host_works_out_a_job_count_and_a_slot_cap_when_none_is_given() {
+    let rig = rig!();
+    let out = rig
+        .command(&["lint"])
+        .env_remove("ANTHOLOGY_REMOTE_JOBS")
+        .env_remove("ANTHOLOGY_REMOTE_SLOTS")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    let stdout = text(&out.stdout);
+    let jobs = stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("jobs="))
+        .unwrap_or_else(|| panic!("no jobs line: {stdout}"));
+    assert!(jobs.parse::<u32>().is_ok_and(|n| n >= 1), "jobs={jobs}");
+}
+
+#[test]
+fn a_bad_cap_is_refused_before_ssh() {
+    let rig = rig!();
+    for (var, value) in [
+        ("ANTHOLOGY_REMOTE_JOBS", "0"),
+        ("ANTHOLOGY_REMOTE_JOBS", "many"),
+        ("ANTHOLOGY_REMOTE_SLOTS", "-1"),
+    ] {
+        let out = rig.command(&["lint"]).env(var, value).output().unwrap();
+        assert_eq!(out.status.code(), Some(2), "{var}={value}");
+    }
+    assert!(rig.log("ssh.log").is_empty(), "ssh was called");
+}
+
+#[test]
+fn the_toolchain_is_installed_once_however_many_runs_start_together() {
+    let rig = rig!();
+    fs::write(rig.repo.join("rust-toolchain.toml"), "channel = \"1\"\n").unwrap();
+    let envs = [("FAKE_INSTALL_SECS", "2"), ("FAKE_SLEEP", "1")];
+    let runs: Vec<(String, Child)> = (0..3)
+        .map(|i| {
+            let tag = format!("r{i}");
+            let child = rig.spawn_run(&tag, &envs, &["lint"]);
+            (tag, child)
+        })
+        .collect();
+    for (tag, child) in runs {
+        assert_eq!(rig.finish(&tag, child), Some(0), "{tag}");
+    }
+    let installs = || rig.log("installs").lines().count();
+    assert_eq!(installs(), 1, "{}", rig.log("install-spans"));
+    // A later run finds the marker; a new toolchain file makes one more install.
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert_eq!(installs(), 1);
+    fs::write(rig.repo.join("rust-toolchain.toml"), "channel = \"2\"\n").unwrap();
+    assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
+    assert_eq!(installs(), 2);
+}
+
+#[test]
+fn a_failed_toolchain_install_is_tried_again_on_a_new_volume() {
+    let rig = rig!();
+    fs::write(rig.state.join("install-fail"), "").unwrap();
+    let out = rig.run(&["lint"]);
+    assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
+    assert_eq!(rig.log("installs").lines().count(), 2);
+    let docker = rig.log("docker.log");
+    assert!(
+        docker.contains("volume rm anthology-rustup-0123456789ab"),
+        "{docker}"
+    );
+    assert!(
+        docker.contains(
+            "volume create --label anthology.remote-build=1 anthology-rustup-0123456789ab"
+        ),
+        "{docker}"
+    );
+    // The new volume is ours and has the label.
+    let volumes = rig.volumes();
+    let line = volumes
+        .lines()
+        .rfind(|l| l.starts_with("anthology-rustup-0123456789ab "))
+        .unwrap();
+    assert!(line.ends_with(" ours"), "{volumes}");
+}
+
+#[test]
+fn an_install_that_fails_twice_stops_the_run() {
+    let rig = rig!();
+    fs::write(rig.state.join("install-fail-always"), "").unwrap();
+    let out = rig.run(&["lint"]);
+    assert_eq!(out.status.code(), Some(5), "{}", all_output(&out));
+    assert!(
+        text(&out.stderr).contains("could not be installed"),
+        "{}",
+        all_output(&out)
+    );
+    assert!(
+        !text(&out.stdout).contains("rust-test args: lint"),
+        "the run went on: {}",
+        all_output(&out)
+    );
+    assert_eq!(
+        rig.log("installs").lines().count(),
+        2,
+        "one try and one retry"
+    );
+}
+
+#[test]
+fn a_second_kept_run_of_one_checkout_is_refused_while_the_first_runs() {
+    let rig = rig!();
+    let first = rig.spawn_run(
+        "a",
+        &[("ANTHOLOGY_KEEP_REMOTE", "1"), ("FAKE_SLEEP", "10")],
+        &["lint"],
+    );
+    wait_until("the build to start", 60, || !rig.spans("spans").is_empty());
+    let out = rig.run(&["lint"]);
+    assert_eq!(out.status.code(), Some(4), "{}", all_output(&out));
+    assert!(
+        text(&out.stderr).contains("kept folder"),
+        "{}",
+        all_output(&out)
+    );
+    assert_eq!(rig.finish("a", first), Some(0));
+    assert!(
+        rig.remote_dir().join("src/lib.rs").is_file(),
+        "the kept folder"
+    );
+}
+
+#[test]
+fn a_killed_script_leaves_nothing_on_the_host() {
+    let rig = rig!();
+    let mut run = rig.spawn_run("a", &[("FAKE_HANG", "1")], &["lint"]);
+    wait_until("the build to start", 60, || !rig.spans("spans").is_empty());
+    assert_eq!(rig.remote_dirs().len(), 1);
+    // No signal handler runs: only the host's own watch can clean up.
+    run.kill().unwrap();
+    run.wait().unwrap();
+    wait_until("the host to clean up", 90, || {
+        rig.remote_dirs().is_empty() && rig.containers().trim().is_empty()
+    });
+    assert!(
+        !rig.volumes().contains("anthology-rust-target-"),
+        "{}",
+        rig.volumes()
+    );
+    assert_eq!(rig.left_under_root(), Vec::<String>::new());
 }
