@@ -25,7 +25,7 @@ Three Claude Code plugins, one static Rust binary, `anthology`; ATL (`atl/`, a f
 
 ## Flows
 - Session start: `hooks/session-start.sh` -> `bin/anthology` shim -> `lib.sh` checks the binary against `anthology.lock` (downloads if missing) -> guide, ATL install, warning for official `superpowers` (`doctor.rs`).
-- Bash call: `bin/atl-hook`, then `hooks/no-attribution.sh`; guardrails `guard.sh` -> `anthology guard` (binary missing: a detached `bootstrap.sh fetch` downloads it; `guard.sh` passes only that installer). All `onFailure: block`, timeout 60. The permissions mod allows only what `perm classify` proves read-only.
+- Bash call: `bin/atl-hook`, then `hooks/no-attribution.sh`, then `hooks/commit-privacy.sh` -> `anthology privacy hook` (`cmd/privacy.rs`, `anthology-memory/src/commit_scan.rs`; fails open, only exit 10 blocks); guardrails `guard.sh` -> `anthology guard` (binary missing: a detached `bootstrap.sh fetch` downloads it; `guard.sh` passes only that installer). All `onFailure: block`, timeout 60. The permissions mod allows only what `perm classify` proves read-only.
 - Binary release: root `Cargo.toml` version -> tag `anthology-bin--v<ver>` -> `anthology-release.yml` -> `scripts/dev.sh lock write` rewrites both `anthology.lock` -> release guardrails, then anthology.
 - ATL release: `atl/Cargo.toml` version `<upstream>-anthology.<n>` -> tag `atl--v<ver>` -> `atl-release.yml` -> `atl.lock` -> release anthology.
 - Plugin release: `scripts/release.sh <plugin> <ver>` bumps `plugin.json`, moves `[Unreleased]` entries, commits, tags, `git push --atomic`; last line `RELEASE OK|FAILED`. Release a dependency plugin first; `lock check-fresh` refuses a lock older than the workspace (`lock-fresh.sh` only warns).
