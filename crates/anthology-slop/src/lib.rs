@@ -705,27 +705,48 @@ mod tests {
         assert!(doc.len() < MAX_DOC);
         let start = std::time::Instant::now();
         let got = check_all(Kind::Markdown, &doc);
-        let waivers = waivers_in(Kind::Markdown, &doc, &[sp(0, doc.len())]);
         let took = start.elapsed();
         assert_eq!(got.len(), 18_000);
         assert!(
             got.iter()
                 .all(|f| f.waiver.as_deref() == Some("named by the user"))
         );
-        assert_eq!(waivers.len(), 18_000);
         assert!(took < TIME_LIMIT, "took {took:?}");
     }
 
     #[test]
+    fn waivers_in_a_megabyte_are_listed_in_time() {
+        let line = "delve <!-- slop-ok: text.ai-vocab named by the user -->\n";
+        let doc = line.repeat(18_000);
+        let start = std::time::Instant::now();
+        let waivers = waivers_in(Kind::Markdown, &doc, &[sp(0, doc.len())]);
+        let took = start.elapsed();
+        assert_eq!(waivers.len(), 18_000);
+        assert!(took < TIME_LIMIT, "took {took:?}");
+    }
+
+    fn a_hit_per_line(_: &View) -> Vec<Hit> {
+        (0..170_000)
+            .map(|i| hit("text.ai-vocab", sp(i * 6, i * 6 + 5), vec![]))
+            .collect()
+    }
+
+    #[test]
     fn many_new_spans_are_checked_in_time() {
-        // every other line is new: 85k new spans against 170k hits
+        // The engine alone (a rule that costs nothing): every other line is new, so 85k new
+        // spans meet 170k hits.
+        let rules = [test_rule(
+            "text.ai-vocab",
+            Severity::Block,
+            Run::Text(a_hit_per_line),
+        )];
         let doc = "delve\n".repeat(170_000);
         let new: Vec<Span> = (0..170_000)
             .step_by(2)
             .map(|i| sp(i * 6, i * 6 + 6))
             .collect();
         let start = std::time::Instant::now();
-        let got = check(Kind::Markdown, &doc, &new);
+        let got = check_with(Kind::Markdown, &doc, &new, &rules);
         let took = start.elapsed();
         assert_eq!(got.len(), 85_000);
         assert!(took < TIME_LIMIT, "took {took:?}");
