@@ -66,6 +66,8 @@ pub struct DiskTree {
     odd: HashMap<String, PathBuf>,
     skipped: Vec<String>,
     errors: Vec<String>,
+    /// Folders queued so far: they count toward `max_files` like entries do.
+    dirs: usize,
     walk_partial: bool,
     read_total: AtomicU64,
     budget_spent: AtomicBool,
@@ -73,10 +75,15 @@ pub struct DiskTree {
 
 impl DiskTree {
     /// Walks `root`, shallow folders first and each folder in name order. `modes` are the git modes
-    /// of a fetched repo (`ls-files` path and mode); they override the kinds the disk shows. Without
-    /// `modes` (a folder the user named) the `.git` folder gives `.git/config` and the non-sample
-    /// `.git/hooks/*` files as entries and nothing else; with them, the folder is the fetch's own and
-    /// is left out.
+    /// of a fetched repo (`ls-files` path and mode); they override the kinds the disk shows.
+    ///
+    /// Without `modes` (a folder the user named) every `.git` gives `<dir>/.git/config`,
+    /// `.git/config.worktree` and the non-sample `.git/hooks/*` files as entries and nothing else.
+    /// A `.git` file that says `gitdir: <folder>`, and a `.git`, `config` or `hooks` that is a link,
+    /// are followed when the place they point at is inside the root; the entries keep the `.git/...`
+    /// names git would use. With `modes` the `.git` folder is the fetch's own and is left out, and
+    /// `node_modules` and `.claude/worktrees` are walked like any folder: a committed one is repo
+    /// content.
     pub fn open(
         root: &Path,
         opts: &WalkOpts,
@@ -97,6 +104,7 @@ impl DiskTree {
             odd: HashMap::new(),
             skipped: Vec::new(),
             errors: Vec::new(),
+            dirs: 0,
             walk_partial: false,
             read_total: AtomicU64::new(0),
             budget_spent: AtomicBool::new(false),
@@ -132,15 +140,46 @@ impl DiskTree {
                 "not a regular file",
             ));
         }
+        let real = self.real_of(path).unwrap_or_else(|| self.root.join(path));
+        self.read_budgeted(&real, max)
+    }
+
+    /// The path on disk behind the entry `path`: the same path under the root, except for an entry
+    /// below a name that is not UTF-8 or a `.git` entry that a link or a `gitdir:` file moved.
+    pub fn real_of(&self, path: &str) -> Option<PathBuf> {
+        self.index.get(path)?;
+        Some(
+            self.odd
+                .get(path)
+                .cloned()
+                .unwrap_or_else(|| self.root.join(path)),
+        )
+    }
+
+    /// `target` taken from the folder `base` (an absolute `target` is taken as it is), with every
+    /// link resolved; `None` if the result is missing or is not inside the root. This is how a
+    /// file that another file includes is found without ever leaving the repo.
+    pub fn resolve_inside(&self, base: &Path, target: &str) -> Option<PathBuf> {
+        self.inside(&base.join(target))
+    }
+
+    /// Up to `max` bytes of a regular file that `resolve_inside` or `real_of` returned. Counted in
+    /// the read budget like `read`; a path outside the root is an error.
+    pub fn read_real(&self, real: &Path, max: usize) -> io::Result<Vec<u8>> {
+        if !real.starts_with(&self.root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "outside the scan root",
+            ));
+        }
+        self.read_budgeted(real, max)
+    }
+
+    fn read_budgeted(&self, real: &Path, max: usize) -> io::Result<Vec<u8>> {
         if self.budget_spent.load(Ordering::Relaxed) {
             return Err(budget_error());
         }
-        let real = self
-            .odd
-            .get(path)
-            .cloned()
-            .unwrap_or_else(|| self.root.join(path));
-        let bytes = read_regular(&real, max)?;
+        let bytes = read_regular(real, max)?;
         let before = self
             .read_total
             .fetch_add(bytes.len() as u64, Ordering::Relaxed);
@@ -149,6 +188,12 @@ impl DiskTree {
             return Err(budget_error());
         }
         Ok(bytes)
+    }
+
+    /// `p` with every link resolved, if that is inside the root.
+    fn inside(&self, p: &Path) -> Option<PathBuf> {
+        let canonical = fs::canonicalize(p).ok()?;
+        canonical.starts_with(&self.root).then_some(canonical)
     }
 
     pub fn root(&self) -> &Path {
@@ -197,13 +242,15 @@ impl DiskTree {
                     }
                 };
                 let mode = modes.get(path.as_str()).copied();
+                let git = name.to_str() == Some(".git");
                 let more = if mode == Some(MODE_GITLINK) {
                     self.push(submodule(path), None)
+                } else if git && !fetched {
+                    self.git_item(&real, &path, &meta, child_odd)
                 } else if meta.is_dir() {
-                    let git = name.to_str() == Some(".git");
                     self.dir(&real, path, git, child_odd, fetched, &mut queue)
-                } else if path == ".git" && meta.is_file() {
-                    // A `.git` file only names a folder elsewhere: it adds nothing.
+                } else if git && meta.is_file() {
+                    // A `.git` file only names a folder: it adds nothing.
                     true
                 } else if let Some(entry) = self.leaf(&real, &path, &meta, mode) {
                     self.push(entry, child_odd.then_some(real))
@@ -238,18 +285,31 @@ impl DiskTree {
                 return None;
             }
         };
+        // Names past what the file cap leaves room for are never collected: one huge folder must
+        // not be read in full before the cap is looked at.
+        let room = self.opts.max_files.saturating_sub(self.count());
         let mut names = Vec::new();
         for item in listing {
             match item {
                 Ok(item) => names.push(item.file_name()),
                 Err(e) => self.fail("list", rel, &e),
             }
+            if names.len() > room {
+                self.walk_partial = true;
+                names.truncate(room);
+                break;
+            }
         }
         Some(names)
     }
 
-    /// Handles a folder: queues it, skips it, or (for `.git`) lists its two virtual entries.
-    /// Returns false when a cap ends the walk.
+    /// Entries and folders so far: what the file cap counts.
+    fn count(&self) -> usize {
+        self.entries.len() + self.dirs
+    }
+
+    /// Handles a folder: queues it or skips it. Returns false when a cap ends the walk. `git` is
+    /// true for a folder named `.git` of a fetched tree, which is left out.
     fn dir(
         &mut self,
         real: &Path,
@@ -259,39 +319,93 @@ impl DiskTree {
         fetched: bool,
         queue: &mut VecDeque<(PathBuf, String, bool)>,
     ) -> bool {
-        if path == ".git" {
-            return fetched || self.git_entries(real);
+        if git {
+            if path != ".git" {
+                self.skipped.push(format!("{path}/"));
+            }
+            return true;
         }
         let worktrees = path == ".claude/worktrees" || path.ends_with("/.claude/worktrees");
         let node_modules = path == "node_modules" || path.ends_with("/node_modules");
-        if git || (!self.opts.all && (node_modules || worktrees)) {
+        // A committed `node_modules` of a fetched repo is repo content, so only a folder the user
+        // named leaves them out.
+        if !fetched && !self.opts.all && (node_modules || worktrees) {
             self.skipped.push(format!("{path}/"));
             return true;
         }
+        if self.count() >= self.opts.max_files {
+            self.walk_partial = true;
+            return false;
+        }
+        self.dirs += 1;
         queue.push_back((real.to_path_buf(), path, odd));
         true
     }
 
-    /// `.git/config` and the non-sample files of `.git/hooks`: what git runs from a folder.
-    fn git_entries(&mut self, git: &Path) -> bool {
-        let config = git.join("config");
-        if let Ok(meta) = fs::symlink_metadata(&config)
-            && let Some(entry) = self.leaf(&config, ".git/config", &meta, None)
-            && !self.push(entry, None)
-        {
-            return false;
+    /// A `.git` in a folder the user named (`path` is `.git` or `<dir>/.git`): a folder, a link or
+    /// a file. Returns false when a cap ends the walk.
+    fn git_item(&mut self, real: &Path, path: &str, meta: &fs::Metadata, odd: bool) -> bool {
+        if meta.is_dir() {
+            return self.git_entries(real, path);
+        }
+        if meta.file_type().is_symlink() {
+            // The link is an entry (the orchestrator rates one that leaves the repo), and a link
+            // that stays inside the repo also gives the entries of the folder it names.
+            if let Some(entry) = self.leaf(real, path, meta, None)
+                && !self.push(entry, odd.then(|| real.to_path_buf()))
+            {
+                return false;
+            }
+            return match self.inside(real) {
+                Some(dir) if dir.is_dir() => self.git_entries(&dir, path),
+                _ => true,
+            };
+        }
+        if meta.is_file() {
+            // `gitdir: <folder>`: the real git folder, if it is inside the repo.
+            let Ok(bytes) = read_regular(real, LINK_TARGET_MAX) else {
+                return true;
+            };
+            let text = String::from_utf8_lossy(&bytes);
+            let target = text
+                .lines()
+                .next()
+                .and_then(|line| line.strip_prefix("gitdir:"))
+                .map(str::trim);
+            let base = real.parent().unwrap_or(real);
+            return match target.and_then(|t| self.resolve_inside(base, t)) {
+                Some(dir) if dir.is_dir() => self.git_entries(&dir, path),
+                _ => true,
+            };
+        }
+        match self.leaf(real, path, meta, None) {
+            Some(entry) => self.push(entry, None),
+            None => true,
+        }
+    }
+
+    /// `config`, `config.worktree` and the non-sample files of `hooks` of the git folder `git`, as
+    /// `<prefix>/config` and so on: what git runs in a folder. Returns false when a cap ends the walk.
+    fn git_entries(&mut self, git: &Path, prefix: &str) -> bool {
+        for name in ["config", "config.worktree"] {
+            if !self.git_leaf(&git.join(name), &format!("{prefix}/{name}")) {
+                return false;
+            }
         }
         let hooks = git.join("hooks");
         let Ok(meta) = fs::symlink_metadata(&hooks) else {
             return true;
         };
-        if !meta.is_dir() {
-            return match self.leaf(&hooks, ".git/hooks", &meta, None) {
-                Some(entry) => self.push(entry, None),
-                None => true,
-            };
-        }
-        let Some(mut names) = self.list(&hooks, ".git/hooks") else {
+        let hooks_path = format!("{prefix}/hooks");
+        let hooks_dir = if meta.is_dir() {
+            hooks
+        } else {
+            match self.inside(&hooks) {
+                Some(dir) if meta.file_type().is_symlink() && dir.is_dir() => dir,
+                _ => return self.git_leaf(&hooks, &hooks_path),
+            }
+        };
+        let Some(mut names) = self.list(&hooks_dir, &hooks_path) else {
             return true;
         };
         names.sort();
@@ -300,23 +414,38 @@ impl DiskTree {
             if lossy.ends_with(".sample") {
                 continue;
             }
-            let real = hooks.join(&name);
-            let path = format!(".git/hooks/{lossy}");
-            let meta = match fs::symlink_metadata(&real) {
-                Ok(meta) => meta,
-                Err(e) => {
-                    self.fail("read", &path, &e);
-                    continue;
-                }
-            };
-            let odd = name.to_str().is_none();
-            if let Some(entry) = self.leaf(&real, &path, &meta, None)
-                && !self.push(entry, odd.then_some(real))
-            {
+            if !self.git_leaf(&hooks_dir.join(&name), &format!("{hooks_path}/{lossy}")) {
                 return false;
             }
         }
         true
+    }
+
+    /// One file of a git folder. A link that stays inside the repo gives the file it names (git
+    /// reads it); one that leaves stays a link entry. A missing file is nothing.
+    fn git_leaf(&mut self, real: &Path, path: &str) -> bool {
+        let meta = match fs::symlink_metadata(real) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return true,
+            Err(e) => {
+                self.fail("read", path, &e);
+                return true;
+            }
+        };
+        let mut real = real.to_path_buf();
+        let mut meta = meta;
+        if meta.file_type().is_symlink()
+            && let Some(target) = self.inside(&real)
+            && let Ok(m) = fs::symlink_metadata(&target)
+            && m.is_file()
+        {
+            real = target;
+            meta = m;
+        }
+        match self.leaf(&real, path, &meta, None) {
+            Some(entry) => self.push(entry, Some(real)),
+            None => true,
+        }
     }
 
     /// The entry for something that is not a folder; `None` for a folder.
@@ -372,17 +501,19 @@ impl DiskTree {
     }
 
     /// Adds `entry`; false when the file cap is hit (the walk then stops and is partial).
-    fn push(&mut self, entry: Entry, odd_real: Option<PathBuf>) -> bool {
-        if self.entries.len() >= self.opts.max_files {
+    fn push(&mut self, mut entry: Entry, odd_real: Option<PathBuf>) -> bool {
+        if self.count() >= self.opts.max_files {
             self.walk_partial = true;
             return false;
         }
+        // Two names that are not UTF-8 can read the same once lossy: the second gets a suffix, so
+        // both are listed and scanned.
         if self.index.contains_key(&entry.path) {
-            self.skipped.push(format!(
-                "{:?} (another entry has the same name)",
-                entry.path
-            ));
-            return true;
+            let base = entry.path.clone();
+            let free = (2..)
+                .map(|n| format!("{base}~{n}"))
+                .find(|p| !self.index.contains_key(p));
+            entry.path = free.unwrap_or(base);
         }
         if let Some(real) = odd_real {
             self.odd.insert(entry.path.clone(), real);
@@ -433,7 +564,7 @@ fn read_regular(path: &Path, max: usize) -> io::Result<Vec<u8>> {
             "not a regular file",
         ));
     }
-    let file = fs::File::open(path)?;
+    let file = open_nofollow(path)?;
     let after = file.metadata()?;
     if !after.is_file() || !same_file(&before, &after) {
         return Err(io::Error::new(
@@ -445,6 +576,67 @@ fn read_regular(path: &Path, max: usize) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::with_capacity(max.min(size));
     file.take(max as u64).read_to_end(&mut bytes)?;
     Ok(bytes)
+}
+
+// The open flags, by hand because this crate has no libc. A platform not listed gets 0 and relies
+// on the `symlink_metadata` and `fstat` checks around the open alone.
+#[cfg(target_os = "macos")]
+mod flags {
+    pub const O_NOFOLLOW: i32 = 0x100;
+    pub const O_NONBLOCK: i32 = 0x4;
+}
+#[cfg(all(target_os = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
+mod flags {
+    pub const O_NOFOLLOW: i32 = 0o400_000;
+    pub const O_NONBLOCK: i32 = 0o4000;
+}
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "aarch64",
+        target_arch = "arm",
+        target_arch = "riscv64",
+        target_arch = "loongarch64"
+    )
+))]
+mod flags {
+    pub const O_NOFOLLOW: i32 = 0o100_000;
+    pub const O_NONBLOCK: i32 = 0o4000;
+}
+#[cfg(not(any(
+    target_os = "macos",
+    all(
+        target_os = "linux",
+        any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "arm",
+            target_arch = "riscv64",
+            target_arch = "loongarch64"
+        )
+    )
+)))]
+mod flags {
+    pub const O_NOFOLLOW: i32 = 0;
+    pub const O_NONBLOCK: i32 = 0;
+}
+
+/// Opens a file for reading without following a link in its last component and without waiting
+/// on a pipe: a file swapped for a link or a FIFO after the `symlink_metadata` check is refused
+/// or opens at once, and the `fstat` that follows tells what it is.
+#[cfg(unix)]
+fn open_nofollow(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(flags::O_NOFOLLOW | flags::O_NONBLOCK)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_nofollow(path: &Path) -> io::Result<fs::File> {
+    fs::File::open(path)
 }
 
 #[cfg(unix)]
@@ -668,14 +860,166 @@ mod tests {
         write(tmp.path(), ".git/objects/ab/cdef", b"x");
         write(tmp.path(), ".git/hooks/pre-commit", b"#!/bin/sh\n");
         write(tmp.path(), ".git/hooks/pre-push.sample", b"#!/bin/sh\n");
-        write(tmp.path(), "sub/.git/config", b"[core]\n");
         let t = open(tmp.path());
         assert_eq!(paths(&t), [".git/config", ".git/hooks/pre-commit", "a.txt"]);
         assert_eq!(
             t.read(".git/hooks/pre-commit", 100).unwrap(),
             b"#!/bin/sh\n"
         );
+        assert!(t.skipped().is_empty());
+    }
+
+    #[test]
+    fn nested_git_dirs_give_their_config_and_hooks() {
+        // I2: a nested repo's config runs commands when git is used in it.
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "sub/.git/config", b"[core]\n\tfsmonitor = x\n");
+        write(tmp.path(), "sub/.git/hooks/post-checkout", b"#!/bin/sh\n");
+        write(tmp.path(), "sub/.git/objects/ab/cd", b"x");
+        write(tmp.path(), "sub/a.txt", b"x");
+        let t = open(tmp.path());
+        assert_eq!(
+            paths(&t),
+            [
+                "sub/.git/config",
+                "sub/.git/hooks/post-checkout",
+                "sub/a.txt"
+            ]
+        );
+        assert_eq!(
+            t.read("sub/.git/config", 100).unwrap(),
+            b"[core]\n\tfsmonitor = x\n"
+        );
+        assert!(t.skipped().is_empty());
+    }
+
+    #[test]
+    fn a_nested_git_dir_of_a_fetched_tree_is_left_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "sub/.git/config", b"[core]\n");
+        write(tmp.path(), "sub/a.txt", b"x");
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&[])).unwrap();
+        assert_eq!(paths(&t), ["sub/a.txt"]);
         assert_eq!(t.skipped(), ["sub/.git/"]);
+    }
+
+    #[test]
+    fn config_worktree_is_an_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".git/config.worktree", b"[core]\n");
+        let t = open(tmp.path());
+        assert_eq!(paths(&t), [".git/config.worktree"]);
+    }
+
+    #[test]
+    fn a_gitdir_file_that_names_a_folder_in_the_repo_is_followed() {
+        // I2: `.git` as a file, `gitdir: .g`, puts the real git folder at `.g`.
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".git", b"gitdir: .g\n");
+        write(tmp.path(), ".g/config", b"[core]\n\tfsmonitor = x\n");
+        write(tmp.path(), ".g/hooks/pre-commit", b"#!/bin/sh\n");
+        let t = open(tmp.path());
+        let p = paths(&t);
+        assert!(p.contains(&".git/config"), "{p:?}");
+        assert!(p.contains(&".git/hooks/pre-commit"), "{p:?}");
+        assert_eq!(
+            t.read(".git/config", 100).unwrap(),
+            b"[core]\n\tfsmonitor = x\n"
+        );
+        assert_eq!(
+            t.read(".git/hooks/pre-commit", 100).unwrap(),
+            b"#!/bin/sh\n"
+        );
+    }
+
+    #[test]
+    fn a_gitdir_file_that_names_a_folder_outside_the_repo_is_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "outside/config", b"SENTINEL");
+        write(tmp.path(), "repo/a.txt", b"x");
+        let absolute = format!("{}/outside", tmp.path().display());
+        for target in ["../outside", absolute.as_str()] {
+            write(
+                tmp.path(),
+                "repo/.git",
+                format!("gitdir: {target}\n").as_bytes(),
+            );
+            let t = open(&tmp.path().join("repo"));
+            assert_eq!(paths(&t), ["a.txt"], "{target}");
+        }
+    }
+
+    #[test]
+    fn a_git_dir_link_that_stays_in_the_repo_is_followed_and_one_that_leaves_is_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "repo/real/config", b"[core]\n\tpager = x\n");
+        write(tmp.path(), "repo/real/hooks/pre-push", b"#!/bin/sh\n");
+        write(tmp.path(), "outside/config", b"SENTINEL");
+        symlink("real", tmp.path().join("repo/.git")).unwrap();
+        let t = open(&tmp.path().join("repo"));
+        assert!(matches!(kind(&t, ".git"), EntryKind::Symlink { .. }));
+        assert_eq!(
+            t.read(".git/config", 100).unwrap(),
+            b"[core]\n\tpager = x\n"
+        );
+        assert!(paths(&t).contains(&".git/hooks/pre-push"));
+
+        fs::remove_file(tmp.path().join("repo/.git")).unwrap();
+        symlink("../outside", tmp.path().join("repo/.git")).unwrap();
+        let t = open(&tmp.path().join("repo"));
+        assert!(!paths(&t).contains(&".git/config"));
+    }
+
+    #[test]
+    fn config_and_hooks_links_that_stay_in_the_repo_are_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "repo/ci/cfg", b"[core]\n\tfsmonitor = x\n");
+        write(tmp.path(), "repo/ci/hooks/pre-commit", b"#!/bin/sh\n");
+        write(tmp.path(), "outside/config", b"SENTINEL");
+        fs::create_dir_all(tmp.path().join("repo/.git")).unwrap();
+        symlink("../ci/cfg", tmp.path().join("repo/.git/config")).unwrap();
+        symlink("../ci/hooks", tmp.path().join("repo/.git/hooks")).unwrap();
+        let t = open(&tmp.path().join("repo"));
+        assert_eq!(
+            kind(&t, ".git/config"),
+            &EntryKind::File { exec: false },
+            "{:?}",
+            paths(&t)
+        );
+        assert_eq!(
+            t.read(".git/config", 100).unwrap(),
+            b"[core]\n\tfsmonitor = x\n"
+        );
+        assert_eq!(
+            t.read(".git/hooks/pre-commit", 100).unwrap(),
+            b"#!/bin/sh\n"
+        );
+    }
+
+    #[test]
+    fn resolve_inside_and_read_real_stay_in_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "outside/x.cfg", b"SENTINEL");
+        write(tmp.path(), "repo/.git/config", b"[core]\n");
+        write(tmp.path(), "repo/.git/inc.cfg", b"[core]\n\tpager = x\n");
+        write(tmp.path(), "repo/ci/y.cfg", b"y");
+        symlink("../../outside/x.cfg", tmp.path().join("repo/.git/link.cfg")).unwrap();
+        let t = open(&tmp.path().join("repo"));
+        let base = t
+            .real_of(".git/config")
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let inc = t.resolve_inside(&base, "inc.cfg").unwrap();
+        assert_eq!(t.read_real(&inc, 100).unwrap(), b"[core]\n\tpager = x\n");
+        assert!(t.resolve_inside(&base, "../ci/y.cfg").is_some());
+        assert!(t.resolve_inside(&base, "../../outside/x.cfg").is_none());
+        assert!(t.resolve_inside(&base, "link.cfg").is_none(), "a link out");
+        assert!(t.resolve_inside(&base, "/etc/hostname").is_none());
+        assert!(t.resolve_inside(&base, "missing.cfg").is_none());
+        let out = tmp.path().join("outside/x.cfg");
+        assert!(t.read_real(&out, 100).is_err());
     }
 
     #[test]
@@ -746,6 +1090,95 @@ mod tests {
         assert_eq!(kind(&t, "plain.txt"), &EntryKind::File { exec: false });
         assert_eq!(kind(&t, "vendor"), &EntryKind::Submodule);
         assert_eq!(kind(&t, "gone"), &EntryKind::Submodule);
+    }
+
+    #[test]
+    fn a_committed_node_modules_is_scanned_in_url_mode() {
+        // I3: a planted node_modules/lodash that a postinstall runs must be read.
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "node_modules/lodash/index.js", b"x");
+        write(tmp.path(), ".claude/worktrees/w1/a.js", b"x");
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&[])).unwrap();
+        assert_eq!(
+            paths(&t),
+            ["node_modules/lodash/index.js", ".claude/worktrees/w1/a.js"]
+        );
+        assert!(t.skipped().is_empty());
+        assert!(!t.partial());
+    }
+
+    #[test]
+    fn two_non_utf8_names_with_one_lossy_name_are_both_listed_and_readable() {
+        // I3: both names read as `a\u{fffd}b`; neither may be dropped.
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (
+            std::ffi::OsStr::from_bytes(b"a\xffb"),
+            std::ffi::OsStr::from_bytes(b"a\xfeb"),
+        );
+        let made = fs::write(tmp.path().join(a), b"first")
+            .and_then(|()| fs::write(tmp.path().join(b), b"second"));
+        if made.is_err() {
+            eprintln!("skipped: this file system refuses names that are not UTF-8");
+            return;
+        }
+        let t = open(tmp.path());
+        let p = paths(&t);
+        assert_eq!(p.len(), 2, "{p:?}");
+        let mut got: Vec<Vec<u8>> = p.iter().map(|x| t.read(x, 100).unwrap()).collect();
+        got.sort();
+        assert_eq!(got, [b"first".to_vec(), b"second".to_vec()]);
+        assert!(t.skipped().is_empty(), "{:?}", t.skipped());
+    }
+
+    #[test]
+    fn folders_count_toward_the_file_cap() {
+        // Minor 8: empty folders cost the walk too.
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..6 {
+            fs::create_dir(tmp.path().join(format!("d{i}"))).unwrap();
+        }
+        let o = WalkOpts {
+            max_files: 3,
+            ..WalkOpts::default()
+        };
+        let t = DiskTree::open(tmp.path(), &o, None).unwrap();
+        assert!(t.partial());
+    }
+
+    #[test]
+    fn one_huge_folder_is_cut_at_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..60 {
+            write(tmp.path(), &format!("f{i:02}.txt"), b"x");
+        }
+        let o = WalkOpts {
+            max_files: 10,
+            ..WalkOpts::default()
+        };
+        let t = DiskTree::open(tmp.path(), &o, None).unwrap();
+        assert!(t.entries().len() <= 10);
+        assert!(t.partial());
+    }
+
+    #[test]
+    fn open_nofollow_refuses_a_link_and_does_not_block_on_a_pipe() {
+        // Minor 1: the open itself must refuse a link and never wait on a pipe.
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "real.txt", b"x");
+        symlink("real.txt", tmp.path().join("link.txt")).unwrap();
+        assert!(open_nofollow(&tmp.path().join("real.txt")).is_ok());
+        assert!(open_nofollow(&tmp.path().join("link.txt")).is_err());
+        let fifo = tmp.path().join("pipe");
+        if std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            // Returns at once; the fstat that follows rejects it as not a regular file.
+            let file = open_nofollow(&fifo).unwrap();
+            assert!(!file.metadata().unwrap().is_file());
+        }
     }
 
     #[test]
