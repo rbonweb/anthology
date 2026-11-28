@@ -250,8 +250,8 @@ pub fn git_env(path: &OsStr, home: &Path, ssh: Option<&OsStr>) -> Vec<(OsString,
 /// the `(path, mode)` pairs of `git ls-files -s`.
 ///
 /// `p.dest` must not exist: a folder that is already there is refused and never touched. The
-/// folder is made with mode 0700. The modes are git's mode digits read as decimal numbers:
-/// `120000` is a symlink, `160000` a submodule, `100755` an executable, `100644` a plain file.
+/// folder is made with mode 0700. The modes are git's octal modes as numbers: `0o120000` is a
+/// symlink, `0o160000` a submodule, `0o100755` an executable, `0o100644` a plain file.
 pub fn fetch(
     p: &FetchPlan,
     r: &dyn Runner,
@@ -392,7 +392,7 @@ fn parse_ls_files(raw: &[u8]) -> Result<Vec<(String, u32)>, String> {
         let mode: u32 = head
             .split_ascii_whitespace()
             .next()
-            .and_then(|m| m.parse().ok())
+            .and_then(|m| u32::from_str_radix(m, 8).ok())
             .ok_or_else(bad)?;
         out.push((String::from_utf8_lossy(&rec[tab + 1..]).into_owned(), mode));
     }
@@ -798,15 +798,14 @@ mod tests {
         let dest = tmp.path().join("q").join("dest");
         let r = Fake::new(&["git"], git_ok);
         let modes = fetch(&plan(&dest), &r, Duration::from_secs(120)).unwrap();
-        // The numbers are git's mode digits read as decimal: 120000 is a symlink, 160000 a
-        // submodule.
+        // Git prints the modes in octal: 0o120000 is a symlink, 0o160000 a submodule.
         assert_eq!(
             modes,
             vec![
-                ("README.md".to_string(), 100644),
-                ("link".to_string(), 120000),
-                ("vendor/sub".to_string(), 160000),
-                ("dir with space/run.sh".to_string(), 100755),
+                ("README.md".to_string(), 0o100644),
+                ("link".to_string(), 0o120000),
+                ("vendor/sub".to_string(), 0o160000),
+                ("dir with space/run.sh".to_string(), 0o100755),
             ]
         );
         let calls = r.calls();
