@@ -130,7 +130,9 @@ fn describe(rule: &str) -> (&'static str, &'static str) {
 }
 
 pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
-    let name = name_of(f.path);
+    // ASCII case is ignored: macOS and Windows open `Package-Lock.json` as `package-lock.json`.
+    let name = name_of(f.path).to_ascii_lowercase();
+    let name = name.as_str();
     let known = matches!(
         name,
         "package-lock.json"
@@ -745,6 +747,35 @@ mod tests {
         assert!(run("fixtures/lock.json", &lock).is_empty());
         assert!(run("package.json", &lock).is_empty());
         assert!(run("README.md", &lock).is_empty());
+    }
+
+    #[test]
+    fn case_changes_do_not_hide_a_lockfile_or_a_dependency_file() {
+        let lock = npm_lock(&[(
+            "node_modules/foo",
+            "http://example.invalid/foo/-/foo-1.0.0.tgz",
+        )]);
+        for path in [
+            "Package-Lock.json",
+            "PACKAGE-LOCK.JSON",
+            "App/NPM-Shrinkwrap.json",
+        ] {
+            only(&run(path, &lock), "deps.lock-http");
+        }
+        let yarn =
+            "foo@^1.0.0:\n  resolved \"http://registry.yarnpkg.com/foo/-/foo-1.0.0.tgz#a\"\n";
+        only(&run("YARN.LOCK", yarn), "deps.lock-http");
+        let pnpm = "resolution: {tarball: http://example.invalid/b.tgz}\n";
+        only(&run("Pnpm-Lock.yaml", pnpm), "deps.lock-http");
+        let req = "--index-url https://example.invalid/simple\n";
+        only(&run("Requirements.TXT", req), "deps.pip-index");
+        only(&run("REQUIREMENTS-DEV.txt", req), "deps.pip-index");
+        only(
+            &run("PIP.CONF", "index-url = https://example.invalid/simple\n"),
+            "deps.pip-index",
+        );
+        only(&run("GO.MOD", "replace a => ../a\n"), "deps.go-replace");
+        assert!(run("MY-REQUIREMENTS.txt", req).is_empty());
     }
 
     #[test]

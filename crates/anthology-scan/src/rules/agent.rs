@@ -35,6 +35,16 @@ static ENV_REDIRECT: LazyLock<Regex> = LazyLock::new(|| {
     .expect("the env redirect pattern compiles")
 });
 
+/// Keys that make a tool load or start a program the repo supplies: a shell start file, a preload,
+/// an ssh or askpass command, a git config injection, a language path or option hook. CRITICAL.
+/// `PATH` is judged by its value (`runs_code`).
+static ENV_EXEC: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^(?:BASH_ENV|ENV|ZDOTDIR|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|GIT_SSH_COMMAND|GIT_SSH|GIT_ASKPASS|SSH_ASKPASS|GIT_EXEC_PATH|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+|GIT_CONFIG_GLOBAL|GIT_CONFIG_SYSTEM|PYTHONPATH|PYTHONSTARTUP|PERL5OPT|PERL5LIB|RUBYOPT|RUBYLIB|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS)$",
+    )
+    .expect("the env exec pattern compiles")
+});
+
 /// Any other `*_BASE_URL` key. Ordinary dev settings use these (`API_BASE_URL=http://localhost`),
 /// so they are MEDIUM.
 static ENV_BASE_URL: LazyLock<Regex> =
@@ -105,12 +115,17 @@ pub(super) fn clip(s: &str) -> String {
     s.chars().take(300).collect()
 }
 
-/// The folder above `marker` when `parent` ends in it: `a/.claude` gives `a`, `.claude` gives `""`.
+/// The folder above `marker` when `parent` ends in it, ignoring ASCII case: `a/.Claude` gives `a`,
+/// `.claude` gives `""`. The part kept is sliced from `parent`, so it keeps its case.
 fn above<'a>(parent: &'a str, marker: &str) -> Option<&'a str> {
-    if parent == marker {
-        Some("")
+    if parent.eq_ignore_ascii_case(marker) {
+        return Some("");
+    }
+    let cut = parent.len().checked_sub(marker.len() + 1)?;
+    if parent.as_bytes()[cut] == b'/' && parent[cut + 1..].eq_ignore_ascii_case(marker) {
+        Some(&parent[..cut])
     } else {
-        parent.strip_suffix(marker)?.strip_suffix('/')
+        None
     }
 }
 
@@ -215,7 +230,10 @@ fn json_quote(s: &str) -> String {
 /// The surfaces of an agent config file, and the findings that are not commands.
 pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
     let parent = parent_of(f.path);
-    let name = name_of(f.path);
+    // Names are matched without regard to ASCII case: macOS and Windows open `.Claude/Settings.json`
+    // as `.claude/settings.json`. The folder a surface runs from keeps the case as written.
+    let name = name_of(f.path).to_ascii_lowercase();
+    let name = name.as_str();
     // The file is picked by its name alone, so no byte of its content can switch the rules off.
     let target = if matches!(name, "settings.json" | "settings.local.json") {
         above(parent, ".claude").map(|dir| (Target::Settings, dir.to_string()))
@@ -335,9 +353,58 @@ fn unquote(quoted: &str) -> String {
     out
 }
 
-/// A finding for an `env` key that redirects traffic or credentials; nothing for any other key.
+/// True when an environment variable makes a tool load or start a program: a shell start file, a
+/// preload, an askpass or ssh command, a git config injection, a language path or option hook, or a
+/// `PATH` with a relative or repo entry.
+fn runs_code(key: &str, value: &str) -> bool {
+    ENV_EXEC.is_match(key) || (key.eq_ignore_ascii_case("PATH") && path_has_repo_entry(value))
+}
+
+/// True when a `PATH` value names a folder that is not a fixed absolute one: an empty entry (the
+/// current folder), a relative entry, or the project folder. `$HOME`, `$PATH` and `~` are the
+/// user's own and do not count.
+fn path_has_repo_entry(value: &str) -> bool {
+    if value.trim().is_empty() {
+        return false;
+    }
+    // In a Windows value (`;` or `\`) the `:` after a drive letter splits it off its path.
+    let windows = value.contains([';', '\\']);
+    value.split([':', ';']).any(|entry| {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return true;
+        }
+        if windows && entry.len() == 1 && entry.as_bytes()[0].is_ascii_alphabetic() {
+            return false;
+        }
+        if entry.starts_with(['/', '\\', '~']) {
+            return false;
+        }
+        match entry.strip_prefix('$') {
+            Some(rest) => {
+                let rest = rest.trim_start_matches('{');
+                ["CLAUDE_PROJECT_DIR", "PWD", "OLDPWD", "(pwd"]
+                    .iter()
+                    .any(|name| rest.starts_with(name))
+            }
+            None => true,
+        }
+    })
+}
+
+/// A finding for an `env` key that redirects traffic or credentials or makes a tool run a program;
+/// nothing for any other key.
 fn env_finding(s: &mut Sink, key: &str, value: &str, line: usize) {
-    let (severity, rule, why, action) = if ENV_REDIRECT.is_match(key) {
+    let (severity, rule, why, action) = if runs_code(key, value) {
+        (
+            Severity::Critical,
+            "agent.env-exec",
+            format!(
+                "The repo sets {key} for the agent, which makes a tool load or run a program the repo supplies."
+            ),
+            "Do not open this repo in an agent until the setting is removed.",
+        )
+    } else if ENV_REDIRECT.is_match(key) {
         (
             Severity::Critical,
             "agent.env-redirect",
@@ -422,9 +489,10 @@ fn settings(s: &mut Sink) {
 
     if let Some(env) = root.get("env").and_then(Value::as_object) {
         for (key, value) in env.iter() {
-            if ENV_REDIRECT.is_match(key) || ENV_BASE_URL.is_match(key) {
+            let value = value.as_str().unwrap_or("");
+            if runs_code(key, value) || ENV_REDIRECT.is_match(key) || ENV_BASE_URL.is_match(key) {
                 let line = s.json_line(key, key);
-                env_finding(s, key, value.as_str().unwrap_or(""), line);
+                env_finding(s, key, value, line);
             }
         }
     }
@@ -852,12 +920,13 @@ fn skill_or_agent_dir(path: &str) -> Option<String> {
     let (name, dirs) = segments.split_last()?;
     let lower = name.to_ascii_lowercase();
     for (i, dir) in dirs.iter().enumerate() {
-        if *dir != ".claude" {
+        if !dir.eq_ignore_ascii_case(".claude") {
             continue;
         }
-        let ok = match dirs.get(i + 1) {
-            Some(&"skills") => lower == "skill.md",
-            Some(&"agents") => lower.ends_with(".md"),
+        let next = dirs.get(i + 1).map(|d| d.to_ascii_lowercase());
+        let ok = match next.as_deref() {
+            Some("skills") => lower == "skill.md",
+            Some("agents") => lower.ends_with(".md"),
             _ => false,
         };
         if ok {
@@ -1064,13 +1133,23 @@ fn env_file(s: &mut Sink) {
             continue;
         };
         let key = key.trim();
+        let value = value.trim();
         if ENV_FILE_KEYS.contains(&key) {
             s.finding(
                 Severity::Critical,
                 "agent.env-redirect",
                 i + 1,
                 format!("A .env file sets {key}, which points the agent at a folder or host the repo chooses."),
-                &format!("{key}={}", value.trim()),
+                &format!("{key}={value}"),
+                "Do not open this repo in an agent until the line is removed.",
+            );
+        } else if runs_code(key, value.trim_matches(['"', '\''])) {
+            s.finding(
+                Severity::Critical,
+                "agent.env-exec",
+                i + 1,
+                format!("A .env file sets {key}, which makes a tool load or run a program the repo supplies."),
+                &format!("{key}={value}"),
                 "Do not open this repo in an agent until the line is removed.",
             );
         }
@@ -2018,6 +2097,206 @@ mod tests {
             let (found, out) = run(path, text);
             assert!(found.is_empty() && out.is_empty(), "{path}: {out:?}");
         }
+    }
+
+    // ---- N1: names are matched without regard to ASCII case ----
+
+    #[test]
+    fn case_changes_do_not_hide_settings_and_keep_the_folder_as_written() {
+        let hook = r#"{"hooks": {"Stop": [{"hooks": [{"command": "x.sh"}]}]}}"#;
+        for (path, dir) in [
+            (".Claude/settings.json", ""),
+            (".CLAUDE/SETTINGS.JSON", ""),
+            ("App/.Claude/Settings.Local.Json", "App"),
+            ("a/B/.cLaUdE/settings.local.json", "a/B"),
+        ] {
+            let (found, _) = run(path, hook);
+            assert_eq!(found.len(), 1, "{path}");
+            assert_eq!(found[0].dir, dir, "{path}");
+            assert_eq!(found[0].path, path);
+        }
+    }
+
+    #[test]
+    fn case_changes_do_not_hide_mcp_codex_skill_agent_or_env_files() {
+        let mcp = mcp("npx", r#"["-y", "x"]"#);
+        for path in [
+            ".MCP.json",
+            ".Mcp.JSON",
+            "Pkg/.MCP.JSON",
+            ".CURSOR/MCP.JSON",
+            ".Cursor/Mcp.Json",
+        ] {
+            assert_eq!(run(path, &mcp).0.len(), 1, "{path}");
+        }
+        assert_eq!(run("Pkg/.MCP.JSON", &mcp).0[0].dir, "Pkg");
+        assert_eq!(run(".CURSOR/MCP.JSON", &mcp).0[0].dir, "");
+        let codex = "[mcp_servers.a]\ncommand = \"./a.sh\"\n";
+        for path in [".CODEX/config.toml", ".Codex/CONFIG.TOML"] {
+            assert_eq!(run(path, codex).0.len(), 1, "{path}");
+        }
+        let fm = "---\nhooks:\n  Stop:\n    - command: x.sh\n---\n";
+        for path in [
+            ".CLAUDE/SKILLS/deploy/skill.md",
+            ".Claude/Skills/deploy/SKILL.MD",
+            "P/.CLAUDE/AGENTS/a.MD",
+        ] {
+            assert_eq!(run(path, fm).0.len(), 1, "{path}");
+        }
+        assert_eq!(run("P/.CLAUDE/AGENTS/a.MD", fm).0[0].dir, "P");
+        for path in [".ENV", ".Env.Local", "app/.ENV.production"] {
+            let (_, out) = run(path, "CODEX_HOME=./.codex\n");
+            assert_eq!(rule(&out, "agent.env-redirect").len(), 1, "{path}");
+        }
+    }
+
+    #[test]
+    fn a_case_changed_env_template_and_a_case_changed_other_name_stay_quiet() {
+        for path in [
+            ".ENV.EXAMPLE",
+            ".Env.Sample",
+            "ENV.txt",
+            ".CLAUDE/OTHER.JSON",
+            "SETTINGS.JSON",
+        ] {
+            let (found, out) = run(
+                path,
+                "CODEX_HOME=./.codex\n{\"hooks\": {\"Stop\": [{\"command\": \"x\"}]}}",
+            );
+            assert!(found.is_empty() && out.is_empty(), "{path}: {out:?}");
+        }
+    }
+
+    // ---- N7: keys that make a program run ----
+
+    #[test]
+    fn code_running_env_keys_are_critical_in_settings() {
+        for key in [
+            "BASH_ENV",
+            "ENV",
+            "ZDOTDIR",
+            "LD_PRELOAD",
+            "LD_LIBRARY_PATH",
+            "DYLD_INSERT_LIBRARIES",
+            "DYLD_LIBRARY_PATH",
+            "GIT_SSH_COMMAND",
+            "GIT_SSH",
+            "GIT_ASKPASS",
+            "SSH_ASKPASS",
+            "GIT_EXEC_PATH",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_12",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "PYTHONPATH",
+            "PYTHONSTARTUP",
+            "PERL5OPT",
+            "PERL5LIB",
+            "RUBYOPT",
+            "RUBYLIB",
+            "JAVA_TOOL_OPTIONS",
+            "_JAVA_OPTIONS",
+            "bash_env",
+        ] {
+            let text = format!(r#"{{"env": {{"{key}": "./x"}}}}"#);
+            let (found, out) = run(SETTINGS, &text);
+            assert!(found.is_empty(), "{key}");
+            let hits = rule(&out, "agent.env-exec");
+            assert_eq!(hits.len(), 1, "{key}: {out:?}");
+            assert_eq!(hits[0].severity, Severity::Critical, "{key}");
+            assert_eq!(hits[0].group, Group::Agent);
+            assert_eq!(hits[0].line, 1);
+            assert_eq!(hits[0].seen, format!("{key}=./x"));
+        }
+    }
+
+    #[test]
+    fn a_path_with_a_relative_or_repo_entry_is_critical() {
+        for value in [
+            ".:/usr/bin",
+            "./bin:/usr/bin",
+            "/usr/bin::/bin",
+            ":/usr/bin",
+            "/usr/bin:",
+            "node_modules/.bin:/usr/bin",
+            "$CLAUDE_PROJECT_DIR/bin:/usr/bin",
+            "${CLAUDE_PROJECT_DIR}/bin:$PATH",
+            "$PWD/tools:/usr/bin",
+            "/usr/bin;tools\\bin",
+        ] {
+            let text = format!(
+                r#"{{"env": {{"PATH": "{}"}}}}"#,
+                value.replace('\\', "\\\\")
+            );
+            let (_, out) = run(SETTINGS, &text);
+            assert_eq!(rule(&out, "agent.env-exec").len(), 1, "{value}: {out:?}");
+        }
+        let (_, out) = run(SETTINGS, r#"{"env": {"Path": ".:/usr/bin"}}"#);
+        assert_eq!(rule(&out, "agent.env-exec").len(), 1);
+    }
+
+    #[test]
+    fn an_absolute_path_and_other_ordinary_env_keys_are_quiet() {
+        for value in [
+            "/usr/local/bin:/usr/bin",
+            "$HOME/.local/bin:$PATH",
+            "${HOME}/bin:${PATH}",
+            "~/bin:/usr/bin",
+            "C:\\Tools;D:\\bin",
+            "",
+        ] {
+            let text = format!(
+                r#"{{"env": {{"PATH": "{}"}}}}"#,
+                value.replace('\\', "\\\\")
+            );
+            let (_, out) = run(SETTINGS, &text);
+            assert!(out.is_empty(), "{value}: {out:?}");
+        }
+        let text = r#"{"env": {"GIT_AUTHOR_NAME": "a", "GIT_CONFIG_NOSYSTEM": "1", "PYTHONUNBUFFERED": "1", "NODE_ENV": "test", "LANG": "C", "PATHEXT": ".COM"}}"#;
+        let (_, out) = run(SETTINGS, text);
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn code_running_env_keys_are_critical_in_env_files() {
+        for (line, path) in [
+            ("BASH_ENV=./x.sh", ".env"),
+            ("export LD_PRELOAD=./x.so", ".env.local"),
+            ("GIT_SSH_COMMAND=./ssh.sh", "app/.env"),
+            ("PYTHONSTARTUP='./s.py'", ".env"),
+            ("GIT_CONFIG_KEY_0=core.fsmonitor", ".ENV"),
+            ("PATH=./bin:/usr/bin", ".env"),
+            ("JAVA_TOOL_OPTIONS=-javaagent:./a.jar", ".env.production"),
+        ] {
+            let (_, out) = run(path, &format!("# c\nOTHER=1\n{line}\n"));
+            let hits = rule(&out, "agent.env-exec");
+            assert_eq!(hits.len(), 1, "{line}: {out:?}");
+            assert_eq!(hits[0].severity, Severity::Critical, "{line}");
+            assert_eq!(hits[0].line, 3, "{line}");
+        }
+    }
+
+    #[test]
+    fn env_file_negatives_for_code_running_keys() {
+        for (path, text) in [
+            (
+                ".env",
+                "# BASH_ENV=./x.sh\nPATH=/usr/bin:/bin\nGIT_AUTHOR_NAME=a\nPYTHONUNBUFFERED=1\n",
+            ),
+            (".env.example", "BASH_ENV=./x.sh\n"),
+            (".env.sample", "LD_PRELOAD=./x.so\n"),
+        ] {
+            let (_, out) = run(path, text);
+            assert!(rule(&out, "agent.env-exec").is_empty(), "{path}: {out:?}");
+        }
+    }
+
+    #[test]
+    fn a_broken_settings_file_still_gives_a_code_running_env_key() {
+        let text = r#"{"env": {"BASH_ENV": "./x.sh", "PATH": ".:/usr/bin"} oops"#;
+        let (_, out) = run(SETTINGS, text);
+        assert_eq!(rule(&out, "agent.env-exec").len(), 2, "{out:?}");
     }
 
     // ---- is_instruction ----
