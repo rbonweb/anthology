@@ -107,7 +107,7 @@ fn a_secret_inside_a_longer_blob_or_with_too_little_after_it_stays() {
     unchanged(&format!("{aws}==\n"));
     // Rule 1: under 30 characters after the underscore.
     unchanged("ghp_abcdefghijklmnopqrstuvwxyz\n");
-    // Rule 2: under 20 after `github_pat_`.
+    // Rule 2: under 30 after `github_pat_`.
     unchanged(&format!("{}\n", ["github", "_pat_", "short"].concat()));
     // Rule 3: needs a digit and a capital.
     unchanged("sk-abcdefghijklmnopqrstuvwx\n");
@@ -115,6 +115,54 @@ fn a_secret_inside_a_longer_blob_or_with_too_little_after_it_stays() {
     // Rule 4: needs a digit and 10 characters.
     unchanged(&format!("{}\n", ["xox", "b-", "abcdefghijklmnop"].concat()));
     unchanged(&format!("{}\n", ["xox", "b-", "123"].concat()));
+}
+
+fn pat(tail: &str) -> String {
+    ["github", "_pat_", tail].concat()
+}
+
+#[test]
+fn a_long_identifier_that_starts_like_a_github_pat_stays() {
+    // Names, not tokens: no digit, or too short.
+    unchanged(&format!("{}\n", pat("example_variable_name_here")));
+    unchanged(&format!(
+        "let x = {}_value;\n",
+        pat("example_variable_name_here")
+    ));
+    unchanged(&format!(
+        "{}\n",
+        pat("token_value_here_and_more_text_after")
+    ));
+    unchanged(&format!("{}\n", pat(&"AbCdEfGhIj".repeat(3))));
+    // A digit, but under 30 characters.
+    unchanged(&format!("{}\n", pat(&"A1b2C3d4E5".repeat(3)[..29])));
+}
+
+#[test]
+fn a_real_shaped_github_pat_is_still_masked() {
+    // 11 characters, an underscore and 59 more: the shape GitHub issues.
+    let tail = [
+        "11AbCdEfG0",
+        "x",
+        "_",
+        "aB3dEfGhIj",
+        "KlMnOpQrSt",
+        "Uv1wXyZ234",
+        "5678AbCdEf",
+        "GhIjKlMnOp",
+        "QrStUvWxY",
+    ]
+    .concat();
+    assert!(tail.len() >= 70, "{}", tail.len());
+    masked_once(
+        &format!("token {}\n", pat(&tail)),
+        &pat(&tail),
+        "github-token",
+    );
+    // The shortest tail that counts: 30 characters with a digit.
+    let edge = format!("A1{}", "b".repeat(28));
+    assert_eq!(edge.len(), 30);
+    masked_once(&format!("{}\n", pat(&edge)), &pat(&edge), "github-token");
 }
 
 #[test]
