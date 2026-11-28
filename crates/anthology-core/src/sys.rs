@@ -6,6 +6,8 @@
 //! - [`hostname`]: `gethostname`, as `socket.gethostname`.
 //! - [`uname`]: `uname`'s `sysname` and `machine`, as `platform.system()` and `machine()`.
 //! - [`close`]: `close(2)` with its error reported, as Python's `os.close` and file `close()`.
+//! - [`new_session`] and [`kill_group`]: a child in its own session, and `SIGKILL` for its whole
+//!   process group (`anthology check-repo` runs git and the scanners this way).
 //!
 //! `O_NOFOLLOW` and the other open flags need no `unsafe`: `fsx` passes the `libc` constants to
 //! `OpenOptionsExt::custom_flags`.
@@ -16,6 +18,8 @@ use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::IntoRawFd;
+use std::os::unix::process::CommandExt;
+use std::process::Command;
 
 unsafe extern "C" {
     /// POSIX `tzset(3)` (the `libc` crate does not declare it).
@@ -125,6 +129,38 @@ pub fn hostname() -> Option<OsString> {
     Some(OsString::from_vec(buf))
 }
 
+/// Makes the child of `cmd` the leader of a new session (`setsid(2)`): it gets its own process
+/// group, which `kill_group` can end as a whole, and no controlling terminal, so nothing it starts
+/// (an `ssh` password prompt, for one) can read the terminal of the caller.
+pub fn new_session(cmd: &mut Command) {
+    // SAFETY: the closure runs in the forked child before `exec` and calls only `setsid`, which
+    // POSIX lists as async-signal-safe; it allocates nothing and touches no lock.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+/// Sends `SIGKILL` to every process of the group `pgid` (the pid of a child made with
+/// `new_session`). Nothing happens for 0, which `kill(2)` would read as the caller's own group,
+/// or for a number that is no pid; a group that is already gone is not an error.
+pub fn kill_group(pgid: u32) {
+    let Ok(pgid) = libc::pid_t::try_from(pgid) else {
+        return;
+    };
+    if pgid == 0 {
+        return;
+    }
+    // SAFETY: `kill` takes two integers; a negative pid names the process group `pgid`, and
+    // nothing in memory is read or written.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+}
+
 /// Closes `file` and returns `close(2)`'s error, which dropping a `File` ignores (a delayed
 /// `ENOSPC` or `EIO`, on NFS for example). `EINTR` counts as success: the descriptor is gone
 /// either way, and Python ignores it too (PEP 475).
@@ -195,6 +231,59 @@ mod tests {
     #[test]
     fn hostname_is_not_empty() {
         assert!(!hostname().expect("gethostname").is_empty());
+    }
+
+    fn pid_of(child: &std::process::Child) -> libc::pid_t {
+        libc::pid_t::try_from(child.id()).expect("pid fits")
+    }
+
+    #[test]
+    fn a_new_session_makes_the_child_its_own_session_and_group_leader() {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        new_session(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn sleep");
+        let pid = pid_of(&child);
+        // SAFETY: getsid and getpgid only read process state.
+        let (sid, pgid, mine) = unsafe { (libc::getsid(pid), libc::getpgid(pid), libc::getsid(0)) };
+        kill_group(child.id());
+        child.wait().expect("wait");
+        assert_eq!(sid, pid, "the child leads a new session");
+        assert_eq!(pgid, pid, "the child leads its own process group");
+        assert_ne!(sid, mine, "not the session of the test");
+    }
+
+    #[test]
+    fn kill_group_kills_the_grandchildren_too() {
+        use std::io::{BufRead, BufReader, Read};
+        // The background `sleep` holds the write end of the pipe, so the pipe reaches its end only
+        // when `sleep` is dead. (Checking the pid would not do: in a container nothing reaps the
+        // orphan, and a zombie still answers signal 0.)
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "sleep 60 & echo started; wait"])
+            .stdout(std::process::Stdio::piped());
+        new_session(&mut cmd);
+        let mut child = cmd.spawn().expect("spawn sh");
+        let mut pipe = BufReader::new(child.stdout.take().expect("stdout"));
+        let mut line = String::new();
+        pipe.read_line(&mut line).expect("the first line");
+        assert_eq!(line, "started\n");
+        kill_group(child.id());
+        child.wait().expect("wait");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut rest = Vec::new();
+            let _ = tx.send(pipe.read_to_end(&mut rest).is_ok());
+        });
+        let ended = rx.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(ended, Ok(true), "the grandchild survived kill_group");
+    }
+
+    #[test]
+    fn kill_group_ignores_pid_zero_and_overflowing_ids() {
+        // pid 0 would be the caller's own group; a pid above i32::MAX is no pid at all.
+        kill_group(0);
+        kill_group(u32::MAX);
     }
 
     #[test]
