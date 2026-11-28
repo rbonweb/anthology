@@ -1741,17 +1741,12 @@ mod wrapper_test {
 
     #[test]
     fn test_hook_keeps_an_ask_in_every_mode_but_bypass() {
-        // Auto mode keeps the ask on a line that mentions atl: dropping it would let
-        // `Bash(atl *)` skip the classifier.
+        // Auto mode keeps the ask on a line that mentions atl too (dropping it would let
+        // `Bash(atl *)` skip the classifier), without the rewrite: see
+        // `test_hook_keeps_an_ask_in_auto_mode_but_not_its_rewrite`.
         let w = setup();
         w.answer_fake(ASK, 0);
-        let modes = [
-            Some("default"),
-            Some("acceptEdits"),
-            Some("plan"),
-            Some("auto"),
-            None,
-        ];
+        let modes = [Some("default"), Some("acceptEdits"), Some("plan"), None];
         for mode in modes {
             for stdin in mode_inputs(mode) {
                 let res = w.run_bin("atl-hook", &[], &stdin);
@@ -1823,6 +1818,50 @@ mod wrapper_test {
                 (0, String::new()),
                 "{spaced}"
             );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_an_ask_in_auto_mode_but_not_its_rewrite() {
+        // An ask on a line that mentions atl stays, with its reason, in auto mode; the input
+        // the old atl changed does not. A deny is passed on untouched.
+        let w = setup();
+        let kept = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"ATL auto-rewrite"}}"#;
+        let spaced_ask = ASK.replace(
+            r#""permissionDecision":"ask""#,
+            r#""permissionDecision": "ask""#,
+        );
+        // A key of the reason's name inside the rewritten input is not the reason.
+        let two_reasons = ASK.replace(
+            r#""updatedInput":{"#,
+            r#""updatedInput":{"permissionDecisionReason":"model text","#,
+        );
+        for (answer, want) in [
+            (ASK, kept),
+            (spaced_ask.as_str(), kept),
+            (
+                two_reasons.as_str(),
+                r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"ATL asks"}}"#,
+            ),
+        ] {
+            w.answer_fake(answer, 0);
+            for stdin in mode_inputs(Some("auto")) {
+                let res = w.run_bin("atl-hook", &[], &stdin);
+                assert_eq!(
+                    (res.code, res.stdout_text()),
+                    (0, format!("{want}\n")),
+                    "{answer} {stdin}"
+                );
+            }
+            // Outside auto mode the answer is as atl gave it.
+            for stdin in mode_inputs(Some("default")) {
+                let res = w.run_bin("atl-hook", &[], &stdin);
+                assert_eq!(
+                    (res.code, res.stdout_text()),
+                    (0, format!("{answer}\n")),
+                    "{stdin}"
+                );
+            }
         }
     }
 

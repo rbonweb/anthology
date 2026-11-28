@@ -10,7 +10,7 @@ a new version section.
 
 ### [Unreleased]
 
-- Fix: auto mode no longer refuses a plain `grep ... | tail` with "a hook changed this call's input after auto mode reviewed it" when the ATL binary in use is older than the plugin. ATL `1.2.1-anthology.7` and later rewrite nothing in auto mode, but an older binary (a running session that began before an update, or an install that did not finish) still rewrote `grep -n "x" file | tail -8` into `atl grep ...`. `bin/atl-hook` now drops any plain rewrite when the hook input's `permission_mode` is `auto`, whatever the binary answered, so the call runs as typed. A deny and an ask are kept as before. Other modes rewrite as before. No ATL release is needed.
+- Fix: auto mode no longer refuses a plain `grep ... | tail` with "a hook changed this call's input after auto mode reviewed it" when the ATL binary in use is older than the plugin. ATL `1.2.1-anthology.7` and later rewrite nothing in auto mode, but an older binary (a running session that began before an update, or an install that did not finish) still rewrote `grep -n "x" file | tail -8` into `atl grep ...`. `bin/atl-hook` now drops any plain rewrite when the hook input's `permission_mode` is `auto`, whatever the binary answered, so the call runs as typed. An ask on a line that mentions atl is kept in auto mode with its reason, but without the rewritten input, so you are asked about the line as typed. A deny is kept as before. Other modes behave as before. No ATL release is needed.
 
 ### [0.5.11] - 2026-11-28
 

@@ -122,15 +122,26 @@ fi
 # mode reviewed it"). atl from `1.2.1-anthology.7` on rewrites nothing in auto mode itself, but the
 # binary state.json names can be older than this shim (a session that began before the update, a
 # failed or offline install), and the old one rewrites a plain `grep` there. The mode is read as
-# for bypass above: only from the part before the first `"tool_input"`. An ask or a deny is never
-# dropped here (an ask on a line that mentions atl is kept above). Cost if wrong: none; an auto-mode
-# call runs as typed.
+# for bypass above: only from the part before the first `"tool_input"`. A deny is never changed
+# here. An ask (kept above for a line that mentions atl) stays an ask, with its reason, but loses
+# its `updatedInput`: the user is asked about the line as typed. The answer is rebuilt from the
+# event name, the decision and the one `permissionDecisionReason` key (a fixed reason when there is
+# not exactly one, so a key of that name inside the tool input cannot be taken for it). Cost if
+# wrong: none; an auto-mode call runs as typed.
 if [ "$rc" -eq 0 ] &&
    printf '%s' "$out" | grep -Eq '"updatedInput"' &&
-   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"(ask|deny)"'; then
+   ! printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"deny"'; then
   top=${input%%'"tool_input"'*}
   case $top in
-    *'"permission_mode":"auto"'*|*'"permission_mode": "auto"'*) exit 0 ;;
+    *'"permission_mode":"auto"'*|*'"permission_mode": "auto"'*)
+      printf '%s' "$out" | grep -Eq '"permissionDecision"[[:space:]]*:[[:space:]]*"ask"' || exit 0
+      reason=$(printf '%s' "$out" | tr -d '\n\r' |
+        LC_ALL=C grep -Eo '"permissionDecisionReason"[[:space:]]*:[[:space:]]*"([^"\\]|\\.)*"')
+      case $reason in
+        ''|*'
+'*) reason='"permissionDecisionReason":"ATL asks"' ;;
+      esac
+      out='{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask",'$reason'}}' ;;
   esac
 fi
 # Ruling: a rewrite into `atl read` (what atl makes of `cat`, `head` and `tail`) is dropped, so the
