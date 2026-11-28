@@ -21,5 +21,7 @@ ui.glow-orb	css	.orb { border-radius: 50%; filter: blur(96px); }
 ui.effect-library	jsx	export const B = () => <ShimmerButton>Go</ShimmerButton>
 ui.placeholder-media	html	<img src="https://i.pravatar.cc/150?img=3" alt="Ana">
 ui.placeholder-text	html	<p>Lorem ipsum dolor sit amet.</p>
+ui.dummy-contact	html	<a href="tel:+00 0000 000000">Call us</a>
+ui.dummy-contact	html	<a href="https://wa.me/0000000000">Chat on WhatsApp</a>
 ui.five-star-row	html	<span>★★★★★</span>
 ui.generator-signature	html	<meta name="generator" content="v0">
