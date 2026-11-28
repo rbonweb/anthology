@@ -543,13 +543,13 @@ pub fn privacy_findings(
 }
 
 /// `_home_literal`: the value to search for, or `None` when it is one character or less.
-fn home_literal(home: &str) -> Option<String> {
+pub(crate) fn home_literal(home: &str) -> Option<String> {
     let home = home.trim_end_matches('/');
     (home.chars().count() > 1).then(|| home.to_string())
 }
 
 /// `_hostname_patterns`: the names to search for (the patterns are built per budget).
-fn hostname_names(hostname: &str) -> Vec<String> {
+pub(crate) fn hostname_names(hostname: &str) -> Vec<String> {
     // `str(hostname or "").strip().rstrip(".")`, with Python's whitespace.
     let mut name = hostname.trim_matches(is_py_space).trim_end_matches('.');
     // `name.lower().endswith(".local")`: only ASCII lowers into ".local" (İ lowers to two
@@ -613,7 +613,7 @@ fn forge_git_user(local: &str, host: &str) -> bool {
 }
 
 /// The email groups are ASCII (the pattern's classes), so `.lower()` is ASCII lowercase.
-fn exempt_email(local: &str, domain: &str) -> bool {
+pub(crate) fn exempt_email(local: &str, domain: &str) -> bool {
     if forge_git_user(local, domain) {
         return true;
     }
