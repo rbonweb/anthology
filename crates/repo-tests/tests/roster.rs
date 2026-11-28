@@ -1145,6 +1145,68 @@ mod roster_test {
         assert!(body.contains("rendered page"));
     }
 
+    // The owner's design bar (design-feedback findings, section 2) is written into the prompts
+    // as checkable rules. A needle goes only when its rule is worth losing a test over.
+    #[test]
+    fn test_design_bar_rules_are_in_the_prompts() {
+        let pins: [(&str, &[&str]); 3] = [
+            (
+                "ui-designer",
+                &[
+                    "Direction first:",
+                    "before building",
+                    "`:focus-visible` only",
+                    "official assets",
+                    "neutral invented names",
+                    "view every saved image",
+                    "any surface you did not render",
+                    "stop and return the gaps under When blocked",
+                    "or names a reference site",
+                    "Testimonials and quotes are never invented",
+                    "beats design-taste-frontend house rule 9",
+                    "at 3:1 contrast or more",
+                ],
+            ),
+            (
+                "ui-reviewer",
+                &[
+                    "Measure, then look.",
+                    "(1440, 1024, 768, 390)",
+                    "`page.evaluateInPage`",
+                    "while the line above holds 2 or more",
+                    "keyboard, contrast and labels by eye",
+                    "official assets",
+                    "banned names",
+                    "list what you could not render",
+                    "aria-label values",
+                    "SAFETY:",
+                    "NEVER press delete, pay, buy, send, submit, post or sign-out",
+                    "`page.dialogDismiss()`",
+                ],
+            ),
+            (
+                "product-planner",
+                &[
+                    "real users' jobs",
+                    "navigation map",
+                    "you cannot dispatch the researcher",
+                ],
+            ),
+        ];
+        for (name, needles) in pins {
+            let (_, body) = agent(name).unwrap();
+            for needle in needles {
+                assert!(body.contains(needle), "{name} lacks {needle:?}");
+            }
+        }
+        // A click-through of every button is unsafe on a live site, and the researcher is not
+        // reachable from a planner (it cannot dispatch agents).
+        let (_, reviewer) = agent("ui-reviewer").unwrap();
+        assert!(!reviewer.contains("caret and button"));
+        let (_, planner) = agent("product-planner").unwrap();
+        assert!(!planner.contains("ask the researcher"));
+    }
+
     #[test]
     fn test_no_forbidden_text() {
         let credits = Regex::new(r"(?i)\bcredits?\b").unwrap();
