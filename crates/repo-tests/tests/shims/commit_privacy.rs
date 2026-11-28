@@ -113,7 +113,7 @@ fn binary_crash_allows() {
     });
 }
 
-/// Only 10 blocks: its neighbours and a signal's code (128 + 15) allow.
+/// Only 10 blocks: its neighbors and a signal's code (128 + 15) allow.
 #[test]
 fn only_exit_10_blocks() {
     each_shell("commit privacy, other codes", |sh| {

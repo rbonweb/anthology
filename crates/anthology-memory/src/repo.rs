@@ -21,7 +21,7 @@ use anthology_pycompat::str::{lower, split_ws, strip_ws};
 
 use crate::notes::py_name_key;
 
-/// `memory_sync.config_dir(env)` (GC-1): a `pathlib.Path`, so it is normalised as pathlib holds
+/// `memory_sync.config_dir(env)` (GC-1): a `pathlib.Path`, so it is normalized as pathlib holds
 /// it (`CLAUDE_CONFIG_DIR=/a//cfg/` is `/a/cfg`), which every path memory prints shows.
 pub fn config_dir(env: &Env) -> PathBuf {
     let raw = anthology_core::paths::config_dir(env);
@@ -141,7 +141,7 @@ pub fn normalize_remote(url: &str, base: Option<&Path>, env: &Env) -> String {
     lower(key.trim_end_matches('/'))
 }
 
-/// `memory_sync.repo_key(root)`: the repo's normalised remote URL (`origin`, else the first
+/// `memory_sync.repo_key(root)`: the repo's normalized remote URL (`origin`, else the first
 /// remote by name), else `path:<realpath of the main work tree>`.
 pub fn repo_key(root: &Path, env: &Env, git: &dyn Git) -> String {
     let names = git_out(git, env, root, &["remote"])

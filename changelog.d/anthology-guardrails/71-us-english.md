@@ -1,0 +1,1 @@
+- Change: US spelling in the guard hook's comments and its internal helper name. The hook behaves as before.

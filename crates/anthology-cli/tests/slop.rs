@@ -605,7 +605,7 @@ fn hook_creates_from_an_empty_old_string_on_a_missing_file() {
 }
 
 #[test]
-fn hook_honours_the_switch() {
+fn hook_honors_the_switch() {
     let fx = Fx::new();
     let file = fx.repo.join("docs/a.md");
     let input = payload("Write", &write_input(s(&file), TELL), &fx.repo);

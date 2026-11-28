@@ -18,7 +18,7 @@ Read this before the first task of a large or long build (many tasks, several ag
 - "Decide; don't wait" and "Status reports for humans" below apply to every
   session. Why: a parked question or an unreadable report costs the same in
   a short session as in a long one.
-- Never state behaviour, an API parameter or a cause from memory: grep the
+- Never state behavior, an API parameter or a cause from memory: grep the
   code, read the current docs or measure, else say "unverified". Why: wrong
   claims from memory cost rework in both large projects.
 - "Done" names its evidence: an image is done when viewed, a page when
@@ -37,7 +37,7 @@ Read this before the first task of a large or long build (many tasks, several ag
   and memory notes included). Why: resolving a conflict is code work, and the
   lead's context is for decisions; a conflict agent could not write main.
 - Answer questions; act only on what the owner or the plan asked for. A
-  setting nobody asked for, or one that injects behaviour, is listed for
+  setting nobody asked for, or one that injects behavior, is listed for
   approval, never applied. Why: an unasked setting and an over-scoped brief
   both changed what the owner had not agreed to.
 - An interim notice that an agent is "waiting on its own background work"
@@ -128,7 +128,7 @@ Read this before the first task of a large or long build (many tasks, several ag
 ## Start early
 
 - Start every task whose inputs are published interfaces, not merged code.
-  Why: waiting for merges serialises the whole plan behind its slowest task.
+  Why: waiting for merges serializes the whole plan behind its slowest task.
 - Code against the signatures the spec or plan publishes, exactly. Why: the
   real code lands with those signatures, so the later swap is mechanical.
 - When a body you need does not exist yet, write a minimal private stand-in
@@ -240,7 +240,7 @@ Read this before the first task of a large or long build (many tasks, several ag
 
 ## Design and UI work
 
-- Before the first UI task, collect the logo and colours, light or dark,
+- Before the first UI task, collect the logo and colors, light or dark,
   fonts, one to three sites the owner likes, the focus style and the public
   identity (name, contact channels, which legal names may appear). Ask once
   for any identity or legal fact shown publicly; never default one. Owner

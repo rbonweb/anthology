@@ -158,7 +158,7 @@
 //! - **Literal paths.** Every operand and option value that is not a pattern (grep's
 //!   pattern and `-e`, `--include`/`--glob`, find's `-name`/`-path`, libtest's
 //!   filters) is resolved lexically against the hook's working directory (`..`
-//!   normalised) and through symlinks too. It asks when it is `-` or lies under
+//!   normalized) and through symlinks too. It asks when it is `-` or lies under
 //!   `/dev`, `/proc` or `/sys` (case folded on macOS and Windows), and meets the
 //!   `Read()` rules: deny is a deny, ask an ask (quoted text is literal: `'$x'` is a
 //!   name). git reads its pathspecs as globs, quoted or not, so a git word holding
@@ -285,7 +285,7 @@
 //!   or directory swapped before the shell's own `cd` is the same race as every
 //!   other path here (the file system is read once), and `cd` is the shell's
 //!   builtin as the user's shell defines it: a function or alias named `cd` in a
-//!   shell snapshot is not modelled.
+//!   shell snapshot is not modeled.
 
 use super::constants::PRE_TOOL_USE_KEY;
 use super::decision::{AskOwner, HookDecision};
@@ -4239,7 +4239,7 @@ fn plain_line(cmd: &str) -> Option<PlainLine> {
 }
 
 /// One literal path: resolved lexically against the working directory (`..`
-/// normalised; a leading `~` is `$HOME`; an unset, empty or relative `HOME` asks), asked about
+/// normalized; a leading `~` is `$HOME`; an unset, empty or relative `HOME` asks), asked about
 /// under `/dev`, `/proc` or `/sys` (case folded where the file system folds it),
 /// and when it is `-` (standard input); else what `read` says about the absolute
 /// path (which also resolves symlinks).
@@ -4290,7 +4290,7 @@ fn plain_path(
             })
     };
     // The kernel resolves `link/..` through the link, the lexical form does not:
-    // both are checked (the matcher normalises and resolves `path` itself).
+    // both are checked (the matcher normalizes and resolves `path` itself).
     // Past the work budget (`disk` off) only the lexical form is checked.
     if special(&lexical)
         || (disk
@@ -4752,7 +4752,7 @@ fn cd_target(args: &[&str], empty_is_home: bool, env: EnvFlags) -> CdTarget {
     }
 }
 
-/// Lexical `.` and `..` normalisation (no filesystem access).
+/// Lexical `.` and `..` normalization (no filesystem access).
 fn normalize(path: &Path) -> PathBuf {
     use std::path::Component;
     let mut out = PathBuf::new();
@@ -5426,7 +5426,7 @@ mod tests {
 
     /// A wall-clock bound for the cost tests. They guard against superlinear blowups
     /// (the release build answers these inputs in well under 100 ms); a debug build on a
-    /// slow CI runner (the release workflow tests unoptimised) is given 15x the room.
+    /// slow CI runner (the release workflow tests unoptimized) is given 15x the room.
     fn time_bound(secs: u64) -> std::time::Duration {
         let factor = if cfg!(debug_assertions) { 15 } else { 1 };
         std::time::Duration::from_secs(secs * factor)
@@ -5965,7 +5965,7 @@ mod tests {
         // Plain file redirects are not opaque.
         assert_eq!(gate("atl run -c 'git status > out.txt'", &r), Gate::Pass);
         assert_eq!(gate("atl git log > out.txt", &r), Gate::Pass);
-        // A top-level substitution keeps today's behaviour.
+        // A top-level substitution keeps today's behavior.
         assert_eq!(gate("echo $(date)", &r), Gate::Pass);
         assert_eq!(gate("bash -c 'echo $(date)'", &r), Gate::Pass);
     }
@@ -7005,7 +7005,7 @@ mod tests {
             // a deny is stricter than an ask: the shell analysis (SH-FW) may now read the ruled command
             assert!(matches!(gate(cmd, &r), Gate::Ask | Gate::Deny), "{cmd}");
         }
-        // The same constructs outside atl keep today's behaviour, and the
+        // The same constructs outside atl keep today's behavior, and the
         // ordinary ones inside it are not opaque.
         for cmd in [
             "eval 'git status'",
@@ -8124,7 +8124,7 @@ mod tests {
     }
 
     #[test]
-    fn a_denied_command_behind_an_unmodelled_launcher_asks() {
+    fn a_denied_command_behind_an_unmodeled_launcher_asks() {
         let r = push_only();
         for cmd in [
             "atl bypass ssh h \"g\"\"it push\"",

@@ -35,7 +35,7 @@ Anthology should be maintained in one language, Rust. All first-party Python (~1
 
 ### 1.3 Goals
 
-- **G-1 Behaviour parity.** Every hook, command, file write, exit code and message matches the Python at the baseline. The only exceptions are the forced changes in plan GC-15, F-1 to F-20.
+- **G-1 Behavior parity.** Every hook, command, file write, exit code and message matches the Python at the baseline. The only exceptions are the forced changes in plan GC-15, F-1 to F-20.
 - **G-2 One shell parser for security decisions.** The guard and rtk's Anthology gate decide from the same parser and the same "what actually runs" expansion. Disagreement between two parsers has been the main source of guard bypass findings.
 - **G-3 Nothing dropped silently.** Every Python test id maps to a Rust test or to a reviewed drop reason, in a machine-checked ledger.
 - **G-4 Fail closed, loudly and recoverably.**
@@ -53,13 +53,13 @@ Anthology should be maintained in one language, Rust. All first-party Python (~1
 
 ## 2. Non-goals
 
-- **No behaviour changes**, except:
+- **No behavior changes**, except:
   - the fail-closed guard;
   - the removal of Python and every message that names it;
   - changes the port forces. Plan GC-15 lists each one, old → new, with the reason.
 - **No new features.** No new rules, settings ops, memory formats or user commands, except the plumbing the shims need: `anthology guard hook`, `anthology hook session-start`, and the bootstrap's own CLI.
 - **No change to vendored trees** or to `vendor/sources.json` semantics.
-- **No change to rtk's user-facing behaviour.** The one rtk change is lane RG, which moves the fork gate (`anthology_gate.rs`) onto the shared parser. Its verdicts may only get stricter. rtk keeps its own binary, lock and release.
+- **No change to rtk's user-facing behavior.** The one rtk change is lane RG, which moves the fork gate (`anthology_gate.rs`) onto the shared parser. Its verdicts may only get stricter. rtk keeps its own binary, lock and release.
 - **No Windows support.** Windows stays refused. With fail-closed, a Windows user who enables anthology-guardrails can still use read-only tools, and everything else is blocked with a message naming `/plugin` (F-18, §9.6).
 - **The bash/sh orchestration scripts stay shell**, with no Python calls: `release.sh`, `run-evals.sh`, `rtk-test.sh`, `rtk-net-test.sh`, `rtk-trim.sh`, `sync-rtk.sh`. **Architect's call:** they are glue around docker, git and `claude`, not logic. Cost if wrong: porting them later, each under 300 lines.
 
@@ -127,7 +127,7 @@ Recon facts:
 | Guardrails installed alone | Works; the path comes from the lock only. | Works, but two downloads when both plugins are installed. | — |
 | Depends on `CLAUDE_PLUGIN_DATA` | No. | Yes, on every guard call. | — |
 | Cleanup | `remove` deletes it when guardrails is not installed; otherwise it is pruned after 30 days unused. | Claude Code deletes it on uninstall. | — |
-| Behaviour change | None beyond the new binary. | None. | **Yes**: rtk path, doctor, lock and release cadence. |
+| Behavior change | None beyond the new binary. | None. | **Yes**: rtk path, doctor, lock and release cadence. |
 
 **Choice: A (architect's call).** Cost if wrong: about 6 MB per version left behind after an uninstall that skips `remove`, until it is pruned.
 
@@ -356,11 +356,11 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
 
 **Modes:**
 - `session`: SessionStart, setup and `ensure_live_guard_binary`. It is never rate-limited and **never writes `.attempt`** (C-1.6).
-  - **3-strike cap (m2-6).** `session` mode honours the cap, except for **one fresh attempt per hour**. The hour is tracked by `<ah>/bin/.session-retry`, created with noclobber; a stale stamp is retired as in step 5.
+  - **3-strike cap (m2-6).** `session` mode honors the cap, except for **one fresh attempt per hour**. The hour is tracked by `<ah>/bin/.session-retry`, created with noclobber; a stale stamp is retired as in step 5.
   - **Architect's call.** SessionStart fires on startup, resume, `/clear` **and auto-compaction**, so a session start is not necessarily a deliberate retry.
   - Cost: during a bad release, at most one download per hour per plugin hook (two hooks, so up to two per hour) is spent on the fresh attempt. Setup cannot reach this path while the guard is capped, because its Bash call is blocked. The way out stays a new session after the hour, or `/plugin`.
-- `guard`: `guard.sh` self-heal. Rate-limited, and honours the cap.
-- `wrapper`: `bin/*`. Rate-limited, and honours the cap.
+- `guard`: `guard.sh` self-heal. Rate-limited, and honors the cap.
+- `wrapper`: `bin/*`. Rate-limited, and honors the cap.
 
 **Output:**
 - `--quiet`: exactly one stdout line `status=present|installed|failed:<reason>`. Exit 0 for present or installed, 1 for failed.
@@ -383,7 +383,7 @@ The tag prefix cannot collide with `anthology--v*` plugin tags or `rtk--v*`. The
    3. **GNU wget** (`wget --version 2>/dev/null | grep -q 'GNU Wget'`): `wget --https-only -q -t 1 -T 10 -U anthology-bootstrap -O … "$url"`, under the watchdog.
    4. **BusyBox wget** (`wget --help 2>&1 | grep -q BusyBox`): `wget -q -T 10 -O … "$url"`, under the watchdog. There is no https-only flag; the https URL plus the sha256 pin decide which bytes are accepted.
    5. **node** (architect's call): `NODE_USE_ENV_PROXY=1 node -e "$NODE_GET" "$url" "$tmp/a.tgz"`, under the watchdog. `$NODE_GET` is a **fixed constant** in `lib.sh`, and a test checks it byte for byte. It is https-only on every hop, follows at most 5 redirects, caps the size at 64 MiB and has its own total timeout. Caveats, documented in README and SECURITY:
-      - `https.get` honours `HTTPS_PROXY`/`NO_PROXY` **only on node ≥ 24 with `NODE_USE_ENV_PROXY=1`**, which the bootstrap sets. On older node behind a proxy, the result is `download failed`.
+      - `https.get` honors `HTTPS_PROXY`/`NO_PROXY` **only on node ≥ 24 with `NODE_USE_ENV_PROXY=1`**, which the bootstrap sets. On older node behind a proxy, the result is `download failed`.
       - Claude Code from the native installer does not guarantee `node` on `PATH`. node is a last resort that mainly helps npm installs on slim images.
    6. If nothing worked: `no downloader (curl, wget or node)` with the manual command (GC-14), or the seed reason above.
 
@@ -607,7 +607,7 @@ Read-only tools are allowed. Everything else is blocked with the "no guard binar
 
 ### 9.8 Shell analysis: known limits (SH-F2 to SH-F4)
 
-The guard is one layer of defence. It stops accidental installs and launches by cooperative agents, not a determined bypass. Most commands it cannot model are too complex (G0); the routes below are not, and are allowed. The shell-gap chase stopped at SH-F4 (controller ruling). These routes are known and stay open. Each one needs a value that an earlier command computes, or a shell feature that is not modelled:
+The guard is one layer of defense. It stops accidental installs and launches by cooperative agents, not a determined bypass. Most commands it cannot model are too complex (G0); the routes below are not, and are allowed. The shell-gap chase stopped at SH-F4 (controller ruling). These routes are known and stay open. Each one needs a value that an earlier command computes, or a shell feature that is not modeled:
 - **Plain variables.** A value assigned before it is used is not read into the word: `x=i; npm $x puppeteer`, `: ${x:=i}; npm $x …`, `read l <<< "i puppeteer"; npm $l`, `echo i puppeteer | while read l; do npm $l; done`, and a function that copies a literal argument before running it (`f() { local c=$1; eval "$c"; }; f "npx …"`).
 - **Subscripts split across words** (G0-FP). A word is too complex when it holds a whole subscript that runs a substitution: a `[` (not after a backslash), a closed `$(…)`, backtick pair or `$'…'`, then a `]`. A subscript assembled from pieces of several words or values (`x='[$(id'; unset "a${x})]"`) is not read, as one split at its `[` never was.
 - **Files written, then run** (G0-FP review P-1; post-release). The "shell running a file the text wrote" check only matches `sh FILE` (any shell, with its options) and `source FILE` / `. FILE`, where FILE is a redirect target of the same text. It does not catch:
@@ -892,7 +892,7 @@ The plan is authoritative for the lane ids and graph (m-10).
 **0. Preconditions.**
 - `rust` exists (from `build@1e00f832`). F1 starts now; fix-f1, FW-R and FW-Q arrive through `build`→`rust` merges, and lanes always work from `rust` as it stands (N-I3).
 - The id list and row corpora are extracted.
-- **Double-implementation rule:** a Python behaviour change on `build` needs its Rust equivalent, ledger rows and seeds before the next `build`→`rust` merge goes green (architect's call).
+- **Double-implementation rule:** a Python behavior change on `build` needs its Rust equivalent, ledger rows and seeds before the next `build`→`rust` merge goes green (architect's call).
 
 **1. Foundation (F1–F4).** F1 pre-declares **every** shared file, dependency, subcommand, module stub, difftest surface, fuzz target and CI job (plan §0.2). After F1, lanes only add files they own.
 
@@ -972,7 +972,7 @@ Further risks:
 | A25 | RT1 split: loc+compat (wave 1), doctor (wave 2) | Matches the real import graph | None |
 | A26 | Merge discipline: F1 pre-declares shared files; serial merges | Avoids lock and dispatch collisions | Integrator plumbing PRs |
 | A27 | Positive allow token (`guard hook --shim` writes `anthology-guard:allow:v1`); block only on 2 with our prefix; `test -s`; `--version` probe at install | Closes the ENOEXEC fail-open on every shell, including BusyBox's NUL-stripping (N-I1, N2-I1) | Environment noise on stderr quarantines a good binary, loudly, until it is capped |
-| A28 | `session` mode honours the 3-strike cap, except for one fresh attempt per hour (`.session-retry`) | SessionStart also fires on resume, `/clear` and auto-compaction, so it is not a deliberate retry; an hourly attempt still self-heals a transient bad state (m2-6) | Up to two downloads per hour (one per plugin hook) during a bad release |
+| A28 | `session` mode honors the 3-strike cap, except for one fresh attempt per hour (`.session-retry`) | SessionStart also fires on resume, `/clear` and auto-compaction, so it is not a deliberate retry; an hourly attempt still self-heals a transient bad state (m2-6) | Up to two downloads per hour (one per plugin hook) during a bad release |
 | A29 | Replay report: aggregate counts and HMAC-keyed ids only; tools bucketed | Public repo; no personal data | Less diagnostic detail in the committed report (full detail stays local) |
 
 ---

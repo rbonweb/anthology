@@ -1,7 +1,7 @@
 //! `port/staging/scripts/release.sh` (RL1; design §8.5): the `check-fresh` precondition and
 //! the `anthology-dev release-edit …` calls that replace `release_edit.py`.
 //!
-//! `release-edit` is DV2's and its behaviour is tested by DV2's port of `tests/test_release.py`;
+//! `release-edit` is DV2's and its behavior is tested by DV2's port of `tests/test_release.py`;
 //! here `$ANTHOLOGY_DEV` is a fake that logs every call (working directory and arguments),
 //! passes `lock …` to the real anthology-dev and answers `release-edit` with trivial edits. The
 //! repository is a temporary git repository with a small workspace, both plugin locks and the

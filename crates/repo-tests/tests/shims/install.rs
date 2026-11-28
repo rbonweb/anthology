@@ -278,7 +278,7 @@ fn session_mode_never_touches_attempt() {
 }
 
 #[test]
-fn session_mode_honours_the_cap_except_once_an_hour() {
+fn session_mode_honors_the_cap_except_once_an_hour() {
     each_shell("session cap", |sh| {
         let sb = sandbox();
         sb.seed();

@@ -439,21 +439,21 @@ fn parse_commit(entry: &Entry, home: &str) -> Option<CommitCall> {
 /// the folder of the `cd` is taken back out of it, and the options are applied here; when that
 /// cannot be done the call is left unread.
 fn commit_dir(entry: &Entry, globals: &[&str], stray: Option<&str>, home: &str) -> Option<PathBuf> {
-    let analysed = entry.cwd.as_deref().unwrap_or("");
+    let analyzed = entry.cwd.as_deref().unwrap_or("");
     if stray.is_none() && globals.len() <= 1 {
-        return Some(PathBuf::from(analysed));
+        return Some(PathBuf::from(analyzed));
     }
     let last = stray.or_else(|| globals.last().copied())?;
     let mut dir = if stray.is_none() && (last.starts_with('/') || last.starts_with('~')) {
         // an absolute last `-C` replaces whatever came before it
         PathBuf::new()
     } else {
-        // `analysed` is `last` below the folder of the `cd`, both in lowercase
+        // `analyzed` is `last` below the folder of the `cd`, both in lowercase
         let tail = PathBuf::from(last.to_lowercase());
         let plain = tail
             .components()
             .all(|c| matches!(c, std::path::Component::Normal(_)));
-        let path = Path::new(analysed);
+        let path = Path::new(analyzed);
         if !plain || !path.ends_with(&tail) {
             return None;
         }

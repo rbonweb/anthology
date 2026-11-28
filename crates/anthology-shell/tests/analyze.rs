@@ -1,4 +1,4 @@
-//! `analyze()` (SH2): behaviour guard_rules.py's tests rely on (expectations read from the Python oracle),
+//! `analyze()` (SH2): behavior guard_rules.py's tests rely on (expectations read from the Python oracle),
 //! every `Opaque` reason, the fail-closed bounds, stack use, entry-level wrapping monotonicity and a no-panic
 //! property. Exact parity with Python is the difftest's job (`shell.analyze`).
 

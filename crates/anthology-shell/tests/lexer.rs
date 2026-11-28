@@ -1,4 +1,4 @@
-//! The lexer (SH1): behaviour guard_rules.py's tests rely on, the "stays cheap" bounds at lexer level, the
+//! The lexer (SH1): behavior guard_rules.py's tests rely on, the "stays cheap" bounds at lexer level, the
 //! backtrack limit, stack use and a no-panic property. Exact parity with Python is the difftest's job
 //! (`shell.segments`); the expectations here were read from the Python oracle.
 

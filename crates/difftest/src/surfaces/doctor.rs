@@ -4,7 +4,7 @@
 //! Oracle: `port/difftest/oracle/doctor.py`. Its module docs give the case format and the
 //! fixed seams: the application folder and managed MCP file are under the root, the real
 //! `shutil.which` and `subprocess.run` run fake tools from the tree on the case's `PATH`, and
-//! two forced changes are modelled on the Python side or masked on both:
+//! two forced changes are modeled on the Python side or masked on both:
 //! - F-5: the first check (`python3` there, `anthology_binary` here) is masked on both sides
 //!   (`{"name": "<F-5>", ...}`, or the text line `<F-5>`). `anthology_binary` is covered by
 //!   RT2's `bootstrap` tests and `tests/doctor.rs`.

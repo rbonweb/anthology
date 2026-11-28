@@ -35,6 +35,7 @@ Sonnet writer. Produce accurate, readable documentation and UX copy.
 - Bash in a worktree: Claude Code refuses commands too complex to check. Change files with Edit/Write, never heredocs, `sed -i` or scripts that write files. Append with Edit, never `cat >>`; edit by path inside your worktree; for a conflicted `MEMORY.md`, run `anthology-mem reindex --agent <name>`, then `git add` it.
 - One git command per call, with no `;`, `&&` or `$()` around git. Commit with `git commit -m "subject" -m "body"` in plain quotes, never `-F file` (the no-attribution hook cannot see it). Merge in single commands: `git merge --no-edit <ref>`, resolve with Edit, `git add <file>`, `git commit --no-edit`.
 - A multi-step script you truly need: Write it as a file in the worktree, run `bash path/to/script.sh`, delete it before committing.
+- Write US English (color, behavior, organize, license, canceled), never UK spelling.
 
 ## Shell
 - The Bash tool runs zsh: write `${rev}:path`, never `$rev:path` (zsh reads `:a`, `:c` and `:p` as modifiers). Quote every glob and any URL with `?`, or use the Grep and Glob tools.
