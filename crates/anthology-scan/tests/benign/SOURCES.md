@@ -36,6 +36,20 @@ the scan, the way a folder the user named looks on disk.
 | `path-git-lfs/` | https://github.com/git-lfs/git-lfs | `ac128b57bca49e04041b2ce064a09ac6b1d24d51` | MIT (`LICENSES/git-lfs-MIT.txt`) | the hook text of `hookBaseContent` in `lfs/hook.go`, with the command filled in for `pre-push` and `post-checkout` as `git lfs install` writes it | `dot-git/config`, `.gitattributes` |
 | `path-sccache/` | https://github.com/Mesh-LLM/mesh-llm | `74c8765c95b737e1f00cea67c021fa0720452195` | Apache-2.0 (`LICENSES/mesh-llm-Apache-2.0.txt`) | `.cargo/config.toml`, with `rustc-wrapper = "sccache"` and in-repo linker scripts | none |
 
+Samples for the false alarms found in the second review.
+
+| Folder | Project | Commit | License | File in the project | Why it is here |
+|---|---|---|---|---|---|
+| `vscode-program-keys/` | https://github.com/CaptorAB/openseries | `9f12f7de9dcff7337066ed57163105d21bc3e8d3` | BSD-3-Clause (`LICENSES/openseries-BSD-3-Clause.txt`) | `.vscode/settings.json` | `python.analysis.stubPath`, `python.defaultInterpreterPath` and `ruff.configuration` point into the repo and are not programs the editor runs (the `pyproject.toml` beside it is two lines written for this test) |
+| `vscode-prettier-config-path/` | https://github.com/react-hook-form/resolvers | `5e9051ee0eb45534cf257c75c906bbe583c2d1cd` | MIT (`LICENSES/react-hook-form-resolvers-MIT.txt`) | `.vscode/settings.json` | `prettier.configPath` names a config file, and `typescript.tsdk` names a folder under `node_modules` |
+| `makefile-golangci/` | https://github.com/google/cadvisor | `cacca250d06e88212b7ac5aa8198d1be064e0ab3` | Apache-2.0 (`LICENSES/cadvisor-Apache-2.0.txt`) | `Makefile` | A lint target that installs `golangci-lint` with `curl ... \| sh`: HIGH, not CRITICAL, because it runs in a build step |
+| `vite-ngrok-host/` | https://github.com/instructa/constructa-starter | `17b006e00e1bbc2929d4e53bb0dc8d8e45f244b4` | MIT (`LICENSES/constructa-starter-MIT.txt`) | `vite.config.ts` | An `allowedHosts` entry on an ngrok host, and an `Object.assign(process.env, loadEnv(...))` that reads the environment in, not out |
+| `path-husky-v4/` | https://github.com/typicode/husky | `37b6925e303c7da71f28f4f4e2bf33d90dd19d73` (tag `v4.3.8`) | MIT (`LICENSES/husky-MIT.txt`) | the hook, `husky.sh` and `husky.local.sh` that husky 4 writes, taken from its `scripts.ts` snapshot in `src/installer/__tests__/__snapshots__` with the escapes removed and a date filled in | `package.json` and `dot-git/config` are written for this test |
+
+Two more cases are built in `tests/benign.rs` and have no folder here: a Python checkout whose
+`.venv`, `venv`, `.tox`, `.nox` or `.direnv` holds an absolute symlink to the interpreter, and a
+`Makefile` that is Latin-1.
+
 The files were fetched with `git clone --depth 1 --filter=blob:none --no-checkout` into a scratch
 folder outside the repo and one `git checkout <commit> -- <file>` per file, then copied in. The
 `minified-bundle/` file sits at the top of its folder, not under `dist/`, so the blob rule that
