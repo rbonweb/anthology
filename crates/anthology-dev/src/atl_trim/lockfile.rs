@@ -2,7 +2,7 @@
 //! plus the Rust-only allowlist for path dependencies on `../crates/` workspace crates.
 //!
 //! The allowlist reads `<root>/Cargo.toml` by line scanning, without a TOML crate. Its limits:
-//! a dependency entry is recognised on one line (`name = { path = "../crates/x", .. }`, or the
+//! a dependency entry is recognized on one line (`name = { path = "../crates/x", .. }`, or the
 //! dotted `name.path = ".."`) in any table whose last name segment contains `dependencies`
 //! (`[dependencies]`, `[dev-dependencies]`, `[target.'cfg(..)'.dependencies]`,
 //! `[workspace.dependencies]`), or as `path = ".."` under `[<..dependencies>.NAME]`. Comments

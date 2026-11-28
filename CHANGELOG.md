@@ -25,7 +25,7 @@ a new version section.
 - Fix: the after-work check no longer says "nothing about what was tested" for a report that did check its work in other words: verified, checked, confirmed, compared, ran or re-ran, hash or checksum matched, curl status, screenshot inspected, "N passed", build ok. A report that says nothing about checking, or says it did not check, still gets the note.
 - Fix: the delegation mod lets the lead Write or Edit a file in the repo that git ignores and does not track, such as `.env.<name>.local`. Only the main checkout holds such a file, so no agent in a worktree could make it, and the lead was refused too. Git decides (`check-ignore`, then not in the index); nothing under `.git`, no symbolic link, and any failed check keeps the refusal.
 - Add: ui-reviewer runs a measured pass per width (headings over 2 lines, clipped text, orphan rows, uneven section padding, overflow, broken images, click rings), clicks nav and open/close controls only (never delete, pay, buy, send, submit, post or sign-out on a live site), checks third-party marks are official assets, renders every entry the change reaches and searches rendered text and attribute values for banned names, the old brand, dummy phone numbers and model-vendor names.
-- Add: ui-designer takes direction first (logo, colours, fonts, theme mode) and stops with the gaps when logo, colours or theme mode are missing, captures a named reference before building, checks every surface and state itself, styles `:focus-visible` only (no ring on mouse click), uses official third-party marks, never invents testimonials, omits contacts it was not given and views every saved screenshot.
+- Add: ui-designer takes direction first (logo, colors, fonts, theme mode) and stops with the gaps when logo, colors or theme mode are missing, captures a named reference before building, checks every surface and state itself, styles `:focus-visible` only (no ring on mouse click), uses official third-party marks, never invents testimonials, omits contacts it was not given and views every saved screenshot.
 - Change: ui-designer reads website-clone when the brief is a clone or names a reference site, not only for clones.
 - Add: product-planner starts use cases from real users' jobs and writes a navigation map before UI work on products with three or more modules.
 - Add: large-builds has a "Design and UI work" section: collect the design direction and public identity before the first UI task (an absent owner gets identity and legal facts left out, not defaulted), start a clone or like-X brief with the reference capture, keep a banned-names list in a personal note and paste it into each brief, review UI with ui-reviewer on the PR head while CI runs (less review means the measured pass, never none), and check the first screenshot capture by eye. It also gains rules to verify claims before stating them, to name the evidence for "done", to search for secrets with `grep -c` and mask matches, to fan per-unit work out at dispatch, to read every failed CI job before the next push, and to report a start only after the dispatch returns.
@@ -124,7 +124,7 @@ a new version section.
 
 ### [0.5.5] - 2026-11-26
 
-- Add: licensing is the user's job. The routing guide and the researcher, architect, implementer, debugger, reviewer and ui-designer prompts now tell the lead and these agents never to refuse, hold back or audit licences when they use, adapt or recommend outside code. When a licence clearly applies, they say so in one line and carry on.
+- Add: licensing is the user's job. The routing guide and the researcher, architect, implementer, debugger, reviewer and ui-designer prompts now tell the lead and these agents never to refuse, hold back or audit licenses when they use, adapt or recommend outside code. When a license clearly applies, they say so in one line and carry on.
 - Remove: the status row above the prompt (`● 2 running   ! 1 needs you   /anthology-status`) is gone. Nothing is drawn above the prompt any more. `/anthology-status` still opens the pane with the running agents, the last five that finished and the permission prompts that wait for you.
 - Fix: on macOS the `Notification` hook no longer posts its alert through `osascript`. macOS attributes such a notification to Script Editor (running it inside `tell application id "<host>"` changes nothing), so clicking the alert opened Script Editor instead of your editor or terminal. The hook now plays the Glass sound with `afplay` and rings the terminal bell on macOS; the in-session toast is the visible alert. Linux alerts are unchanged.
 
@@ -213,7 +213,7 @@ a new version section.
   only that crate, plain and with all features.
 - The agent status is now a row Anthology draws above the prompt
   (`● 2 running   ✓ 3 done   ! 1 needs you`, with `/anthology-status` on the right) instead of
-  a labelled status entry. It shows only while an agent runs or a prompt waits for you.
+  a labeled status entry. It shows only while an agent runs or a prompt waits for you.
 - Session start: an embedded host (SDK entrypoint, or unattended session, unless
   `ANTHOLOGY_HOST_MODE=full`) gets no routing guide or memory, and only the guard self-test and
   bootstrap failure lines. The setup nag and the settings-changed note show only at startup. A
@@ -303,7 +303,7 @@ a new version section.
   install hint and its package maintainer now point at Anthology. `scripts/atl-rename.sh`
   applies the rename rule again, and `scripts/sync-atl.sh` merges a new upstream release over
   the renamed base. Tags already published under the old name stay as they are. The guard and
-  the hook still recognise the old `rtk` name, so a command typed with it is checked as
+  the hook still recognize the old `rtk` name, so a command typed with it is checked as
   before. Routing guide section 7 is now "Command output: ATL (Anthology Token Layer)".
   `anthology` now needs `anthology-guardrails` `~0.2.7`. The binary is `1.2.1-anthology.6`.
   See ADR-035.
@@ -410,8 +410,8 @@ a new version section.
   backslashes escaped, and the `cd` example is left out when the first name is not plain UTF-8
   or needed escaping or cutting.
 - `anthology-mem search` accepts `--query <words...>` as an alias of the positional words, so
-  `anthology-mem search --query tokens colour output` works as well as
-  `anthology-mem search tokens colour output`. Giving the words both ways, or neither way, is a
+  `anthology-mem search --query tokens color output` works as well as
+  `anthology-mem search tokens color output`. Giving the words both ways, or neither way, is a
   usage error (exit 2) that says where the words go. The help text shows both forms.
 
 #### Changed
@@ -680,7 +680,7 @@ a new version section.
 
 - The plugin's code is one static `anthology` binary written in Rust, in place of the Python
   scripts. The SessionStart hook, setup, doctor, export and import, `anthology-mem` and
-  `bin/anthology` run it through small POSIX `sh` shims in `hooks/` and `bin/`. Behaviour,
+  `bin/anthology` run it through small POSIX `sh` shims in `hooks/` and `bin/`. Behavior,
   files and messages are unchanged except where they named Python.
 - The binary is downloaded on first use from this repo's `anthology-bin--v<version>` release,
   checked against the sha256 for your platform in `anthology.lock` before it is unpacked, and
@@ -751,7 +751,7 @@ a new version section.
 
 ### [0.2.14] - 2026-11-25
 
-- Fix: when your PATH held a relative or empty entry (`.`, `::`, a leading or trailing `:`, or a folder such as `bin`), the repository you opened could take over the guard. Claude Code looked up the hooks' `sh` on that PATH, so a planted `./sh` could replace the guard and allow every tool call. The guard's installer could also run a planted `curl`, `tar`, `shasum` or `sh`. The hooks now start with `/bin/sh`, and they drop those PATH entries for their own helpers, keeping the absolute ones in order and falling back to the standard system folders when none is left. The guard binary still gets the PATH you exported, unchanged; when you exported none, it gets the safe one. The sha256 check and the fail-closed behaviour are unchanged.
+- Fix: when your PATH held a relative or empty entry (`.`, `::`, a leading or trailing `:`, or a folder such as `bin`), the repository you opened could take over the guard. Claude Code looked up the hooks' `sh` on that PATH, so a planted `./sh` could replace the guard and allow every tool call. The guard's installer could also run a planted `curl`, `tar`, `shasum` or `sh`. The hooks now start with `/bin/sh`, and they drop those PATH entries for their own helpers, keeping the absolute ones in order and falling back to the standard system folders when none is left. The guard binary still gets the PATH you exported, unchanged; when you exported none, it gets the safe one. The sha256 check and the fail-closed behavior are unchanged.
 
 ### [0.2.13] - 2026-11-25
 

@@ -1043,7 +1043,7 @@ mod smoke_body_tests {
 
     #[test]
     fn test_auto_memory_dir_fails_if_the_old_note_is_copied_into_the_repo() {
-        // The pre-P1 behaviour, now a leak.
+        // The pre-P1 behavior, now a leak.
         let ((status, reason), _) = run_auto_memory_dir(|tmp, _repo, mem| {
             note_in_personal(tmp);
             fs::write(mem.join("n.md"), "amber").expect("write");

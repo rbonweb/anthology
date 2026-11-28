@@ -51,7 +51,7 @@ use anthology_shell::{Analysis, analyze};
 
 /// The GC-14 limit block line (`anthology guard hook`, D-7).
 pub const LIMIT_LINE: &[u8] = b"Blocked by anthology-guardrails (internal): the guard could not \
-finish analysing this input (time or pattern limit); it was blocked to be safe. Rephrase the \
+finish analyzing this input (time or pattern limit); it was blocked to be safe. Rephrase the \
 command; if this keeps happening, disable anthology-guardrails with /plugin\n";
 
 /// What one comparison found (module docs).

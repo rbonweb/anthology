@@ -1035,7 +1035,7 @@ pub(crate) fn fixed_cases() -> Vec<Value> {
         "xargs -I {} sh -c 'echo {}'",
         "fish --comm='npx x'; fish -ic 'y'",
         "a=(x y) b; deps=(\n npx\n)\nls",
-        // G0-FP (replay false positives, and neighbours that stay too complex): a bracket with a backtick
+        // G0-FP (replay false positives, and neighbors that stay too complex): a bracket with a backtick
         // and no closed subscript; a script's arguments and `2>&1`; a one-word command defines no function
         "echo '[`'; grep '\\[`u`\\]' x; grep \"\\[`u`\\]\" x; grep -n '[`]' y",
         "echo 'a[`npx playwright install`]'; x='[$(npx playwright install)]'",

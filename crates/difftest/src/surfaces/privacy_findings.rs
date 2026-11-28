@@ -14,7 +14,7 @@
 //!   them its hostname literal matches (Rust compiles the literal it writes; Python
 //!   `re.compile(re.escape(c), re.I)`).
 //!
-//! Seeds are the inputs of `tests/test_memory_privacy.py` and their neighbours. Generated cases
+//! Seeds are the inputs of `tests/test_memory_privacy.py` and their neighbors. Generated cases
 //! splice fragments of every kind (and near misses) with boundary characters (marks, `No`
 //! digits, `Pc`, joiners, İ ı ſ K, the `\s` oddities, Unicode digits, code points new after
 //! Unicode 15.0), random text and hostile repeats of up to about 50 KB per line, with host

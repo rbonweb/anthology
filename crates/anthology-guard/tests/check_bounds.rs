@@ -173,7 +173,7 @@ const BLOCKED: &[&str] = &[
     "python3 -c \"open('~/.config/google-chrome/x')\"",
 ];
 
-/// Wrappers and neighbours that do not exempt anything (docker would exempt G1 and G2).
+/// Wrappers and neighbors that do not exempt anything (docker would exempt G1 and G2).
 const WRAPS: &[&str] = &[
     "{c}",
     "sudo {c}",

@@ -1,6 +1,6 @@
 //! `anthology-dev eval-baseline record|compare|candidate` (scripts/eval_baseline.py). Owner: DV2.
 //!
-//! Baseline gate for the behaviour evals: record scores, then fail on a regression. Exit codes
+//! Baseline gate for the behavior evals: record scores, then fail on a regression. Exit codes
 //! of `compare` (GC-5): 0 no regression, 1 regression, 2 invalid or partial result (or an
 //! invalid baseline), 3 baseline file missing. `record` exits 2 when it refuses the result.
 
@@ -492,7 +492,7 @@ fn cmd_compare(
 
     if let Some(summary) = o.summary.filter(|s| !s.is_empty()) {
         let mut lines = vec![
-            "### Behaviour eval baseline".to_string(),
+            "### Behavior eval baseline".to_string(),
             String::new(),
             "| case | baseline | now | status |".to_string(),
             "| --- | --- | --- | --- |".to_string(),
@@ -560,7 +560,7 @@ fn spec(env: &Env) -> argparse::Spec {
         );
     argparse::Spec::new("eval_baseline.py")
         .description(
-            "Baseline gate for the behaviour evals: record scores, then fail on a regression.",
+            "Baseline gate for the behavior evals: record scores, then fail on a regression.",
         )
         .width(argparse::help_width(env.get("COLUMNS"), None))
         .subcommands(subcommands)

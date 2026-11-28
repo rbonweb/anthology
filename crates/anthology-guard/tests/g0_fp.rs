@@ -1,5 +1,5 @@
 //! G0-FP: everyday commands a replay of real traffic found blocked as "too complex" (G0) while the shipped
-//! Python guard allows them, and the neighbours of each shape that must still block.
+//! Python guard allows them, and the neighbors of each shape that must still block.
 //! 1. A bracket and a backtick in one word with no closed subscript (`echo '[`'`, `grep '\[`u`\]'`): bash
 //!    runs a subscript's substitution only when the substitution and the subscript are closed, and no name
 //!    ends in a backslash.
@@ -391,7 +391,7 @@ fn sql_given_to_psql_through_docker_exec_is_data_not_a_script() {
             r#"docker exec --tty db psql -c "select count(*) from t""#,
             r#"docker exec --detach db psql -c "select count(*) from t""#,
             r#"docker exec -it -u postgres -w /tmp -e PGPASSWORD=x db psql -c "select count(*) from t""#,
-            // the neighbours that were already allowed
+            // the neighbors that were already allowed
             r#"psql -c "select count(*) from t""#,
             r#"docker exec db psql -c "select 1""#,
             r#"docker exec db mysql -e "select count(*) from t""#,

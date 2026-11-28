@@ -98,7 +98,7 @@ fn shown(p: &Path) -> String {
     String::from_utf8_lossy(&pathlib_str(p.as_os_str().as_bytes())).into_owned()
 }
 
-/// `Path(p)`, normalised as `pathlib` holds it.
+/// `Path(p)`, normalized as `pathlib` holds it.
 fn pure(p: &Path) -> PathBuf {
     PathBuf::from(shown(p))
 }

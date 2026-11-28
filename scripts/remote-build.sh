@@ -86,7 +86,7 @@
 # Docker data disk is over 85% full: the kept volumes and the image we pulled, least recently used
 # first (each run touches a file under ~/anthology-remote/.used), until the disk is under 85%
 # again. Once an hour, at the start, it also removes a kept cache volume that is over 40 GB (the
-# size is read with `du` in a throwaway container). Only our own labelled volumes and recorded
+# size is read with `du` in a throwaway container). Only our own labeled volumes and recorded
 # images are ever trimmed, never one a running container uses.
 #
 # ANTHOLOGY_REMOTE_SYNC=tar forces the tar copy even where rsync exists (the tests use it).
@@ -291,7 +291,7 @@ pressure() {
     return 1
 }
 # candidates: the kept items we may trim, "<last used> <volume|image> <name>", oldest first. Our
-# labelled caches, and the images recorded as pulled by us; never a run volume.
+# labeled caches, and the images recorded as pulled by us; never a run volume.
 candidates() {
     {
         for v in $(docker volume ls -q --filter "label=$label" 2>/dev/null); do

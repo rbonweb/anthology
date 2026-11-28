@@ -1,4 +1,4 @@
-//! Port of `tests/test_memory_sync.py`, part 1 (MS1): remote normalisation, repo keys,
+//! Port of `tests/test_memory_sync.py`, part 1 (MS1): remote normalization, repo keys,
 //! approval, the union merge attributes and the generated `MEMORY.md` index. The split with
 //! MS2 is recorded in `port/ledger/test_memory_sync.tsv`.
 //!

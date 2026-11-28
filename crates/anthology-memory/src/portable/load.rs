@@ -94,7 +94,7 @@ pub const MAX_SPARSE: usize = 4096;
 ///
 /// Known leniency: this models Python with no `TMPDIR` (as the difftest oracle runs). On a
 /// real Mac `TMPDIR` is `/var/folders/…/T/`, about 68 bytes once realpathed against the 25
-/// modelled here, so Python refuses names of roughly 950 to 990 bytes that the port lets
+/// modeled here, so Python refuses names of roughly 950 to 990 bytes that the port lets
 /// through at load. A note under such a name has a part over 255 bytes, which apply refuses
 /// before any write (`NAME_MAX`), so only the stage and text of the refusal differ; a bare
 /// agent folder member of that length has nothing to write. Linux has the same gap whenever

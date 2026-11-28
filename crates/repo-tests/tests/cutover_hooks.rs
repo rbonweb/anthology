@@ -5,7 +5,7 @@
 //! The files CO2 moves out of `port/staging/` are read through `anthology_testkit::staged`, so
 //! before the cutover these tests check the staged shims and after it the live ones. A test that
 //! only holds once the Python plugin scripts are deleted skips while `port/staging/` exists. The
-//! shim behaviour itself (no binary, no downloader, a broken install) is BS1's `shims.rs` and the
+//! shim behavior itself (no binary, no downloader, a broken install) is BS1's `shims.rs` and the
 //! `binary-missing` smoke.
 
 use std::path::PathBuf;

@@ -980,7 +980,7 @@ fn read_guide(root: &Path) -> Option<String> {
 }
 
 /// The lines for `.claude/anthology.json` switches that ask to turn something off, and whether
-/// the routing guide is off: a switch is honoured only in an approved repo, so the other is said
+/// the routing guide is off: a switch is honored only in an approved repo, so the other is said
 /// to be ignored.
 fn switch_notes(env: &Env, cwd: &Path) -> (bool, Vec<String>) {
     let mut notes = Vec::new();

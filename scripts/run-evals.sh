@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run the Anthology behaviour evals and gate them against the recorded baseline.
+# Run the Anthology behavior evals and gate them against the recorded baseline.
 # This is the one command: CI (.github/workflows/evals.yml) and the controller both call it.
 #
 # The committed evals/baseline.json is recorded from the CI run, not from a laptop: dispatch

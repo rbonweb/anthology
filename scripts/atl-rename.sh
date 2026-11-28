@@ -20,7 +20,7 @@
 #   "fork of <name>" and the Python test ids test_<name>_*.
 # A line with a comment that starts with the word legacy (`// legacy`, `//! legacy`,
 # `# legacy`, `<!-- legacy`) is never touched: it keeps the old name on purpose, as a name the code still
-# has to recognise. The word in running text does not protect a line.
+# has to recognize. The word in running text does not protect a line.
 #
 # PATH may be files or directories under the root; none means every file (the tracked files and
 # the new ones, in a git checkout; every file otherwise). Binary files are skipped. The paths

@@ -397,7 +397,7 @@ fn a_name_outside_the_pattern_is_not_read() {
     }
 }
 
-/// Every name on the denied list, with a neighbour that is not on it.
+/// Every name on the denied list, with a neighbor that is not on it.
 const DENIED: [&str; 45] = [
     "MANPATH",
     "MAILPATH",

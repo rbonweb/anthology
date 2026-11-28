@@ -139,7 +139,7 @@ fn blen(line: &str) -> usize {
 }
 
 /// `memory_sync.render_index(mem_dir, budget, suffix, exclude_types)`: the generated index
-/// text for the notes in `mem_dir`, `None` when it has no notes. Notes whose (normalised) type
+/// text for the notes in `mem_dir`, `None` when it has no notes. Notes whose (normalized) type
 /// is in `exclude_types` are never listed; if that leaves none, the text is the header alone,
 /// so a stale index is replaced. `suffix` is appended to every "N more" pointer.
 pub fn render_index(
