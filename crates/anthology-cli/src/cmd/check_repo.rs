@@ -68,10 +68,13 @@ pub fn run(args: &[OsString], _stdin: &mut dyn Read) -> Output {
 
 /// The command with its environment, its way of starting programs and its cleanup list given.
 fn run_with(args: &[OsString], env: &Env, runner: &dyn Runner, guard: &Guard) -> Output {
-    match execute(args, env, runner, guard) {
+    let out = match execute(args, env, runner, guard) {
         Ok(out) => out,
         Err(message) => fail(&message),
-    }
+    };
+    // A signal caught on the way decides the exit code, not this result.
+    guard.defer_to_signal();
+    out
 }
 
 /// Catches `SIGINT`, `SIGTERM` and `SIGHUP`: a thread stops every child, removes every folder the
@@ -202,6 +205,23 @@ impl Guard {
         };
         if let Some(kid) = kid {
             kid.watchdog.finish();
+        }
+    }
+
+    /// Called by the main thread wherever it would go on after a child ended, and before it ends
+    /// the run. If a termination signal was caught, the signal thread owns what happens next: it
+    /// is stopping the children (so a child that just ended may be its doing, and the failure the
+    /// main thread would report is not a real one), removing the folders and choosing the exit
+    /// code. This waits for that thread to finish its cleanup (taking the lock does that) and then
+    /// never returns: the signal thread ends the process with `128 + signal`.
+    ///
+    /// `down` is set under the lock before the first child is killed, so a child that died because
+    /// of the signal is always seen as such here.
+    fn defer_to_signal(&self) {
+        if self.lock().down {
+            loop {
+                std::thread::park();
+            }
         }
     }
 
@@ -385,6 +405,7 @@ fn execute(
     let result = scan_and_report(&o, prepared, env, runner, guard);
     if let Some(dest) = made {
         // The quarantine is the result of a finished run, and of nothing else.
+        guard.defer_to_signal();
         if result.is_err() {
             let _ = fs::remove_dir_all(&dest);
         }
@@ -732,6 +753,11 @@ impl Runner for RealRunner {
             std::thread::sleep(nap);
             nap = (nap * 2).min(Duration::from_millis(20));
         };
+        // The signal thread may have killed it: then it, not this thread, ends the run (the
+        // fetch must not clean up or report a failure of its own).
+        self.guard.defer_to_signal();
+        // The signal thread may have killed it: then it, not this thread, ends the run (the
+        // fetch must not clean up or report a failure of its own).
 
         // Both pipes close when the child and everything it started are gone. A helper that
         // outlived the child holds them open: kill the group, then take what was read.
@@ -890,11 +916,17 @@ mod tests {
         }
         assert_eq!(r.guard.running(), 1, "the child never registered");
         r.guard.shutdown();
-        // The run ends at once: killed, so 128 + 9.
-        let (code, _, _) = run.join().expect("thread").expect("the run returns");
-        assert_eq!(code, 137);
         assert!(!victim.exists(), "the registered folder was not removed");
         assert_eq!(r.guard.running(), 0);
+        // The child is dead, and the thread that ran it sees that within a few milliseconds. It
+        // must not go on, report a failure or clean up: the signal thread ends the run. (Before
+        // the fix it returned `137` here, and a fetch would have exited 3 ahead of the signal
+        // thread's `exit(143)`.)
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(
+            !run.is_finished(),
+            "the runner returned after the signal thread killed its child"
+        );
         let err = r
             .run(
                 Path::new("/bin/true"),
@@ -905,6 +937,18 @@ mod tests {
             )
             .expect_err("no new child after shutdown");
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+    }
+
+    #[test]
+    fn the_main_thread_defers_to_the_signal_thread_only_once_a_signal_was_caught() {
+        let guard = Arc::new(Guard::default());
+        // No signal: it returns at once.
+        guard.defer_to_signal();
+        guard.shutdown();
+        let waiting = Arc::clone(&guard);
+        let main = std::thread::spawn(move || waiting.defer_to_signal());
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(!main.is_finished(), "it went on after a shutdown");
     }
 
     #[test]
