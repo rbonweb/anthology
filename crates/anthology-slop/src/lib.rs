@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn rules_are_the_sixteen_v1_rules() {
+    fn rules_are_the_seventeen_rules() {
         let ids: Vec<&str> = RULES.iter().map(|r| r.id).collect();
         assert_eq!(
             ids,
@@ -365,6 +365,7 @@ mod tests {
                 "ui.effect-library",
                 "ui.placeholder-media",
                 "ui.placeholder-text",
+                "ui.dummy-contact",
                 "ui.five-star-row",
                 "ui.generator-signature"
             ]

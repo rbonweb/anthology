@@ -104,6 +104,15 @@ static PLACEHOLDER_TEXT: LazyLock<Regex> = LazyLock::new(|| {
         r"\[(?:your\s+|company\s+|brand\s+|business\s+|product\s+)?(?:company|brand|business|product)\s+name\]|\[insert\b"
     ))
 });
+/// A dummy phone number or chat link (group 1): `+00 0000 …`, `000-000-0000`, or a `wa.me` or
+/// WhatsApp link whose number starts with 0. The lead-in keeps a longer number, a time zone offset
+/// (`10:00:00+0000`) and a `)` or `+` before the match from counting.
+static DUMMY_CONTACT: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"(?i)(?:^|[^\w)+])(\+00[ .-]?0{4}[0-9 .-]*|\(?\b000\)?[ .-]?000[ .-]?0000\b|",
+        r"wa\.me/\+?0\d*|whatsapp\.com/send/?\?phone=\+?0\d*)"
+    ))
+});
 /// Five stars written out.
 static FIVE_STARS: LazyLock<Regex> =
     LazyLock::new(|| re(r"★{5}|(?:<Star(?:Icon)?\b[^>]*/>\s*){5}"));
@@ -233,6 +242,22 @@ pub(crate) fn placeholder_media(view: &View) -> Vec<Hit> {
 
 pub(crate) fn placeholder_text(view: &View) -> Vec<Hit> {
     find_all(&PLACEHOLDER_TEXT, &view.text, "ui.placeholder-text")
+}
+
+/// A dummy phone number or chat link in code (attributes and text; comments are masked).
+pub(crate) fn dummy_contact(view: &View) -> Vec<Hit> {
+    DUMMY_CONTACT
+        .captures_iter(&view.code)
+        .filter_map(|c| c.get(1))
+        .map(|m| {
+            hit(
+                "ui.dummy-contact",
+                &view.code,
+                shift(0, m.start(), m.end()),
+                Vec::new(),
+            )
+        })
+        .collect()
 }
 
 /// Five stars written out, or an array of five mapped to stars whose props are all fixed. A star
@@ -1297,6 +1322,42 @@ mod tests {
             ))
             .is_empty()
         );
+    }
+
+    #[test]
+    fn dummy_contact_is_flagged() {
+        for (doc, want) in [
+            (r#"<a href="tel:+00 0000 000000">"#, "+00 0000 000000"),
+            ("<p>+000000000</p>", "+000000000"),
+            ("<p>000-000-0000</p>", "000-000-0000"),
+            ("<p>(000) 000-0000</p>", "(000) 000-0000"),
+            (r#"<a href="https://wa.me/0000000000">"#, "wa.me/0000000000"),
+            (
+                r#"<a href="https://api.whatsapp.com/send?phone=0123">"#,
+                "whatsapp.com/send?phone=0123",
+            ),
+        ] {
+            let hits = dummy_contact(&View::plain(doc));
+            assert_eq!(seen(doc, &hits), [want], "{doc}");
+            assert_eq!(hits[0].rule, "ui.dummy-contact");
+        }
+    }
+
+    #[test]
+    fn dummy_contact_passes_real_numbers() {
+        for doc in [
+            "<time>2026-11-28T10:00:00+0000</time>",
+            "<time>2026-11-28T10:00:00+00:00</time>",
+            r#"<a href="https://wa.me/447700900123">"#,
+            r#"<a href="tel:+442079460000">"#,
+            "<p>1000-000-0000</p>",
+            "<!-- 000-000-0000 -->",
+        ] {
+            assert!(
+                dummy_contact(&real(crate::Kind::Html, doc)).is_empty(),
+                "{doc}"
+            );
+        }
     }
 
     #[test]

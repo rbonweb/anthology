@@ -1,6 +1,6 @@
 # The slop gate
 
-This page covers the slop gate, which refuses an edit when its new text holds a known AI-writing or AI-design tell. It lists what the gate reads, the 16 rules, how to quote a specimen or waive a hit, the files it skips, how to run it yourself and how to switch it off.
+This page covers the slop gate, which refuses an edit when its new text holds a known AI-writing or AI-design tell. It lists what the gate reads, the 17 rules, how to quote a specimen or waive a hit, the files it skips, how to run it yourself and how to switch it off.
 
 The rules look for known tells, one phrase or code pattern at a time. They do not judge whether a text is good, and they prove nothing about who wrote it: people write `in today's fast-paced world` too. A passage can pass every rule and still read badly.
 
@@ -64,6 +64,7 @@ A **block** rule refuses on one hit. A **density** rule counts hits across the n
 | `ui.effect-library` | JSX | block | A stock effect-library component (`K10`): `<ShimmerButton>`, `<BackgroundBeams>`, `<Spotlight>`, `<Meteors>`, or a path under `components/magicui/` or `components/aceternity/`. |
 | `ui.placeholder-media` | CSS, HTML, JSX | block | An avatar or image service meant for placeholders (`IM4`): `i.pravatar.cc`, `api.dicebear.com`, `ui-avatars.com`, `picsum.photos`, `placehold.co`. |
 | `ui.placeholder-text` | HTML, JSX | block | Placeholder copy in the text: `Lorem ipsum`, `[Company Name]`, `[insert tagline]`. |
+| `ui.dummy-contact` | HTML, JSX | block | A dummy phone number or chat link in the code: `+00 0000 000000`, `000-000-0000`, `(000) 000-0000`, `wa.me/0000000000`, or a WhatsApp send link whose number starts with 0. Real numbers, time zone offsets such as `+0000` and numbers in comments pass. |
 | `ui.five-star-row` | HTML, JSX | block | Five stars in a row (`IM5`): `★★★★★`, five `<Star />` icons, or an array of five mapped to stars. |
 | `ui.generator-signature` | HTML, JSX | block | A site generator left in (`F1`): `lovable-tagger`, `gpt-engineer`, `v0.dev`, `bolt.new`, or `<meta name="generator" content="v0">`. |
 

@@ -54,8 +54,8 @@ fn waiver_comment(kind: Kind, rule: &str, reason: &str) -> String {
 }
 
 #[test]
-fn the_fixture_holds_twenty_five_cases() {
-    assert_eq!(cases().len(), 25);
+fn the_fixture_holds_twenty_seven_cases() {
+    assert_eq!(cases().len(), 27);
 }
 
 #[test]

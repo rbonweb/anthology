@@ -105,3 +105,5 @@ Certainly the binary is faster than the shell version.
 The deploy runs build, test, and release jobs; each job has its own log.
 %%
 The header gradient goes from #3b82f6 to #0ea5e9.
+
+Call +44 20 7946 0000 or chat at wa.me/447700900123; the log stamps read 2026-11-28T10:00:00+0000.

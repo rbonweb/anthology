@@ -1134,7 +1134,7 @@ fn rules_prints_every_rule() {
     let run = fx.run(&["slop", "rules"], &fx.base, "", &[]);
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(run.stdout, report::rules_table());
-    assert_eq!(run.stdout.lines().count(), 16);
+    assert_eq!(run.stdout.lines().count(), 17);
     assert!(
         run.stdout
             .starts_with("text.ai-vocab\tblock\tmarkdown,html,jsx\t")
