@@ -512,9 +512,11 @@ fn pinned_package(parts: &[&str]) -> Option<String> {
         .to_ascii_lowercase();
     let program = program.trim_end_matches(".cmd").trim_end_matches(".exe");
     let rest = match program {
-        "npx" | "pnpx" | "bunx" | "uvx" => &parts[1..],
+        "npx" | "pnpx" | "bunx" | "uvx" | "dnx" => &parts[1..],
         "pnpm" | "yarn" if parts.get(1) == Some(&"dlx") => &parts[2..],
         "pipx" if parts.get(1) == Some(&"run") => &parts[2..],
+        "dotnet" if parts.get(1) == Some(&"dnx") => &parts[2..],
+        "dotnet" if parts[1..].starts_with(&["tool", "exec"]) => &parts[3..],
         _ => return None,
     };
     let mut i = 0;
@@ -1258,6 +1260,51 @@ mod tests {
             assert_eq!(out[0].group, Group::Agent);
             assert_eq!(out[0].line, 1);
         }
+    }
+
+    #[test]
+    fn a_pinned_dotnet_and_pipx_server_is_low() {
+        for (command, args) in [
+            ("dnx", r#"["Foo@1.0.0", "--yes"]"#),
+            ("dotnet", r#"["dnx", "Foo@1.0.0", "--yes"]"#),
+            ("dotnet", r#"["tool", "exec", "Foo@1.0.0"]"#),
+            ("pipx", r#"["run", "server==1.2.3"]"#),
+        ] {
+            let (found, out) = run(MCP, &mcp(command, args));
+            assert!(found.is_empty(), "{command} {args}");
+            assert_eq!(out.len(), 1, "{command} {args}");
+            assert_eq!(out[0].severity, Severity::Low, "{command} {args}");
+        }
+    }
+
+    #[test]
+    fn the_chillicream_nuget_server_is_low() {
+        let args = r#"["dnx", "NuGet.Mcp.Server@1.4.16", "--source", "https://api.nuget.org/v3/index.json", "--yes"]"#;
+        let (found, out) = run(MCP, &mcp("dotnet", args));
+        assert!(found.is_empty());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].rule, "agent.mcp-stdio");
+        assert_eq!(out[0].severity, Severity::Low);
+    }
+
+    #[test]
+    fn an_unpinned_dnx_server_is_a_medium_surface() {
+        let (found, out) = run(MCP, &mcp("dnx", r#"["Foo"]"#));
+        assert!(out.is_empty());
+        assert_eq!(found.len(), 1);
+        assert_eq!(level(&found[0]), Severity::Medium);
+        let (found, out) = run(MCP, &mcp("dnx", r#"["Foo@1.0"]"#));
+        assert!(out.is_empty());
+        assert_eq!(level(&found[0]), Severity::Medium);
+    }
+
+    #[test]
+    fn a_pinned_dnx_server_on_another_feed_is_a_surface() {
+        let args = r#"["Foo@1.0.0", "--source", "https://example.invalid/feed"]"#;
+        let (found, out) = run(MCP, &mcp("dnx", args));
+        assert!(out.is_empty());
+        assert_eq!(found.len(), 1);
+        assert_eq!(level(&found[0]), Severity::High);
     }
 
     #[test]
