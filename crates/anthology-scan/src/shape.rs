@@ -163,6 +163,9 @@ pub fn severity(t: Trigger, s: Shape, reached: Option<Severity>) -> Severity {
     };
     let base = match t {
         Trigger::Open | Trigger::Install => column(Info, Medium, Medium, High, Critical),
+        // A build step that downloads and runs is HIGH, not CRITICAL: Makefiles install tools
+        // that way every day. One that decodes and runs, or runs data, is still CRITICAL.
+        Trigger::Build if s == Shape::FetchExec => High,
         Trigger::Build => column(Info, Info, Low, Medium, Critical),
         Trigger::OptIn => column(Info, Info, Low, Low, High),
     };
@@ -486,21 +489,64 @@ fn looks_like_script(word: &str) -> bool {
             .any(|e| low.ends_with(e))
 }
 
+/// True for a word that names a path from the current folder: it has a `/` or `\`, starts with a
+/// letter, a digit, `.` or `_` (so not a root, the home folder, a variable, a flag or a comment),
+/// and is not a URL or a drive path.
+fn is_relative_path(word: &str) -> bool {
+    word.contains(['/', '\\'])
+        && word.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        && word.as_bytes().get(1) != Some(&b':')
+        && !word.contains("://")
+}
+
+/// The variables an agent or an editor sets to the folder of the project.
+const PROJECT_VARS: &[&str] = &[
+    "${CLAUDE_PROJECT_DIR}",
+    "$CLAUDE_PROJECT_DIR",
+    "%CLAUDE_PROJECT_DIR%",
+    "${workspaceFolder}",
+    "${workspaceRoot}",
+];
+
+/// `word` without a project folder variable that starts it (and the separator after it), and
+/// whether there was one. The variable must be the whole of the first part of the path: a longer
+/// name that starts with it is another variable.
+fn strip_project_var(word: &str) -> (String, bool) {
+    for var in PROJECT_VARS {
+        if let Some(rest) = word.strip_prefix(var)
+            && (rest.is_empty() || rest.starts_with(['/', '\\']))
+        {
+            return (rest.trim_start_matches(['/', '\\']).to_string(), true);
+        }
+    }
+    (word.to_string(), false)
+}
+
 /// The files one simple command runs, each with whether an interpreter runs it.
 fn command_files(tokens: &[String]) -> Vec<(String, bool)> {
     let tokens = skip_wrappers(tokens);
     let Some(first) = tokens.first() else {
         return Vec::new();
     };
-    let Some(kind) = interpreter(first) else {
-        return if looks_like_script(first) {
-            vec![(clean(first), false)]
-        } else {
-            Vec::new()
-        };
+    // A word that starts with the project folder variable names a path from the root of the
+    // project, whatever the file is called; a word with a folder part that is not absolute is a
+    // file of the repo too. Either is run itself, even when its name is `sh` or `node`
+    // (`./tools/sh -c x` runs that file); an interpreter name means the files it is given run as
+    // well.
+    let (rooted, had_var) = strip_project_var(first);
+    let word = if had_var { rooted.as_str() } else { first };
+    let direct = (had_var && !rooted.is_empty()) || is_relative_path(first);
+    let mut out = Vec::new();
+    if direct {
+        out.push((clean(word), false));
+    }
+    let Some(kind) = interpreter(word) else {
+        if !direct && looks_like_script(first) {
+            out.push((clean(first), false));
+        }
+        return out;
     };
     let args = &tokens[1..];
-    let mut out = Vec::new();
     let mut seen_positional = false;
     let mut i = 0;
     while i < args.len() {
@@ -1136,10 +1182,12 @@ mod tests {
         use Severity::{Critical as C, High as H, Info as I, Low as L, Medium as M};
         // Rows: Open, Install, Build, OptIn. Columns: Allowlisted, Plain, Runner, Network,
         // DecodeExec, FetchExec, RunsData.
+        // A build step that downloads and runs is HIGH, not CRITICAL: ordinary Makefiles install
+        // tools that way. A build step that decodes and runs, or runs data, stays CRITICAL.
         let table: [[Severity; 7]; 4] = [
             [I, M, M, H, C, C, C],
             [I, M, M, H, C, C, C],
-            [I, I, L, M, C, C, C],
+            [I, I, L, M, C, H, C],
             [I, I, L, L, H, H, H],
         ];
         let shapes = [
@@ -1156,6 +1204,92 @@ mod tests {
                 assert_eq!(severity(*t, *s, None), want, "{t:?} x {s:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_relative_path_named_like_an_interpreter_is_a_file_of_the_repo() {
+        // The word is a file of the repo, and when its name is an interpreter's, the file it is
+        // given runs as well.
+        for (cmd, want) in [
+            ("./tools/sh -c echo", vec!["tools/sh"]),
+            ("tools/bash run.sh", vec!["tools/bash", "run.sh"]),
+            ("../bin/node app.js", vec!["../bin/node", "app.js"]),
+            (".\\tools\\python3 x.py", vec!["tools/python3", "x.py"]),
+            ("sudo ./bin/sh -c id", vec!["bin/sh"]),
+            (
+                "./bin/node -r ./pre.js app.js",
+                vec!["bin/node", "pre.js", "app.js"],
+            ),
+            ("./tools/lint --fix", vec!["tools/lint"]),
+        ] {
+            let got: Vec<String> = files_run(cmd)
+                .into_iter()
+                .map(|f| f.replace('\\', "/"))
+                .collect();
+            assert_eq!(got, want, "{cmd}");
+        }
+        // An interpreter on the machine still runs the file after it.
+        assert_eq!(files_run("/bin/sh run.sh"), ["run.sh"]);
+        assert_eq!(files_run("sh run.sh"), ["run.sh"]);
+        assert!(files_run("/usr/bin/node -e 1").is_empty());
+        assert!(files_run("$HOME/bin/sh -c id").is_empty());
+        assert!(files_run("~/bin/sh -c id").is_empty());
+    }
+
+    #[test]
+    fn a_script_run_from_the_project_folder_variable_is_a_file_whatever_its_name() {
+        for (cmd, want) in [
+            ("$CLAUDE_PROJECT_DIR/hooks/check", vec!["hooks/check"]),
+            (
+                "\"$CLAUDE_PROJECT_DIR\"/hooks/check.rb --x",
+                vec!["hooks/check.rb"],
+            ),
+            ("${CLAUDE_PROJECT_DIR}/run", vec!["run"]),
+            ("%CLAUDE_PROJECT_DIR%\\tools\\go", vec!["tools\\go"]),
+            ("${workspaceFolder}/bin/lint", vec!["bin/lint"]),
+            ("${workspaceRoot}/bin/lint", vec!["bin/lint"]),
+            ("sudo $CLAUDE_PROJECT_DIR/bin/x", vec!["bin/x"]),
+            // An interpreter-named file under the variable runs, and so does what it is given.
+            (
+                "$CLAUDE_PROJECT_DIR/bin/node app.js",
+                vec!["bin/node", "app.js"],
+            ),
+        ] {
+            assert_eq!(files_run(cmd), want, "{cmd}");
+        }
+        // The variable is not a prefix of some longer name, and a bare variable is no file.
+        assert!(files_run("$CLAUDE_PROJECT_DIRX/bin/x").is_empty());
+        assert!(files_run("$CLAUDE_PROJECT_DIR").is_empty());
+        assert!(files_run("$CLAUDE_PROJECT_DIR/").is_empty());
+        // Arguments of an interpreter keep their form for the caller to resolve.
+        assert_eq!(
+            files_run("node $CLAUDE_PROJECT_DIR/x.js"),
+            ["$CLAUDE_PROJECT_DIR/x.js"]
+        );
+    }
+
+    #[test]
+    fn a_build_step_that_downloads_and_runs_is_high_and_one_that_decodes_is_critical() {
+        let golangci = "curl -sSfL https://example.invalid/install.sh | sh -s -- -b /usr/local/bin";
+        assert_eq!(classify(golangci), Shape::FetchExec);
+        assert_eq!(
+            severity(Trigger::Build, classify(golangci), None),
+            Severity::High
+        );
+        let decode = "echo aGk= | base64 -d | sh";
+        assert_eq!(classify(decode), Shape::DecodeExec);
+        assert_eq!(
+            severity(Trigger::Build, classify(decode), None),
+            Severity::Critical
+        );
+        // On open or install, and when the build step reaches a HIGH file, nothing changes.
+        for t in [Trigger::Open, Trigger::Install] {
+            assert_eq!(severity(t, Shape::FetchExec, None), Severity::Critical);
+        }
+        assert_eq!(
+            severity(Trigger::Build, Shape::FetchExec, Some(Severity::High)),
+            Severity::Critical
+        );
     }
 
     #[test]
