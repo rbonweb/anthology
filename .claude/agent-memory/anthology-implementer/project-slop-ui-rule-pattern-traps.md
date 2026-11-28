@@ -1,6 +1,6 @@
 ---
 name: 'Slop UI rules: pattern traps the plan text has'
-description: 'Where the plan regexes for the UI rules over-match, and the guards the code adds; read before editing rules/ui.rs'
+description: 'Where the plan regexes for the UI rules over-match, the guards the code adds, and the purple-gradient stop rule; read before editing rules/ui.rs'
 metadata:
   type: project
   modified: 2026-11-28
@@ -13,3 +13,6 @@ The plan patterns for the nine UI rules (crates/anthology-slop/src/rules/ui.rs) 
 4. `\b-z-10` never matches after a space (no word boundary between a space and a dash). Write `(?:^|[^\w-])-z-10\b`.
 5. The rule-body regex `([^{}]+)\{([^{}]*)\}` misses `style={{ ... }}` (nothing precedes the inner brace) and a bare `style="..."` value (no braces). The code takes every innermost `{...}` pair, and a style span with no braces counts as one body.
 The gradient call span is found by balanced parentheses, not by the plan greedy `[^;{}]*`, so one call in a list of backgrounds gets its own span and an old violet call next to a new clean one does not count as new text. Why: the engine keeps a block hit when its span touches new text.
+
+Purple gradient, after the pre-release review (item 6): the plan said "any violet colour in the call", which fired on viridis legends, hue sliders and Discord blurple. Now `is_purple_stock` fires only for 2 or 3 stops with a violet among them: three stops must all be violet family (h 228..=330), two stops need the other end chromatic blue through pink (h 190..=345). Stops are the top-level comma items minus the leading angle/shape/position and bare-percentage hints. A violet next to white, transparent or green no longer fires; this overrides the plan Task 5 test that `var(--brand), white` fires (review ruling). Class-based Tailwind stops are unchanged. Tests that checked var resolution with a `white` partner must use a blue partner or they pass for the wrong reason.
+Linear scan: `gradient_calls` pairs `(` with `)` on one stack pass and clears it at `;`, `{`, `}`; a call over 4096 bytes is dropped so nested calls stay cheap. The plan per-call search to the end of the text took minutes on 1 MiB of unclosed `linear-gradient(`. Both perf tests (unclosed, nested) never finish if the code regresses, so run them under `timeout` and kill the leftover test process in the session container.
