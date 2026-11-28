@@ -728,8 +728,26 @@ fn all_includes_node_modules() {
         .get("skipped")
         .and_then(Value::as_array)
         .expect("skipped");
+    // Each skipped path is repo text, so it sits between the nonce markers.
+    let nonce = by_default
+        .get("triage")
+        .and_then(Value::as_object)
+        .and_then(|t| t.get("nonce"))
+        .and_then(Value::as_str)
+        .expect("nonce");
+    let (open, close) = (
+        format!("<<untrusted-{nonce}>>"),
+        format!("<</untrusted-{nonce}>>"),
+    );
     assert_eq!(
-        skipped.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+        skipped
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|s| s
+                .strip_prefix(open.as_str())
+                .and_then(|r| r.strip_suffix(close.as_str()))
+                .expect("wrapped in the markers"))
+            .collect::<Vec<_>>(),
         ["node_modules/"]
     );
     let files = by_default
