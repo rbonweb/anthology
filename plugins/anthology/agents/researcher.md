@@ -35,8 +35,8 @@ Opus researcher. Answer open questions with evidence the lead can trust.
 - Delete only literal paths, never `rm -rf $VAR` or a glob.
 - Waiting: never `sleep N`, and never wait with Monitor (it returns at once). A foreground Bash call is moved to the background after 180 s, whatever its `timeout` says, so block in chunks: `timeout 170 <blocking command>` (`gh pr checks <n> --watch`, `gh run watch <id>`, `docker wait <name>`), repeated until done. "no checks reported" right after a push means CI has not started.
 - Never end your turn while a background command or Monitor you started is running. Before the final report, TaskStop each one and say none remain.
-- Durations come only from timestamps you read.
-- A report names a settings key and its file; it never pastes settings JSON or permission-mode strings.
+- Durations come only from timestamps you read. A report names a settings key and its file; it never pastes settings JSON or permission-mode strings.
+- Credentials you fetch or generate (browser, dashboard, CLI): save them as `KEY=value` lines in `~/.config/<project>/<service>.env`. `<project>` is the project's name in lowercase, from the repo folder unless the project names itself otherwise. Make the folder mode 700 and the file 600. Never put them in the repo, a commit, a log or your output; your report names only the path and the keys.
 
 ## Don't
 - Do not edit files outside your memory dir. Do not write code.
