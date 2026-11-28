@@ -317,6 +317,24 @@ Things it does not do or does not read:
 
 Left out on purpose for now: lists of typosquatted package names, a checksum table for the Gradle wrapper jar (the check looks at the wrapper's download host and whether a jar is present), SARIF output, and mixed-script identifiers inside code (mixed-script file names are checked).
 
+## Known limits
+
+The check is a static, pattern-based scan. A clean result means no known-bad shape was found, nothing more. These are the gaps to keep in mind before you trust it:
+
+- **Behavior that matches no known shape.** Novel or heavily obfuscated code, a logic bomb, a package name that looks normal but is a typosquat, and code that turns malicious only in a later update all pass unless something else in the repo gives them away.
+- **Dependencies.** The check does not download or read the packages a repo installs. In a folder scan it skips `node_modules/`, unless you pass `--all`. Lockfile oddities, such as another registry host or an `http:` URL, are reported. A malicious package is caught by name only when OSV-Scanner is installed with a local database and the package is already on its known-malicious list.
+- **Code fetched at run time.** A script that downloads its real payload later is flagged only when the download-and-run shape is visible in the repo.
+- **Binaries and compiled files.** These are checked only for a type that does not match the file extension and for known file headers, such as executables and archives. Their behavior is not analyzed.
+- **Triggers it does not read yet.** Gradle build scripts (`build.gradle`, `settings.gradle`, `init.gradle` and their Kotlin forms) run when an IDE imports the project, and only the Gradle wrapper is read. MSBuild files are read for `<Exec>` commands and pre- and post-build events, all rated as build-time, so other task types and targets that an IDE runs on project load are not covered. Editor and tool settings that the `autorun` row of the [group table](#what-it-checks) does not list are not read either.
+- **Optional tools.** gitleaks always reads `.gitleaksignore` from the folder and drops the findings it lists. The check reports that file as LOW but cannot turn this off, so treat the secrets check as incomplete for such a repo. zizmor obeys inline `# zizmor: ignore` comments in workflow files, and no flag turns that off either.
+- **Case and links.** The check matches the names of the files it knows without regard to case. It follows a link only when the link stays inside the folder, such as a `.git` link or a file that another file includes. Other tricks with case-insensitive file systems or links may be missed.
+
+With a clean result:
+
+- Read what the auto-run files run. The `run on open: N` line of the report says how many commands start when you open the folder in an editor or an agent.
+- Open a repo you do not know in a container or a virtual machine.
+- Install dependencies with lifecycle scripts off, for example `npm ci --ignore-scripts`, until you trust the repo.
+
 ## Licenses
 
 The `yara` rules are the threat rules of [GuardDog](https://github.com/DataDog/guarddog) from Datadog, under the Apache-2.0 license. The binary carries its license and notice text. `anthology check-repo --notice` prints them.
