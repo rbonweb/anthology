@@ -300,6 +300,17 @@ fn check_transforms(label: &str, entry: &Entry, errors: &mut Vec<String>) {
                     "{label}: rename-skill needs old and new skill names"
                 ));
             }
+        } else if name.and_then(Value::as_str) == Some("drop-paths") {
+            let ok = matches!(
+                t.get("paths"),
+                Some(Value::Array(items)) if !items.is_empty()
+                    && items.iter().all(|v| safe_relpath(Some(v), false))
+            );
+            if !ok {
+                errors.push(format!(
+                    "{label}: drop-paths needs a non-empty list of paths inside the source"
+                ));
+            }
         }
     }
 }
