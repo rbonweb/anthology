@@ -237,6 +237,7 @@ fn hook_blocks_a_write_with_a_tell() {
     let want = report::hook_message(
         "Write",
         "docs/a.md",
+        Kind::Markdown,
         &anthology_slop::check_all(Kind::Markdown, TELL),
     );
     assert!(want.contains("text.ai-vocab"), "{want}");
@@ -282,6 +283,99 @@ fn hook_blocks_an_edit_and_a_multiedit_with_a_tell() {
     // without replace_all, an old_string found twice does not apply: allowed
     let twice = edit_input(s(&file), "x", "We delve");
     assert_allowed(&fx.hook(&payload("Edit", &twice, &fx.repo)), "ambiguous");
+}
+
+#[test]
+fn hook_allows_an_edit_that_keeps_a_line_with_a_tell() {
+    let fx = Fx::new();
+    let file = fx.repo.join("docs/a.md");
+    let old = "Sync is seamless across devices.\nIt runs nightly.";
+    fx.write(&file, old.as_bytes());
+    let new = "Sync is seamless across devices.\nIt runs hourly.";
+    let edit = edit_input(s(&file), old, new);
+    assert_allowed(&fx.hook(&payload("Edit", &edit, &fx.repo)), "kept line");
+    // a tell on the changed line is still refused
+    let edit = edit_input(
+        s(&file),
+        old,
+        "Sync is seamless across devices.\nIt delves deeper.",
+    );
+    assert_blocked(
+        &fx.hook(&payload("Edit", &edit, &fx.repo)),
+        "Edit",
+        "docs/a.md",
+        "changed line",
+    );
+}
+
+#[test]
+fn hook_allows_a_one_word_fix_on_a_line_with_an_old_tell() {
+    // review-2 I2: one paragraph per line, so the line holds text somebody else wrote
+    let fx = Fx::new();
+    let file = fx.repo.join("docs/a.md");
+    let line = "Our sync is seamless across devices, and it runs nighly at 2 am.";
+    let fixed = line.replace("nighly", "nightly");
+    fx.write(&file, format!("Intro.\n\n{line}\n").as_bytes());
+    let edit = edit_input(s(&file), line, &fixed);
+    assert_allowed(&fx.hook(&payload("Edit", &edit, &fx.repo)), "whole line");
+    let edit = edit_input(s(&file), "runs nighly at", "runs nightly at");
+    assert_allowed(&fx.hook(&payload("Edit", &edit, &fx.repo)), "phrase");
+    let write = write_input(s(&file), &format!("Intro.\n\n{fixed}\n"));
+    assert_allowed(&fx.hook(&payload("Write", &write, &fx.repo)), "write");
+    let item = write_input(s(&file), &format!("Intro.\n\n- {line}\n"));
+    assert_allowed(&fx.hook(&payload("Write", &item, &fx.repo)), "list item");
+    let multi = format!(
+        r#"{{"file_path":{},"edits":[{{"old_string":"nighly","new_string":"nightly"}}]}}"#,
+        p(&file)
+    );
+    assert_allowed(
+        &fx.hook(&payload("MultiEdit", &multi, &fx.repo)),
+        "multiedit",
+    );
+    // a tell that the edit itself adds is refused, on the same line
+    let edit = edit_input(
+        s(&file),
+        line,
+        "Our sync is seamless across devices, and it runs nightly at 2 am. It delves deeper.",
+    );
+    assert_blocked(
+        &fx.hook(&payload("Edit", &edit, &fx.repo)),
+        "Edit",
+        "docs/a.md",
+        "added tell",
+    );
+    fx.write(&file, b"Intro.\n\nOur sync is quick across devices.\n");
+    let edit = edit_input(s(&file), "is quick", "is seamless");
+    assert_blocked(
+        &fx.hook(&payload("Edit", &edit, &fx.repo)),
+        "Edit",
+        "docs/a.md",
+        "swapped in tell",
+    );
+}
+
+#[test]
+fn hook_message_shows_the_waiver_syntax_of_the_file_kind() {
+    let fx = Fx::new();
+    let content = "export const A = () => <p>We delve into it.</p>;\n";
+    let jsx = fx.repo.join("src/a.tsx");
+    let run = fx.hook(&payload("Write", &write_input(s(&jsx), content), &fx.repo));
+    assert_blocked(&run, "Write", "src/a.tsx", "jsx");
+    assert!(
+        run.stderr
+            .contains("Add {/* slop-ok: <rule> <reason> */} only"),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("<!--"), "{}", run.stderr);
+    let md = fx.repo.join("docs/a.md");
+    let run = fx.hook(&payload("Write", &write_input(s(&md), TELL), &fx.repo));
+    assert!(
+        run.stderr
+            .contains("Add <!-- slop-ok: <rule> <reason> --> only"),
+        "{}",
+        run.stderr
+    );
 }
 
 #[test]
@@ -533,11 +627,19 @@ fn hook_skips_exempt_paths() {
         "node_modules/p/README.md",
         "vendor/lib/a.md",
         "docs/fixtures/a.md",
+        "pkg/testdata/a.md",
+        "src/__mocks__/a.md",
+        "LICENSE.md",
+        "docs/Code_of_Conduct.md",
     ] {
         let file = fx.repo.join(rel);
         let run = fx.hook(&payload("Write", &write_input(s(&file), TELL), &fx.repo));
         assert_allowed(&run, rel);
     }
+    // a name that only holds the word is gated
+    let file = fx.repo.join("docs/licensing.md");
+    let run = fx.hook(&payload("Write", &write_input(s(&file), TELL), &fx.repo));
+    assert_blocked(&run, "Write", "docs/licensing.md", "licensing");
     // the Claude config folder, from CLAUDE_CONFIG_DIR. It is a repo of its own, as many are,
     // so no folder name below its root makes the file exempt: only the config-folder rule does.
     std::fs::create_dir_all(fx.config.join(".git")).unwrap();
@@ -632,10 +734,49 @@ fn check_reports_findings_and_exits_1() {
         run.stdout,
         format!("{}{}", line("README.md", TELL2), line("docs/a.md", TELL))
     );
-    // an absolute path
+    // an absolute path, from a folder above the repo: shown relative to that folder (the cwd)
     let run = fx.check(&[s(&fx.repo.join("docs/a.md"))], &fx.base);
     assert_eq!(run.code, 1, "{}", run.stderr);
-    assert_eq!(run.stdout, line("docs/a.md", TELL));
+    assert_eq!(run.stdout, line("repo/docs/a.md", TELL));
+}
+
+#[test]
+fn check_skips_nested_clones_and_shows_paths_from_the_root() {
+    // review-2 M8: `check .` walked an ignored clone and showed its files from the clone's root
+    let fx = Fx::new();
+    fx.write(&fx.repo.join("docs/a.md"), TELL.as_bytes());
+    fx.write(
+        &fx.repo.join(".vendor-cache/lib/README.md"),
+        TELL.as_bytes(),
+    );
+    std::fs::create_dir_all(fx.repo.join(".vendor-cache/lib/.git")).unwrap();
+    let line = |shown: &str| {
+        let f = anthology_slop::check_all(Kind::Markdown, TELL);
+        format!("{}\n", report::check_line(shown, &f[0]))
+    };
+    let run = fx.check(&["."], &fx.repo);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(run.stdout, line("docs/a.md"));
+    // a folder that holds a `.git` file (a submodule, a worktree) is not a clone: it is walked
+    fx.write(
+        &fx.repo.join("docs/theme/.git"),
+        b"gitdir: ../../.git/modules/theme\n",
+    );
+    fx.write(&fx.repo.join("docs/theme/b.md"), TELL.as_bytes());
+    let run = fx.check(&["docs"], &fx.repo);
+    assert_eq!(
+        run.stdout,
+        format!("{}{}", line("docs/a.md"), line("docs/theme/b.md"))
+    );
+    // named on the command line, the clone is checked, and shown from the cwd, not its own root
+    let run = fx.check(&[".vendor-cache/lib"], &fx.repo);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(run.stdout, line(".vendor-cache/lib/README.md"));
+    let run = fx.check(
+        &["--root", s(&fx.repo), ".vendor-cache/lib/README.md"],
+        &fx.base,
+    );
+    assert_eq!(run.stdout, line(".vendor-cache/lib/README.md"));
 }
 
 #[test]

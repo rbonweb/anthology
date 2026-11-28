@@ -1233,20 +1233,43 @@ pub fn parser(env: &Env) -> Spec {
             .store_true()
             .help("machine-readable output")
     };
-    let mut save = Spec::command().allow_abbrev(false).mutex(
-        true,
-        vec![
-            Arg::option(&["--agent"]).help("save into this agent's folder"),
-            Arg::option(&["--repo"])
-                .store_true()
-                .help("save into the repo's own memory (.claude/memory); never a user note"),
-        ],
-    );
-    for flag in ["type", "slug", "name", "description"] {
-        let option = format!("--{flag}");
-        save = save.arg(Arg::option(&[option.as_str()]).required());
-    }
-    save = save
+    let save = Spec::command()
+        .allow_abbrev(false)
+        .description(&format!(
+            "Save a note. Required: --type, --name, --description, --agent or --repo, and \
+             --body or --body-file. --slug is optional: it defaults to the --name in lowercase, \
+             with each run of other characters turned into a single dash, cut to {} characters. \
+             Give --slug yourself when the name has no ASCII letter or digit.",
+            save::DERIVED_SLUG_CHARS
+        ))
+        .mutex(
+            true,
+            vec![
+                Arg::option(&["--agent"]).help("save into this agent's folder"),
+                Arg::option(&["--repo"])
+                    .store_true()
+                    .help("save into the repo's own memory (.claude/memory); never a user note"),
+            ],
+        )
+        .arg(
+            Arg::option(&["--type"])
+                .required()
+                .help("the note type (required)"),
+        )
+        .arg(Arg::option(&["--slug"]).help(
+            "the file-name part of the note, lowercase words joined by dashes (optional; \
+                 defaults to the --name)",
+        ))
+        .arg(
+            Arg::option(&["--name"])
+                .required()
+                .help("the note's title (required)"),
+        )
+        .arg(
+            Arg::option(&["--description"])
+                .required()
+                .help("one line saying what the note holds (required)"),
+        )
         .mutex(
             true,
             vec![
@@ -1561,6 +1584,22 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
     if p.flag("repo") && refuse_home_repo(&root, env, &mut out) {
         return out.done(1);
     }
+    // An explicit `--slug` is used as given (even an empty one, which `save` refuses); without
+    // one the slug comes from the name.
+    let slug = match p.os_str("slug") {
+        Some(_) => arg_str(p, "slug"),
+        None => {
+            let derived = save::slug_from_name(&arg_str(p, "name"));
+            if derived.is_empty() {
+                out.err(
+                    "anthology-mem: cannot derive a slug from the name (it has no ASCII letters \
+                     or digits); pass --slug",
+                );
+                return out.done(1);
+            }
+            derived
+        }
+    };
     let body = match p.os_str("body_file") {
         Some(arg) => match read_body_file(arg, &cwd, &root, env) {
             Ok(text) => text,
@@ -1575,7 +1614,7 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
         save::save_repo_note_with(
             &root,
             &arg_str(p, "type"),
-            &arg_str(p, "slug"),
+            &slug,
             &arg_str(p, "name"),
             &arg_str(p, "description"),
             &body,
@@ -1589,7 +1628,7 @@ fn run_save(p: &argparse::Parsed, env: &Env, deps: &MemDeps) -> Output {
             &root,
             &arg_str(p, "agent"),
             &arg_str(p, "type"),
-            &arg_str(p, "slug"),
+            &slug,
             &arg_str(p, "name"),
             &arg_str(p, "description"),
             &body,

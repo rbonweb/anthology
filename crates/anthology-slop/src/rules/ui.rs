@@ -5,14 +5,21 @@
 //! a tell and not a matter of taste.
 
 use super::color::{Rgba, colors_in, is_blue_to_pink, is_violet, is_violet_family};
-use crate::{Hit, Span, View, excerpt};
+use crate::{Hit, MASK, Span, View, excerpt};
 use regex::Regex;
-use std::collections::HashMap;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
-/// Custom properties resolve at most this many links deep, and never past this many bytes.
+/// Custom properties resolve at most this many links deep, and one resolved value is never longer
+/// than this many bytes.
 const MAX_VAR_DEPTH: usize = 6;
 const MAX_RESOLVED: usize = 1 << 16;
+/// A name keeps at most this many distinct values (a light and a dark theme are two).
+const MAX_VALUES: usize = 4;
+/// All the bytes that resolving the variables of one file may build, so a file of many gradients
+/// that each use a long variable costs a fixed amount of work. A call past it is let through.
+const MAX_EXPANDED: usize = 1 << 22;
 /// A gradient call longer than this many bytes is not read: no real one is, and a long one that
 /// holds other calls (nested to any depth) would make the work grow with the square of the text.
 const MAX_CALL: usize = 4096;
@@ -70,14 +77,21 @@ static BLUR_UTILITY: LazyLock<Regex> =
 static OUT_OF_FLOW: LazyLock<Regex> =
     LazyLock::new(|| re(r"\b(?:absolute|fixed)\b|(?:^|[^\w-])-z-10\b"));
 
+/// A stock component tag (group 1 is its name), or an import path into a copied magicui or
+/// aceternity folder.
 static EFFECT_LIBRARY: LazyLock<Regex> = LazyLock::new(|| {
     re(concat!(
-        r"<(?:Spotlight|BackgroundBeams|BackgroundBeamsWithCollision|AnimatedBeam|ShimmerButton|NumberTicker|BorderBeam|",
+        r"<(Spotlight|BackgroundBeams|BackgroundBeamsWithCollision|AnimatedBeam|ShimmerButton|NumberTicker|BorderBeam|",
         r"Meteors|SparklesCore|LampContainer|AuroraBackground|RetroGrid|OrbitingCircles|TextGenerateEffect|TypewriterEffect|HeroHighlight|",
         r"WavyBackground|InfiniteMovingCards|MagicCard|NeonGradientCard|ShineBorder|AnimatedGradientText|RainbowButton|FlipWords|",
         r"HoverBorderGradient|MovingBorder|GlowingEffect)\b|components/(?:magicui|aceternity)/"
     ))
 });
+/// `import <clause> from "<source>"`, with the clause (group 1) and the source (group 2).
+static IMPORT: LazyLock<Regex> =
+    LazyLock::new(|| re(r#"\bimport\s+([^;'"]*?)\s*\bfrom\s*["']([^"']+)["']"#));
+/// An import source that is the effect kit itself.
+static EFFECT_SOURCE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)magic-?ui|aceternity"));
 static PLACEHOLDER_MEDIA: LazyLock<Regex> = LazyLock::new(|| {
     re(concat!(
         r"(?i)\b(?:api\.dicebear\.com|i\.pravatar\.cc|ui-avatars\.com|robohash\.org|randomuser\.me/api/portraits|",
@@ -90,16 +104,25 @@ static PLACEHOLDER_TEXT: LazyLock<Regex> = LazyLock::new(|| {
         r"\[(?:your\s+|company\s+|brand\s+|business\s+|product\s+)?(?:company|brand|business|product)\s+name\]|\[insert\b"
     ))
 });
-static FIVE_STARS: LazyLock<Regex> = LazyLock::new(|| {
-    re(concat!(
-        r"★{5}|(?:<Star(?:Icon)?\b[^>]*/>\s*){5}|",
-        r"(?:\[\.\.\.Array\(5\)\]|Array\.from\(\{\s*length\s*:\s*5\s*\}\)|Array\(5\)\.fill\([^)]*\))[\s\S]{0,200}?(?:<Star|★)"
-    ))
+/// Five stars written out.
+static FIVE_STARS: LazyLock<Regex> =
+    LazyLock::new(|| re(r"★{5}|(?:<Star(?:Icon)?\b[^>]*/>\s*){5}"));
+/// An array of five, the start of a star row built with `map`.
+static STAR_ARRAY: LazyLock<Regex> = LazyLock::new(|| {
+    re(r"\[\.\.\.Array\(5\)\]|Array\.from\(\{\s*length\s*:\s*5\s*\}\)|Array\(5\)\.fill\([^)]*\)")
 });
+static STAR_ITEM: LazyLock<Regex> = LazyLock::new(|| re(r"<Star(?:Icon)?\b|★"));
+/// A JSX attribute with an expression value: its name (group 1) and the start of the expression
+/// (group 2, up to the first closing brace).
+static EXPRESSION_PROP: LazyLock<Regex> = LazyLock::new(|| re(r"([\w-]+)\s*=\s*\{\s*([^}]*)"));
+/// An expression that holds no data: a number, a boolean, `null` or a plain string.
+static LITERAL: LazyLock<Regex> =
+    LazyLock::new(|| re(r#"^(?:[-+]?[\d.]+|true|false|null|"[^"]*"|'[^']*'|`[^`$]*`)\s*$"#));
+/// A generator name, or (group 1) the generator meta tag.
 static GENERATOR: LazyLock<Regex> = LazyLock::new(|| {
     re(concat!(
         r#"(?i)lovable-tagger|gpt-?engineer|\bv0\.dev\b|\bbolt\.new\b|"#,
-        r#"name=["']generator["'][^>]*content=["'](?:v0|lovable|bolt)"#
+        r#"(name=["']generator["'][^>]*content=["'](?:v0|lovable|bolt))"#
     ))
 });
 
@@ -111,14 +134,18 @@ pub(crate) fn purple_gradient(view: &View) -> Vec<Hit> {
             calls.push((shift(base, start, end), &css[open + 1..end - 1]));
         }
     }
-    let vars = if calls.iter().any(|(_, arg)| arg.contains("var(")) {
-        custom_properties(&view.code)
-    } else {
-        HashMap::new()
-    };
+    let uses_vars = calls.iter().any(|(_, arg)| arg.contains("var("));
+    let mut vars = Vars::new(if uses_vars { &view.code } else { "" });
     let mut hits: Vec<Hit> = calls
         .into_iter()
-        .filter(|(_, arg)| is_purple_stock(&stops(&resolve(arg, &vars))))
+        .filter(|(_, arg)| {
+            let resolved = if arg.contains("var(") {
+                vars.expand(arg, MAX_VAR_DEPTH).map(Cow::Owned)
+            } else {
+                Some(Cow::Borrowed(*arg))
+            };
+            resolved.is_some_and(|text| is_purple_stock(&stops(&text)))
+        })
         .map(|(span, _)| hit(ID, &view.code, span, Vec::new()))
         .collect();
     hits.extend(class_hits(view, ID, |v| {
@@ -181,8 +208,23 @@ pub(crate) fn glow_orb(view: &View) -> Vec<Hit> {
     hits
 }
 
+/// A stock component tag is a tell unless the file imports that name from somewhere that is not the
+/// effect kit: the name is then a library's or the project's own (`@mantine/spotlight`).
 pub(crate) fn effect_library(view: &View) -> Vec<Hit> {
-    find_all(&EFFECT_LIBRARY, &view.code, "ui.effect-library")
+    let foreign = foreign_imports(&view.code);
+    EFFECT_LIBRARY
+        .captures_iter(&view.code)
+        .filter(|c| !c.get(1).is_some_and(|name| foreign.contains(name.as_str())))
+        .filter_map(|c| c.get(0))
+        .map(|m| {
+            hit(
+                "ui.effect-library",
+                &view.code,
+                shift(0, m.start(), m.end()),
+                Vec::new(),
+            )
+        })
+        .collect()
 }
 
 pub(crate) fn placeholder_media(view: &View) -> Vec<Hit> {
@@ -193,12 +235,123 @@ pub(crate) fn placeholder_text(view: &View) -> Vec<Hit> {
     find_all(&PLACEHOLDER_TEXT, &view.text, "ui.placeholder-text")
 }
 
+/// Five stars written out, or an array of five mapped to stars whose props are all fixed. A star
+/// that takes a prop computed in the callback (`filled={i < value}`) is a rating widget.
 pub(crate) fn five_star_row(view: &View) -> Vec<Hit> {
-    find_all(&FIVE_STARS, &view.code, "ui.five-star-row")
+    const ID: &str = "ui.five-star-row";
+    let code = &view.code;
+    let mut hits = find_all(&FIVE_STARS, code, ID);
+    for source in STAR_ARRAY.find_iter(code) {
+        let after = source.end();
+        let window = prefix(&code[after..], 200);
+        let Some(star) = STAR_ITEM.find(window) else {
+            continue;
+        };
+        let item_end = after + star.end();
+        let callback_end = if star.as_str().starts_with('<') {
+            tag_end(code, item_end)
+        } else {
+            item_end
+        };
+        if takes_data(&code[after..callback_end]) {
+            continue;
+        }
+        hits.push(hit(
+            ID,
+            code,
+            shift(0, source.start(), item_end),
+            Vec::new(),
+        ));
+    }
+    // In document order and without overlaps, as one search over the text would give them.
+    hits.sort_by_key(|h| h.span.start);
+    let mut last_end = 0;
+    hits.retain(|h| {
+        let keep = h.span.start >= last_end;
+        if keep {
+            last_end = h.span.end;
+        }
+        keep
+    });
+    hits
 }
 
+/// A generator name is a tell in code, in an attribute and in the generator meta tag, not in the
+/// words of a page (`We compared v0.dev and bolt.new`): a match on prose is let through.
 pub(crate) fn generator_signature(view: &View) -> Vec<Hit> {
-    find_all(&GENERATOR, &view.code, "ui.generator-signature")
+    let in_prose = |at: usize| view.text.as_bytes().get(at).is_some_and(|&b| b != MASK);
+    GENERATOR
+        .captures_iter(&view.code)
+        .filter_map(|c| c.get(0).map(|m| (m, c.get(1).is_some())))
+        .filter(|(m, meta)| *meta || !in_prose(m.start()))
+        .map(|(m, _)| {
+            hit(
+                "ui.generator-signature",
+                &view.code,
+                shift(0, m.start(), m.end()),
+                Vec::new(),
+            )
+        })
+        .collect()
+}
+
+/// The local names the file imports from a source that is not the effect kit.
+fn foreign_imports(code: &str) -> HashSet<&str> {
+    let mut names = HashSet::new();
+    for c in IMPORT.captures_iter(code) {
+        let (Some(clause), Some(source)) = (c.get(1), c.get(2)) else {
+            continue;
+        };
+        if EFFECT_SOURCE.is_match(source.as_str()) {
+            continue;
+        }
+        for part in clause.as_str().split([',', '{', '}']) {
+            let part = part.trim();
+            let part = part.strip_prefix("type ").unwrap_or(part);
+            let local = part.rsplit(" as ").next().unwrap_or(part).trim();
+            if !local.is_empty()
+                && local
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'$')
+            {
+                names.insert(local);
+            }
+        }
+    }
+    names
+}
+
+/// `s` cut to at most `max` bytes, on a character boundary.
+fn prefix(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// The byte after the `>` that closes the tag whose name ends at `from`; braces nest, so a `>` in
+/// an expression does not close it. A tag that does not close within 400 bytes ends there.
+fn tag_end(code: &str, from: usize) -> usize {
+    let rest = prefix(&code[from..], 400);
+    let mut depth = 0usize;
+    for (i, b) in rest.bytes().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b'>' if depth == 0 => return from + i + 1,
+            _ => {}
+        }
+    }
+    from + rest.len()
+}
+
+/// Whether the callback text sets an attribute from an expression other than `key` and a plain
+/// value: `filled={i < value}`, `className={cn(...)}`, `onClick={...}`.
+fn takes_data(callback: &str) -> bool {
+    EXPRESSION_PROP
+        .captures_iter(callback)
+        .any(|c| &c[1] != "key" && !LITERAL.is_match(&c[2]))
 }
 
 /// A hit on `span` of `doc`; its excerpt is the text of the span.
@@ -373,40 +526,101 @@ fn is_purple_stock(stops: &[Vec<Rgba>]) -> bool {
         }
 }
 
-/// Every `--name: value` declaration in `code`. A name declared twice (a light and a dark theme)
-/// keeps both values.
-fn custom_properties(code: &str) -> HashMap<&str, Vec<&str>> {
-    let mut vars: HashMap<&str, Vec<&str>> = HashMap::new();
-    for c in VAR_DECL.captures_iter(code) {
-        if let (Some(name), Some(value)) = (c.get(1), c.get(2)) {
-            vars.entry(name.as_str())
-                .or_default()
-                .push(value.as_str().trim());
-        }
-    }
-    vars
+/// The custom properties of one document, each resolved once.
+///
+/// A name keeps up to `MAX_VALUES` distinct declared values (a light and a dark theme are two). A
+/// value resolves to its text with every `var(--x)` replaced by the resolved values of `--x`, one
+/// more level for each link, up to `MAX_VAR_DEPTH`; the result for a (name, depth) is kept, so the
+/// work does not grow with the number of uses. A value that grows past `MAX_RESOLVED`, or work that
+/// passes `MAX_EXPANDED` bytes in all, gives `None` and the call is not read (it is let through).
+struct Vars<'a> {
+    declared: HashMap<&'a str, Vec<&'a str>>,
+    resolved: HashMap<(&'a str, usize), Option<String>>,
+    spent: usize,
 }
 
-/// `arg` with each `var(--x)` replaced by every value declared for `--x`, up to `MAX_VAR_DEPTH`
-/// links deep. A variable with no declaration stays, so its fallback colour is still read.
-fn resolve(arg: &str, vars: &HashMap<&str, Vec<&str>>) -> String {
-    let mut text = arg.to_string();
-    for _ in 0..MAX_VAR_DEPTH {
-        if vars.is_empty() || text.len() > MAX_RESOLVED || !text.contains("var(") {
-            break;
+impl<'a> Vars<'a> {
+    /// Every `--name: value` declaration in `code`.
+    fn new(code: &'a str) -> Self {
+        let mut declared: HashMap<&str, Vec<&str>> = HashMap::new();
+        for c in VAR_DECL.captures_iter(code) {
+            if let (Some(name), Some(value)) = (c.get(1), c.get(2)) {
+                let value = value.as_str().trim();
+                let values = declared.entry(name.as_str()).or_default();
+                if values.len() < MAX_VALUES && !values.contains(&value) {
+                    values.push(value);
+                }
+            }
         }
-        let next = VAR_USE
-            .replace_all(&text, |c: &regex::Captures| match vars.get(&c[1]) {
-                Some(values) => values.join(" "),
-                None => c[0].to_string(),
-            })
-            .into_owned();
-        if next == text {
-            break;
+        Vars {
+            declared,
+            resolved: HashMap::new(),
+            spent: 0,
         }
-        text = next;
     }
-    text
+
+    /// `text` with each `var(--x)` replaced by what `--x` resolves to, `depth` links deep. A
+    /// variable with no declaration stays, so its fallback colour is still read.
+    fn expand(&mut self, text: &str, depth: usize) -> Option<String> {
+        if text.len() > MAX_RESOLVED {
+            return None;
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut from = 0;
+        for c in VAR_USE.captures_iter(text) {
+            let Some(whole) = c.get(0) else { continue };
+            self.push(&mut out, &text[from..whole.start()])?;
+            from = whole.end();
+            let declared = self.declared.get_key_value(&c[1]).map(|(name, _)| *name);
+            match declared {
+                Some(name) if depth > 0 => {
+                    let value = self.property(name, depth - 1)?;
+                    self.push(&mut out, &value)?;
+                }
+                _ => self.push(&mut out, whole.as_str())?,
+            }
+        }
+        self.push(&mut out, &text[from..])?;
+        Some(out)
+    }
+
+    /// The values of `--name` joined, each with `depth` links left to resolve.
+    fn property(&mut self, name: &'a str, depth: usize) -> Option<String> {
+        if let Some(done) = self.resolved.get(&(name, depth)) {
+            return done.clone();
+        }
+        let values = self.declared.get(name).cloned().unwrap_or_default();
+        let mut joined = String::new();
+        let mut result = Some(());
+        for value in values {
+            match self.expand(value, depth) {
+                Some(text) => {
+                    joined.push_str(&text);
+                    joined.push(' ');
+                }
+                None => {
+                    result = None;
+                    break;
+                }
+            }
+        }
+        let result = result
+            .map(|()| joined.trim_end().to_string())
+            .filter(|text| text.len() <= MAX_RESOLVED);
+        self.resolved.insert((name, depth), result.clone());
+        result
+    }
+
+    /// Appends `piece` to `out` and counts its bytes; `None` when `out` would pass `MAX_RESOLVED`
+    /// or the document has used up `MAX_EXPANDED`.
+    fn push(&mut self, out: &mut String, piece: &str) -> Option<()> {
+        self.spent += piece.len();
+        if self.spent > MAX_EXPANDED || out.len() + piece.len() > MAX_RESOLVED {
+            return None;
+        }
+        out.push_str(piece);
+        Some(())
+    }
 }
 
 #[cfg(test)]
@@ -442,6 +656,16 @@ mod tests {
             text: masked,
             ..View::plain(doc)
         }
+    }
+
+    /// The view the engine builds for `doc` of `kind`, with its real text, code and attribute masks.
+    fn real(kind: crate::Kind, doc: &str) -> View {
+        crate::mask::view(kind, doc)
+    }
+
+    /// A debug build is much slower than a release one, so the limit is looser there.
+    fn time_limit() -> std::time::Duration {
+        std::time::Duration::from_secs(if cfg!(debug_assertions) { 10 } else { 2 })
     }
 
     fn seen<'a>(doc: &'a str, hits: &[Hit]) -> Vec<&'a str> {
@@ -615,6 +839,73 @@ mod tests {
             1,
             "only the innermost call is a gradient of two stops"
         );
+    }
+
+    #[test]
+    fn one_variable_declared_and_used_many_times_resolves_in_linear_time() {
+        // About 1 MiB: 15 000 declarations of `--c`, each used by a gradient with two stops.
+        let doc = ":root{--c:#6366f1}\n.a{background:linear-gradient(var(--c),var(--c))}\n"
+            .repeat(15_000);
+        let start = std::time::Instant::now();
+        let hits = purple_gradient(&css(&doc));
+        let took = start.elapsed();
+        assert!(took < time_limit(), "{} bytes took {took:?}", doc.len());
+        assert_eq!(hits.len(), 15_000, "every violet pair is still found");
+    }
+
+    #[test]
+    fn a_variable_with_many_different_values_resolves_in_linear_time() {
+        // 80 000 different declarations of one name, then a few uses.
+        let mut doc: String = (0..80_000)
+            .map(|i| format!(":root{{--c:#{:06x}}}\n", 0x63_6600 + i))
+            .collect();
+        doc.push_str(&".a{background:linear-gradient(var(--c),var(--c))}\n".repeat(2_000));
+        let start = std::time::Instant::now();
+        purple_gradient(&css(&doc));
+        let took = start.elapsed();
+        assert!(took < time_limit(), "{} bytes took {took:?}", doc.len());
+    }
+
+    #[test]
+    fn a_huge_variable_used_by_many_gradients_is_skipped_in_linear_time() {
+        let doc = format!(
+            ":root{{--c:{}}}\n{}",
+            "#6366f1,".repeat(40_000),
+            ".a{background:linear-gradient(var(--c))}\n".repeat(15_000)
+        );
+        let start = std::time::Instant::now();
+        let hits = purple_gradient(&css(&doc));
+        let took = start.elapsed();
+        assert!(took < time_limit(), "{} bytes took {took:?}", doc.len());
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn a_value_past_the_byte_cap_is_not_read() {
+        // Two violet stops 70 000 spaces apart: past `MAX_RESOLVED`, so the call is let through.
+        let padded = format!(
+            ":root{{--c:#6366f1,{}#a855f7}}\n.a{{background:linear-gradient(var(--c))}}",
+            " ".repeat(70_000)
+        );
+        assert!(purple_gradient(&css(&padded)).is_empty());
+        let short = ":root{--c:#6366f1,#a855f7}\n.a{background:linear-gradient(var(--c))}";
+        assert_eq!(purple_gradient(&css(short)).len(), 1);
+    }
+
+    #[test]
+    fn the_bytes_expanded_in_one_file_are_capped() {
+        // Each call expands to about 60 KB, so the shared budget ends the work after a few dozen.
+        let doc = format!(
+            ":root{{--c:#6366f1,{}#a855f7}}\n{}",
+            " ".repeat(60_000),
+            ".a{background:linear-gradient(var(--c))}\n".repeat(5_000)
+        );
+        let start = std::time::Instant::now();
+        let hits = purple_gradient(&css(&doc));
+        let took = start.elapsed();
+        assert!(took < time_limit(), "{} bytes took {took:?}", doc.len());
+        assert!(!hits.is_empty(), "the calls before the cap are read");
+        assert!(hits.len() < 5_000, "the calls past the cap are let through");
     }
 
     #[test]
@@ -858,6 +1149,100 @@ mod tests {
     }
 
     #[test]
+    fn a_library_or_own_component_with_a_stock_name_is_not_an_effect_library() {
+        for doc in [
+            "import { Spotlight } from \"@mantine/spotlight\";\nexport const A = () => <Spotlight actions={actions} />;",
+            "import { NumberTicker } from \"./stats/NumberTicker\";\nexport const A = () => <NumberTicker value={3} />;",
+            "import Meteors from '../Meteors';\nexport const A = () => <Meteors />;",
+            "import { Foo as Spotlight, Bar } from \"./x\";\nexport const A = () => <Spotlight />;",
+            "import type { X } from \"y\";\nimport {\n  A,\n  BorderBeam,\n} from \"@acme/fx\";\nexport const A = () => <BorderBeam />;",
+            "import * as Fx from \"./fx\";\nimport RetroGrid, { Other } from \"./grid\";\nexport const A = () => <RetroGrid />;",
+        ] {
+            assert!(
+                effect_library(&real(crate::Kind::Jsx, doc)).is_empty(),
+                "{doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_effect_component_from_magicui_or_aceternity_is_still_flagged() {
+        for (doc, hits) in [
+            // The import path and the tag.
+            (
+                "import { Spotlight } from \"@/components/aceternity/spotlight\";\n<Spotlight />",
+                2,
+            ),
+            (
+                "import { ShimmerButton } from \"@magicui/shimmer-button\";\n<ShimmerButton />",
+                1,
+            ),
+            ("import { Meteors } from \"aceternity-ui\";\n<Meteors />", 1),
+            // No import in the file: the name alone is read as before.
+            (
+                "export const B = () => <ShimmerButton>Go</ShimmerButton>;",
+                1,
+            ),
+            // Another name from a library does not clear a stock one.
+            (
+                "import { Spotlight } from \"@mantine/spotlight\";\n<Spotlight />\n<Meteors />",
+                1,
+            ),
+        ] {
+            assert_eq!(
+                effect_library(&real(crate::Kind::Jsx, doc)).len(),
+                hits,
+                "{doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn imports_are_read_in_linear_time() {
+        for unit in ["import ", "import x from \"a\";\n", "import {"] {
+            let doc = unit.repeat((1 << 20) / unit.len());
+            let start = std::time::Instant::now();
+            effect_library(&real(crate::Kind::Jsx, &doc));
+            let took = start.elapsed();
+            assert!(took < time_limit(), "1 MiB of {unit:?} took {took:?}");
+        }
+    }
+
+    #[test]
+    fn a_rating_widget_that_takes_its_value_is_not_a_five_star_row() {
+        for doc in [
+            "<div>{[...Array(5)].map((_, i) => <Star key={i} filled={i < v} />)}</div>",
+            "<div>{Array(5).fill(0).map((_, i) => <Star key={i} filled={i < v} />)}</div>",
+            "{Array.from({ length: 5 }).map((_, i) => <StarIcon key={i} active={i <= rating} />)}",
+            "{[...Array(5)].map((_, i) => <Star key={i} className={cn({ on: i < value })} />)}",
+            "{[...Array(5)].map((_, i) => <span key={i} className={i < value ? 'on' : 'off'}>★</span>)}",
+            "{[...Array(5)].map((_, i) => <Star key={i} onClick={() => set(i + 1)} />)}",
+        ] {
+            assert!(
+                five_star_row(&real(crate::Kind::Jsx, doc)).is_empty(),
+                "{doc}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hard_coded_star_row_is_flagged_whatever_its_static_props() {
+        for doc in [
+            "{[...Array(5)].map((_, i) => <Star key={i} className=\"h-4 w-4\" size={16} />)}",
+            "{[...Array(5)].map((_, i) => <Star key={i} filled />)}",
+            "{[...Array(5)].map((_, i) => <StarIcon key={i} filled={true} color={'gold'} />)}",
+            "{Array(5).fill(0).map((_, i) => <span key={i} className=\"star\">★</span>)}",
+            "<div><Star filled /><Star filled /><Star filled /><Star filled /><Star filled /></div>",
+        ] {
+            assert_eq!(
+                five_star_row(&real(crate::Kind::Jsx, doc)).len(),
+                1,
+                "{doc}"
+            );
+        }
+    }
+
+    #[test]
     fn placeholder_image_services_are_flagged() {
         let doc = r#"<img src="https://i.pravatar.cc/150?img=3" alt="Ana">"#;
         let hits = placeholder_media(&View::plain(doc));
@@ -945,27 +1330,61 @@ mod tests {
 
     #[test]
     fn a_generator_signature_is_flagged() {
+        use crate::Kind::{Html, Jsx};
         let doc = r#"import { componentTagger } from "lovable-tagger";"#;
-        let hits = generator_signature(&View::plain(doc));
+        let hits = generator_signature(&real(Jsx, doc));
         assert_eq!(seen(doc, &hits), ["lovable-tagger"]);
         assert_eq!(hits[0].rule, "ui.generator-signature");
-        for doc in [
-            r#"<meta name="generator" content="v0">"#,
-            r#"<meta name='generator' content='Lovable'>"#,
-            r#"<script src="https://cdn.gptengineer.app/x.js"></script>"#,
-            r#"<a href="https://v0.dev/t/abc">made with v0.dev</a>"#,
-            r#"<a href="https://bolt.new/~/x">"#,
-            r#""gpt-engineer": "1.0""#,
+        for (kind, doc) in [
+            (Html, r#"<meta name="generator" content="v0">"#),
+            (Html, r#"<meta name='generator' content='Lovable'>"#),
+            (
+                Html,
+                r#"<script src="https://cdn.gptengineer.app/x.js"></script>"#,
+            ),
+            (Html, r#"<a href="https://v0.dev/t/abc">link</a>"#),
+            (Html, r#"<a href="https://bolt.new/~/x">"#),
+            (Jsx, r#"const pkg = { "gpt-engineer": "1.0" };"#),
+            (Jsx, r#"<a href="https://v0.dev/t/abc">link</a>"#),
         ] {
-            assert!(!generator_signature(&View::plain(doc)).is_empty(), "{doc}");
+            assert!(!generator_signature(&real(kind, doc)).is_empty(), "{doc}");
         }
-        for doc in [
-            r#"<meta name="generator" content="Hugo 0.120">"#,
-            "version v0.1 of the dev kit",
-            "the bolt news",
+        for (kind, doc) in [
+            (Html, r#"<meta name="generator" content="Hugo 0.120">"#),
+            (Html, "<p>version v0.1 of the dev kit</p>"),
+            (Html, "<p>the bolt news</p>"),
         ] {
-            assert!(generator_signature(&View::plain(doc)).is_empty(), "{doc}");
+            assert!(generator_signature(&real(kind, doc)).is_empty(), "{doc}");
         }
+    }
+
+    #[test]
+    fn a_generator_name_in_visible_text_is_not_a_signature() {
+        use crate::Kind::{Html, Jsx};
+        for (kind, doc) in [
+            (
+                Html,
+                "<p>We compared v0.dev, bolt.new and Lovable for a week.</p>",
+            ),
+            (Html, "<li>Built with v0.dev</li>"),
+            (Html, r#"<img alt="a screenshot of bolt.new" src="a.png">"#),
+            (
+                Jsx,
+                "export const A = () => <p>We compared v0.dev and bolt.new.</p>;",
+            ),
+        ] {
+            assert!(generator_signature(&real(kind, doc)).is_empty(), "{doc}");
+        }
+        // The same words in an attribute or a script stay a signature, next to the prose.
+        let doc = r#"<p>We tried v0.dev.</p><a href="https://v0.dev/t/abc">x</a>"#;
+        let hits = generator_signature(&real(Html, doc));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].span.start,
+            doc.find("https://").unwrap() + "https://".len()
+        );
+        let script = "<p>bolt.new</p><script>import 'lovable-tagger';</script>";
+        assert_eq!(generator_signature(&real(Html, script)).len(), 1);
     }
 
     #[test]

@@ -196,6 +196,85 @@ test('test evidence is a test word, and "not run" or "skipped" in any order is n
   }
 })
 
+test('the reported wording, hash checks and live downloads that verified the result, is test evidence', async ($, on) => {
+  engine(on)
+  const line = 'hash checks matched the pinned sha256 for every asset, and live downloads of each URL verified the result.'
+  expect((await $.agent.report(report(withVerification(line)))).text).toBe(withVerification(line))
+})
+
+// The common ways a report says it checked, by what was checked: code, a download, a service, a
+// screenshot, a page of prose. None of them holds the word "test".
+const EVIDENCE = [
+  'verified the output by hand',
+  'checked the result against the spec',
+  'confirmed the file opens',
+  'sha256 matched the published checksum',
+  'the checksum matched',
+  'hashes are identical',
+  'downloaded the asset again and compared it with the original',
+  'ran the script twice',
+  're-ran it after the fix, same result',
+  'smoke run of the install path',
+  'curl returned 200 for the health endpoint',
+  'GET /health: HTTP 200',
+  'status code 204 from the API',
+  'screenshot checked at 1280px',
+  'inspected the screenshot, layout holds',
+  '12 passed',
+  'all green in CI',
+  'build ok, 0 errors',
+  'compiles cleanly',
+  'exit code 0',
+]
+
+test('test evidence takes the common wording of a report that checked its work', async ($, on) => {
+  engine(on)
+  for (const ok of EVIDENCE) {
+    expect((await $.agent.report(report(withVerification(ok)))).text, ok).toBe(withVerification(ok))
+  }
+})
+
+test('test evidence is judged the same for the docs-writer and the ui-designer', async ($, on) => {
+  engine(on)
+  const cases: [string, string][] = [
+    ['anthology:docs-writer', 'cross-checked each claim against its three sources; all links resolve (curl 200).'],
+    ['anthology:docs-writer', 'verified every command in the page by running it.'],
+    ['anthology:ui-designer', 'screenshot taken and checked at 375px and 1280px.'],
+    ['anthology:ui-designer', 'inspected the screenshot: spacing and contrast hold.'],
+    ['anthology:debugger', 'reproduced the failure, applied the fix, re-ran it: 4 passed.'],
+  ]
+  for (const [subagentType, line] of cases) {
+    const text = withVerification(line)
+    expect((await $.agent.report(report(text, { subagentType }))).text, line).toBe(text)
+  }
+})
+
+test('a report that says nothing about checking its work still gets the tested note', async ($, on) => {
+  engine(on)
+  for (const bad of [
+    'x',
+    'Rewrote the intro and updated the table of contents.',
+    'Added a screenshot of the page to the README.',
+    'Changed the button to green and widened the layout.',
+    'Reviewed the sources and wrote the summary.',
+    'Added the verification section to the guide.',
+    'Summary of the download: three files, 40 MB.',
+    'not verified',
+    'nothing was checked',
+    'I did not check anything',
+    "couldn't run it here",
+    'never ran it',
+    'unable to verify the download',
+    'could not confirm the result',
+    'not compared with the original',
+  ]) {
+    const text = withVerification(bad)
+    expect((await $.agent.report(report(text))).text, bad).toContain('what was tested')
+    const docs = await $.agent.report(report(text, { subagentType: 'anthology:docs-writer' }))
+    expect(docs.text, bad).toContain('what was tested')
+  }
+})
+
 test('attribution lines in the report are flagged, in either spelling', async ($, on) => {
   engine(on)
   for (const line of [
