@@ -1,6 +1,6 @@
 ---
 name: 'Mods spikes S1-S4 results (2026-11-22)'
-description: 'Measured Claude Code 2.1.311-2.1.330 behaviour for hooks modules: loading, tool.check input, prompt.compose, spawn latency'
+description: 'Measured Claude Code 2.1.311-2.1.330 behavior for hooks modules: loading, tool.check input, prompt.compose, spawn latency'
 metadata:
   type: project
   modified: 2026-11-22

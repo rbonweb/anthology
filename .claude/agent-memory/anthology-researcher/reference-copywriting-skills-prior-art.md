@@ -1,6 +1,6 @@
 ---
 name: 'Copywriting skills prior art (survey 2026-11-28)'
-description: 'Open-source copy skills per content type: landing, UI microcopy, blog/SEO, email/social/PR, with stars and licences'
+description: 'Open-source copy skills per content type: landing, UI microcopy, blog/SEO, email/social/PR, with stars and licenses'
 metadata:
   type: reference
   modified: 2026-11-28
