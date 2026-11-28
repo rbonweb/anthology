@@ -5221,7 +5221,7 @@ call post.bat</PreBuildEvent>
         assert!(low(PRE_COMMIT_STUB));
         for python in [
             "/usr/bin/python3",
-            "/home/u/.pyenv/versions/3.11.4/bin/python3.11",
+            "/home/user/.pyenv/versions/3.11.4/bin/python3.11",
             "/opt/homebrew/bin/python3",
             "'/Users/Some One/.venv/bin/python'",
         ] {
@@ -5347,7 +5347,7 @@ call post.bat</PreBuildEvent>
         }
     }
 
-    const HUSKY4_BANNER: &str = "# Created by Husky v4.3.8 (https://github.com/typicode/husky#readme)\n#   At: 1/2/2021, 3:04:05 PM\n#   From: /home/u/app (https://github.com/u/app#readme)";
+    const HUSKY4_BANNER: &str = "# Created by Husky v4.3.8 (https://github.com/typicode/husky#readme)\n#   At: 1/2/2021, 3:04:05 PM\n#   From: /home/user/app (https://example.invalid/app#readme)";
 
     fn husky4_hook() -> String {
         format!("#!/bin/sh\n# husky\n\n{HUSKY4_BANNER}\n\n. \"$(dirname \"$0\")/husky.sh\"\n")
