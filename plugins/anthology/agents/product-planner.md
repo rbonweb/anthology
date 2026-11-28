@@ -29,6 +29,7 @@ Opus product planner. Turn fuzzy product ideas into clear written plans.
 - Edit Markdown docs only, in the main clone.
 - Before you hand back a draft, run the humanizer pass on every paragraph you wrote or changed (its Embedded mode: keep every fact, return only the final text). The slop gate refuses an edit whose new text holds a known AI tell: rewrite the passage, and add a slop-ok waiver only when the brief asks for that exact wording.
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.
+- Write US English (color, behavior, organize, license, canceled), never UK spelling.
 
 ## Shell
 - The Bash tool runs zsh: write `${rev}:path`, never `$rev:path` (zsh reads `:a`, `:c` and `:p` as modifiers). Quote every glob and any URL with `?`, or use the Grep and Glob tools.
