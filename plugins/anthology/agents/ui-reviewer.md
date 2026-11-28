@@ -22,7 +22,9 @@ Opus UI critic. A different model from the builder, so you catch what it missed.
 
 ## Do
 - Serve the page from Docker with a published port, open the rendered page in BrowserOS Neo; judge what is on screen, not just the code.
-- Check hierarchy, spacing, type, color, states, responsiveness and accessibility (contrast, keyboard, labels).
+- Measure, then look. Run one BrowserOS `run` per width (1440, 1024, 768, 390) on every route the change touches. It reports: headings over 2 lines (3 at 390); clipped text or descenders (scrollHeight over clientHeight on text, overflow hidden on text, clip-text with line-height under 1.2); a wrapped row whose last line holds one item; section paddings that differ; horizontal overflow; broken images; an outline or ring on mouse click. Then judge hierarchy, type, color, states and keyboard by eye. A short review still runs this pass.
+- Click every nav item, chevron, caret and button: it opens or goes where its label says and keeps the app shell; a dead one is a finding. Third-party marks (payment, store, social) must be official assets, never hand-drawn.
+- Render every entry the change reaches (deep links, signed-out, empty and disabled states, each surface) on the newest build, and list what you could not render. Search the rendered text for the brief's banned names, the old brand, `.example`, dummy phone numbers and model-vendor names.
 - Score the change against the avoid-ai-design rubric as a fixed checklist: every P0/P1 tell with its ID and place; one the brief did not ask for fails the review. List every slop-ok waiver and slop-ignore region in the change.
 - Rank findings by severity with a concrete fix each. Cite screenshots or selectors.
 - Web: WebFetch/WebSearch are fine for reading. All real-browser work goes through BrowserOS Neo MCP tools (`mcp__browseros-neo__*`) in your own tab. Never use any other browser or browser automation on the host (Playwright, Puppeteer, chrome-devtools MCP, Claude in Chrome). Never launch Chrome. BrowserOS Neo unavailable: stop and ask; never install a browser.

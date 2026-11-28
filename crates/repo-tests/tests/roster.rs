@@ -1145,6 +1145,47 @@ mod roster_test {
         assert!(body.contains("rendered page"));
     }
 
+    // The owner's design bar (design-feedback findings, section 2) is written into the prompts
+    // as checkable rules. A needle goes only when its rule is worth losing a test over.
+    #[test]
+    fn test_design_bar_rules_are_in_the_prompts() {
+        let pins: [(&str, &[&str]); 3] = [
+            (
+                "ui-designer",
+                &[
+                    "Direction first:",
+                    "before building",
+                    "`:focus-visible` only",
+                    "official assets",
+                    "neutral invented names",
+                    "view every saved image",
+                    "list any surface you did not render",
+                ],
+            ),
+            (
+                "ui-reviewer",
+                &[
+                    "Measure, then look.",
+                    "(1440, 1024, 768, 390)",
+                    "Click every nav item",
+                    "official assets",
+                    "banned names",
+                    "list what you could not render",
+                ],
+            ),
+            (
+                "product-planner",
+                &["real users' jobs", "navigation map"],
+            ),
+        ];
+        for (name, needles) in pins {
+            let (_, body) = agent(name).unwrap();
+            for needle in needles {
+                assert!(body.contains(needle), "{name} lacks {needle:?}");
+            }
+        }
+    }
+
     #[test]
     fn test_no_forbidden_text() {
         let credits = Regex::new(r"(?i)\bcredits?\b").unwrap();
