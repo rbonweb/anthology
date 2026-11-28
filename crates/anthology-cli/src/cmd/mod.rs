@@ -73,7 +73,7 @@ commands:
   switch routing_guide|delegation <folder>
   slop hook|check|rules
   privacy hook
-  check-repo [--json] [--opened] [--no-tools] [--rev REV] [--into DIR] PATH|URL
+  check-repo [--json] [--opened] [--no-tools] [--all] [--rev REV] [--into DIR] PATH|URL
   --version
 ";
 
