@@ -33,11 +33,11 @@ pub const BUDGET: [(&str, u64); 11] = [
     ("debugger", 22293),         // measured 19275 (karpathy-guidelines), +126 atl rule
     ("reviewer", 17815),         // measured 14497 (karpathy-guidelines), +1143 Shell
     ("scout", 7284),             // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl
-    ("docs-writer", 31686),      // measured 27283, +184 wait, map and memory rules, +126 atl
-    ("ui-designer", 128097),     // measured 111388
-    ("ui-reviewer", 65986),      // measured 57379
-    ("product-planner", 102779), // measured 89373
-    ("marketer", 54384),         // measured 47290
+    ("docs-writer", 75475), // measured 27283, +184 wait, map and memory rules, +126 atl; +humanizer rewrite pass (owner, 2026-11-28)
+    ("ui-designer", 148488), // measured 111388; +avoid-ai-design rubric (owner, 2026-11-28)
+    ("ui-reviewer", 65986), // measured 57379
+    ("product-planner", 145072), // measured 89373; +humanizer rewrite pass (owner, 2026-11-28)
+    ("marketer", 96668),    // measured 47290; +humanizer rewrite pass (owner, 2026-11-28)
 ];
 
 static STARTUP_PATH: LazyLock<Regex> = LazyLock::new(|| {

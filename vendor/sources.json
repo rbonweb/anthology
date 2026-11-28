@@ -478,6 +478,36 @@
       ]
     },
     {
+      "name": "humanizer",
+      "repo": "https://github.com/blader/humanizer",
+      "path": "",
+      "ref": "main",
+      "commit": "a32f24407364c74c812b43c15926d638bee1e072",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/humanizer",
+      "transform": [
+        {
+          "patch": "vendor/patches/humanizer.patch"
+        }
+      ]
+    },
+    {
+      "name": "avoid-ai-design",
+      "repo": "https://github.com/funboy322/avoid-ai-design",
+      "path": "references",
+      "ref": "main",
+      "commit": "60f5853a706873da3a30b3ddf3cc29f9683c885c",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/avoid-ai-design",
+      "transform": [
+        {
+          "patch": "vendor/patches/avoid-ai-design.patch"
+        }
+      ]
+    },
+    {
       "name": "atl",
       "managed_by": "subtree",
       "target": "atl",
