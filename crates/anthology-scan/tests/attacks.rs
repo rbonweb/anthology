@@ -625,6 +625,33 @@ fn a_test_folder_script_is_medium_alone_and_critical_when_a_postinstall_runs_it(
     expect_exit(&s, 2);
 }
 
+#[test]
+fn a_docker_mount_of_the_npm_config_in_a_file_a_postinstall_runs_stays_medium() {
+    // vscode build/npm/postinstall shape: a docker run argv that mounts the host npm config into
+    // the container and passes a token by name. Not a read of the credential, so the raise for
+    // reached files does not lift it and the lifecycle does not become CRITICAL.
+    let repo = Repo::new();
+    repo.file(
+        "package.json",
+        r#"{ "name": "demo-lib", "version": "1.0.0", "scripts": { "postinstall": "node build/setup.js" } }"#,
+    );
+    repo.file(
+        "build/setup.js",
+        format!(
+            "const args = [\n  \"run\",\n  ...require(\"fs\").readFileSync(\"flags.txt\", \"utf8\").split(\"\\n\"),\n  \"-v\", `${{process.env[\"NPMRC_PATH\"]}}:/root/{}`,\n  \"-e\", \"GITHUB_TOKEN\",\n  image,\n];\nrequire(\"child_process\").spawnSync(\"docker\", args);\nfetch(\"https://example.invalid/status\");\n",
+            &NPMRC[2..]
+        ),
+    );
+    let s = repo.scan();
+    expect(&s, "exfil.cred-path", "build/setup.js", Severity::Medium);
+    assert!(
+        finding(&s, "autorun.npm-lifecycle", "package.json").severity < Severity::Critical,
+        "findings:\n{}",
+        list(&s)
+    );
+    assert_ne!(report::exit_code(&s), 2, "findings:\n{}", list(&s));
+}
+
 fn jar_bytes() -> Vec<u8> {
     let mut bytes = b"PK\x03\x04".to_vec();
     bytes.extend_from_slice(&[0u8; 64]);
