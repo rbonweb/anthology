@@ -49,7 +49,7 @@ const PUBLIC_DOCS: [&str; 4] = [
 ];
 
 /// The pages the README links under Documentation: the detail the README leaves out.
-const DOC_PAGES: [&str; 7] = [
+const DOC_PAGES: [&str; 8] = [
     "docs/agents.md",
     "docs/atl.md",
     "docs/binary.md",
@@ -57,6 +57,7 @@ const DOC_PAGES: [&str; 7] = [
     "docs/memory.md",
     "docs/mods.md",
     "docs/setup.md",
+    "docs/slop-gate.md",
 ];
 
 /// Every public document: the root ones and the pages under docs/.
@@ -530,6 +531,41 @@ mod link_test {
             }
         }
         assert!(problems.is_empty(), "{problems:#?}");
+    }
+}
+
+mod slop_gate_doc_test {
+    use super::*;
+
+    /// The page names every rule the binary ships, each ID in backticks.
+    #[test]
+    fn slop_gate_page_names_every_rule() {
+        let page = repo::read("docs/slop-gate.md");
+        let missing: Vec<&str> = anthology_slop::RULES
+            .iter()
+            .map(|rule| rule.id)
+            .filter(|id| !page.contains(&format!("`{id}`")))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "docs/slop-gate.md does not name these rules in backticks: {missing:?}"
+        );
+    }
+
+    /// A rule ID on the page that the binary does not ship is a typo or a rule that was dropped.
+    #[test]
+    fn slop_gate_page_names_only_real_rules() {
+        let page = repo::read("docs/slop-gate.md");
+        let named = Regex::new(r"`((?:text|ui)\.[a-z0-9-]+)`").unwrap();
+        let unknown: Vec<String> = named
+            .captures_iter(&page)
+            .map(|c| c[1].to_string())
+            .filter(|id| anthology_slop::rule(id).is_none())
+            .collect();
+        assert!(
+            unknown.is_empty(),
+            "docs/slop-gate.md names rules that do not exist: {unknown:?}"
+        );
     }
 }
 
