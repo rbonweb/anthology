@@ -10,6 +10,8 @@ a new version section.
 
 ### [Unreleased]
 
+- Fix: auto mode no longer refuses a plain `grep ... | tail` with "a hook changed this call's input after auto mode reviewed it" when the ATL binary in use is older than the plugin. ATL `1.2.1-anthology.7` and later rewrite nothing in auto mode, but an older binary (a running session that began before an update, or an install that did not finish) still rewrote `grep -n "x" file | tail -8` into `atl grep ...`. `bin/atl-hook` now drops any plain rewrite when the hook input's `permission_mode` is `auto`, whatever the binary answered, so the call runs as typed. A deny and an ask are kept as before. Other modes rewrite as before. No ATL release is needed.
+
 ### [0.5.11] - 2026-11-28
 
 - Add: the `website-clone` knowledge, vendored from JCodesMore/ai-website-cloner-template (MIT) and adapted for Anthology. It copies a site's structure, layout, palette, fonts and feel into the project's own stack, starting from a tokens file, and always replaces the brand, images, text and form actions. Capture and comparison run in BrowserOS Neo, builds in Docker. `ui-designer` reads it only when the brief is a clone.

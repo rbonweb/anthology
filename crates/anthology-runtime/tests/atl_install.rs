@@ -1780,6 +1780,80 @@ mod wrapper_test {
         }
     }
 
+    /// What atl before `1.2.1-anthology.7` answered a plain `grep -n "Expo" f | tail -8` with in
+    /// auto mode: a rewrite, which Claude Code's classifier then refuses ("a hook changed this
+    /// call's input after auto mode reviewed it").
+    const GREP_REWRITE: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecisionReason":"ATL auto-rewrite","updatedInput":{"command":"atl grep -n \"Expo\" plan.md | tail -8","description":"Find the Expo ruling"}}}"#;
+
+    /// The hook input Claude Code sends for that call, `permission_mode` first as it writes it.
+    fn grep_input(mode: Option<&str>, nested: Option<&str>) -> String {
+        let mode = mode.map_or(String::new(), |m| format!(r#""permission_mode":"{m}","#));
+        let nested = nested.map_or(String::new(), |m| format!(r#","permission_mode":"{m}""#));
+        format!(
+            r#"{{"session_id":"s","cwd":"/w",{mode}"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{{"command":"grep -n \"Expo\" plan.md | tail -8","description":"Find the Expo ruling"{nested}}},"tool_use_id":"toolu_1"}}"#
+        )
+    }
+
+    #[test]
+    fn test_hook_drops_a_rewrite_in_auto_mode_whatever_atl_answers() {
+        // The shim does not trust the atl binary to know auto mode: an atl older than
+        // `1.2.1-anthology.7` (state.json can still point at one) rewrites there, and the
+        // classifier refuses a call whose input a hook changed. A rewrite, with an explicit
+        // allow too, never leaves the hook in auto mode.
+        let w = setup();
+        for answer in [
+            GREP_REWRITE,
+            &GREP_REWRITE.replace("}}}", r#"},"permissionDecision":"allow"}}"#),
+        ] {
+            w.answer_fake(answer, 0);
+            let stdin = grep_input(Some("auto"), None);
+            let res = w.run_bin("atl-hook", &[], &stdin);
+            assert_eq!(
+                (res.code, res.stdout_text(), res.stderr_text()),
+                (0, String::new(), String::new()),
+                "{answer}"
+            );
+            let spaced = stdin.replace(
+                r#""permission_mode":"auto""#,
+                r#""permission_mode": "auto""#,
+            );
+            let res = w.run_bin("atl-hook", &[], &spaced);
+            assert_eq!(
+                (res.code, res.stdout_text()),
+                (0, String::new()),
+                "{spaced}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_hook_keeps_a_rewrite_in_every_mode_but_auto() {
+        let w = setup();
+        w.answer_fake(GREP_REWRITE, 0);
+        for mode in [
+            Some("default"),
+            Some("acceptEdits"),
+            Some("plan"),
+            Some("bypassPermissions"),
+            Some("autoish"),
+            None,
+        ] {
+            let res = w.run_bin("atl-hook", &[], &grep_input(mode, None));
+            assert_eq!(
+                (res.code, res.stdout_text()),
+                (0, format!("{GREP_REWRITE}\n")),
+                "{mode:?}"
+            );
+        }
+        // A `permission_mode` key inside tool_input is the model's, not the real mode.
+        let res = w.run_bin("atl-hook", &[], &grep_input(Some("default"), Some("auto")));
+        assert_eq!(
+            (res.code, res.stdout_text()),
+            (0, format!("{GREP_REWRITE}\n")),
+            "nested key"
+        );
+    }
+
     /// Asserts the hook drops the ask (no output, exit 0) for every command.
     fn assert_ask_dropped(w: &W, commands: &[String]) {
         for command in commands {
