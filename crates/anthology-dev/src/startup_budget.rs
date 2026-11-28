@@ -31,8 +31,8 @@ pub const SUPERPOWERS: &str = "plugins/anthology-superpowers";
 pub const BUDGET: [(&str, u64); 12] = [
     ("researcher", 89267),       // measured 77623
     ("architect", 24131), // measured 20532, +126 atl rule, +393 credential path rule (owner, 2026-11-28)
-    ("implementer", 26561), // measured 23096 (karpathy-guidelines)
-    ("debugger", 22686), // measured 19275 (karpathy-guidelines), +126 atl rule, +393 credential path rule (owner, 2026-11-28)
+    ("implementer", 26601), // measured 23096 (karpathy-guidelines); 26601 with the Docker cache rule (owner, 2026-11-28)
+    ("debugger", 22774), // measured 19275 (karpathy-guidelines), +126 atl rule, +393 credential path rule (owner, 2026-11-28), +88 Docker cache rule (owner, 2026-11-28)
     ("reviewer", 37538), // measured 32641: always + largest conditional (copy-editing), copy plan 2026-11-28
     ("scout", 7677), // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl, +393 credential path rule (owner, 2026-11-28)
     ("docs-writer", 117281), // measured 101983: always + largest conditional (ux-microcopy), copy plan 2026-11-28

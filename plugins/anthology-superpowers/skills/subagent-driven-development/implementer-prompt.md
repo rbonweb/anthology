@@ -50,8 +50,10 @@ Subagent (general-purpose):
 
     If you slow down or skip a machine or service because it is busy, re-check
     after 5-10 minutes and go back to full speed; a momentary limit is never a
-    standing rule. After using containers, remove your own containers, built
-    images and their volumes; never touch other projects' or stop Docker.
+    standing rule. After using containers, remove your own containers,
+    per-run volumes and images built only for this worktree; keep pulled base
+    images and shared caches, because they are reused; never touch other
+    projects' or stop Docker.
 
     ## You Do Not Dispatch Subagents
 

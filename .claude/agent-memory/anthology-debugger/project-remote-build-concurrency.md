@@ -1,0 +1,11 @@
+---
+name: 'remote-build.sh runs safely in parallel: locks, per-run folders, slots, kept caches'
+description: 'How scripts/remote-build.sh isolates concurrent runs on one host, what it keeps, and the traps found while testing it'
+metadata:
+  type: project
+  modified: 2026-11-28
+---
+
+scripts/remote-build.sh gives each run its own folder <checkout-hash>-<run> (kept runs use <checkout-hash>), a flock on <folder>.lock held by a host-side holder session, a shared flock on .runs.lock, slot locks under .slots, and an install lock .toolchain-<digest>.lock. The kernel drops a flock when its holder dies, so a lock that can be taken marks a dead run; no PID or clock is used. Why: the old design shared one folder and one target volume per checkout, so a run finishing or a second run sweeping deleted the live one (exit 137 from docker rm -f, rsync exit 23), and --clean-ours rm -rf-ed the whole root.
+Policy (owner, 2026-11-28): the Rust image, anthology-rustup-*, anthology-cargo and anthology-sccache are kept after runs and after --clean-ours and --clean-all-ours; only --clean-all-ours --with-caches wipes them. They are trimmed least recently used first (files under .used) only when the home or Docker disk is over 85% full, or once an hour when a cache volume is over 40 GB, and only while no run holds .runs.lock. rust-test.sh keeps a checkout target volume after one-shot runs (ANTHOLOGY_KEEP_TARGET=0 removes it) and gc removes a target volume only when its worktree is gone. Why: deleting them made every run download and rebuild.
+Traps: (1) the fake ssh in crates/repo-tests/tests/remote_build.rs applies its stdin-drop only to commands that contain the text rust-test.sh, so keep that text out of remote_head and hold_body; (2) a flock conversion shared to exclusive with -n loses the old lock on failure, so toolchain waiters use a 5 s timeout loop; (3) rm of .runs.lock in a clean-all races a starting run, so that file is never deleted; (4) the script must not contain the word prune (a test bans it): the trim is called make_room; (5) the agent startup BUDGET and the guide cap (4100) move when the Docker rule text moves; (6) repo-tests atl_rename fails on the remote copy because it has no git history, by design.

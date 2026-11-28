@@ -181,10 +181,15 @@ Read this before the first task of a large or long build (many tasks, several ag
   5–10 minutes and lift the limit once the load is gone; never let a
   momentary limit become a standing rule. Why: a 5-minute spike turned into
   a permanent throttle costs hours of build time.
-- After any container work (tests, builds), remove the containers, the
-  images you built, and the volumes they used once you no longer need them.
-  Touch only your own: other projects share the same Docker. Why: leftover
-  build volumes fill the disk fast (hundreds of GB in one day).
+- After any container work (tests, builds), remove your containers, your
+  per-run volumes, and the images you built only for this worktree (tagged per
+  worktree). Keep pulled base images and shared caches (toolchains, cargo,
+  sccache, npm, pnpm and pip stores, build caches): later runs reuse them.
+  Prune a kept cache only under disk pressure (disk over 85% full, or a cache
+  over 40 GB), least recently used first. Touch only your own: other projects
+  share the same Docker. Why: leftover build volumes fill the disk fast
+  (hundreds of GB in one day). Why keep the rest: a deleted image or cache is
+  downloaded or rebuilt on every run, which costs minutes each time.
 
 ## Test at the cheapest level that catches the bug, once
 
@@ -246,9 +251,11 @@ Read this before the first task of a large or long build (many tasks, several ag
 - A clone or like-X brief starts with the reference capture (BrowserOS, 1440
   and 390). Why: a checkout built from memory was rebuilt.
 - Keep a banned-names list (owner, legal entity, upstream brands) in a `user`
-  note (personal memory), and paste it into every UI brief and review. Why:
-  forks and stores leaked upstream and owner names, and project memory is
-  committed.
+  note (personal memory): `user-banned-names.md` for every repo,
+  `user-banned-names--<repo>.md` for one repo, one `- name` per line. Paste it
+  into every UI brief and review. The commit check reads these notes and
+  refuses a commit that holds a name. Why: forks and stores leaked upstream and
+  owner names, and project memory is committed.
 - A UI task's one review is ui-reviewer on the PR head, rendered, while CI
   runs, before merge. When the owner wants less review, shrink it to the
   measured pass, never skip it; only an explicit owner "skip review" skips

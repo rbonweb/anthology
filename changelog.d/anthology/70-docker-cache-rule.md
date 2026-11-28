@@ -1,0 +1,1 @@
+- Change: the Docker cleanup rule keeps what later runs reuse. Agents and the routing guide remove their own containers, per-run volumes and images built only for one worktree, and keep pulled base images and shared caches, which are pruned only under disk pressure. The large-builds skill gives the reason: a deleted image or cache is downloaded or rebuilt on every run.

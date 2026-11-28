@@ -1,6 +1,7 @@
 //! The anthology-guardrails rules (design §9.5, plan §3.5, GC-6).
 //!
-//! `data` and `secrets` are F1's; the rest is GD's. The `pub` items of `check`, `hook`, `paths`
+//! `data` and `secrets` are F1's; the rest is GD's, except `mask`, the output masker behind
+//! `anthology guard mask`. The `pub` items of `check`, `hook`, `paths`
 //! and `rules` are re-exported at the crate root, where plan §3.5 publishes them. Keep `pub`
 //! names unique across those modules and use `pub(crate)` for helpers. `host` and `path_vars` are
 //! not re-exported: their items are used as `host::embedded` and `path_vars::HostPathVars`.
@@ -13,6 +14,7 @@ pub mod check;
 pub mod data;
 pub mod hook;
 pub mod host;
+pub mod mask;
 pub mod path_vars;
 pub mod paths;
 pub mod rules;

@@ -234,7 +234,9 @@ fn anthology_hooks_json_runs_session_start_sh_and_keeps_atl_hook() {
           "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/bin/atl-hook"], "timeout": 60, "onFailure": "block"},
             {"type": "command", "command": "/bin/sh",
-              "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"], "timeout": 60, "onFailure": "block"}]},
+              "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/no-attribution.sh"], "timeout": 60, "onFailure": "block"},
+            {"type": "command", "command": "/bin/sh",
+              "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/commit-privacy.sh"], "timeout": 60, "onFailure": "block"}]},
             {"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "/bin/sh",
               "args": ["${CLAUDE_PLUGIN_ROOT}/hooks/slop-gate.sh"], "timeout": 60, "onFailure": "block"}]}]
         },
