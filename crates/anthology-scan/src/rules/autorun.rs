@@ -5922,6 +5922,84 @@ call post.bat</PreBuildEvent>
     }
 
     #[test]
+    fn odd_paths_and_texts_never_panic() {
+        // Short and non-ASCII paths, names cut short, and text that stops half way: a hostile repo
+        // must not be able to abort the scan with any of them.
+        let paths = [
+            "",
+            "/",
+            ".git/hooks",
+            ".git/hooks/",
+            "/.git/hooks/",
+            "\u{c4}\u{d6}/.GIT/HOOKS/x",
+            "\u{130}/.git/hooks/\u{130}",
+            ".husky",
+            ".husky/",
+            ".husky/_/",
+            ".HUSKY/_/\u{fc}",
+            "\u{fc}/.husky/_/h",
+            ".vscode/",
+            ".vscode/settings.json",
+            "\u{fc}.code-workspace",
+            ".huskyrc",
+            ".huskyrc.",
+            ".huskyrc.js",
+            "\u{130}.huskyrc.yaml",
+            ".DevContainer/",
+            ".devcontainer/devcontainer.json",
+            "package.json",
+            "a/b/.git/config",
+            ".git/config.worktree",
+            "$CLAUDE_PROJECT_DIR",
+        ];
+        let texts = [
+            "",
+            "\u{0}",
+            "\\",
+            "hooks",
+            "hooks:",
+            "'hooks'",
+            "hooks: {",
+            "hooks: {\n",
+            "hooks:\n  a: ",
+            "hooks:\n  : x",
+            "{\"hooks\": ",
+            "{\"husky\": {\"hooks\": {\"a\": \"\"}}}",
+            "[core]\n\tpager = \\",
+            "[alias]\nx = \\\r",
+            "{\"settings\": {\"git.path\": \"\"}}",
+            "{\"tasks\": [{\"options\": {\"shell\": {\"executable\": \"\"}}, \"command\": \"x\", \"runOptions\": {\"runOn\": \"folderOpen\"}}]}",
+            "{\"git.path\": \"..\"}",
+            "{\"git.path\": \"${workspaceFolder}\"}",
+            "#!/bin/sh\n",
+        ];
+        for path in paths {
+            for text in texts {
+                let mut out = Vec::new();
+                let _ = surfaces(&ctx(path, text), &mut out);
+                entry_findings(&[path, ".vscode/settings.json"], &mut out);
+                lower_hook_stubs(&ctx(path, text), &mut out);
+                raise_gitattributes_filters(&ctx(path, text), &mut out);
+                let _ = is_git_hook(path);
+            }
+        }
+        for line in [
+            "",
+            "-",
+            "node",
+            "\"",
+            "\u{fc}",
+            "/",
+            "./",
+            "$CLAUDE_PROJECT_DIR",
+            "${workspaceFolder}/",
+        ] {
+            let _ = shape::files_run(line);
+            let _ = shape::classify(line);
+        }
+    }
+
+    #[test]
     fn files_that_are_not_known_find_nothing() {
         for path in [
             "src/main.rs",
