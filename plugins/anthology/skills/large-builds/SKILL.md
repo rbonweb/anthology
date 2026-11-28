@@ -18,13 +18,28 @@ Read this before the first task of a large or long build (many tasks, several ag
 - "Decide; don't wait" and "Status reports for humans" below apply to every
   session. Why: a parked question or an unreadable report costs the same in
   a short session as in a long one.
+- Never state behaviour, an API parameter or a cause from memory: grep the
+  code, read the current docs or measure, else say "unverified". Why: wrong
+  claims from memory cost rework in both large projects.
+- "Done" names its evidence: an image is done when viewed, a page when
+  rendered on each surface, a check when it failed on a known-bad case, a new
+  runner after one canary job. Why: 52 presets were called done after about 12
+  were viewed.
+- Search for secrets with `grep -c` or `-l` first, and print a match only
+  masked. A brief that hands over a secret says once who reads it and where
+  it goes. Why: one agent printed full vendor API keys into a log.
 
 ## The lead and the user
 
 - A merge conflict goes to an implementer, with the branches and the
-  conflicting files named; the lead does not resolve it, in any file (docs
+  conflicting files named; it merges on its own branch from the start, and the
+  lead merges that branch. The lead does not resolve it, in any file (docs
   and memory notes included). Why: resolving a conflict is code work, and the
-  lead's context is for decisions.
+  lead's context is for decisions; a conflict agent could not write main.
+- Answer questions; act only on what the owner or the plan asked for. A
+  setting nobody asked for, or one that injects behaviour, is listed for
+  approval, never applied. Why: an unasked setting and an over-scoped brief
+  both changed what the owner had not agreed to.
 - An interim notice that an agent is "waiting on its own background work"
   needs no reply and no action. Why: the agent is still working, and a
   reply only adds noise.
@@ -92,6 +107,9 @@ Read this before the first task of a large or long build (many tasks, several ag
 - No host installs (`brew`, `npm -g`, global `pip`, browser downloads); a
   project `npm install` is fine. Why: host installs change the owner's
   machine, while a project install stays in the project folder.
+- Give every cleanup rule a performance check (cache hits, build time before
+  and after). Why: one cleanup rule threw away the build cache and builds took
+  18-47 minutes.
 
 ## Memory stays small
 
@@ -140,6 +158,13 @@ Read this before the first task of a large or long build (many tasks, several ag
   interfaces to code against; the SWAP rule; the test tier below; and "no
   reviewers". Why: a worker cannot follow rules it was never given, and
   pasted plan text costs the lead a read per task.
+- At dispatch, split per-unit work (pages, themes, capture sets, CI jobs)
+  into one agent per unit or pair. Cap the count only on a measured
+  shared-resource limit, stated once. Why: the owner asked for more parallel
+  agents 10 times across three projects.
+- Split by file ownership at dispatch, and reassign a slice only after its
+  owner commits. Why: a slice reassigned mid-flight strands the first owner's
+  uncommitted changes.
 
 ## Keep capacity busy
 
@@ -180,6 +205,10 @@ Read this before the first task of a large or long build (many tasks, several ag
   is real. Why: chasing a known flake burns hours and changes nothing.
 - Slow or secondary platforms do not block a merge; fix their failures
   forward. Why: one slow runner should not hold every branch hostage.
+- On red CI, read every failed job of the run, fix them in one push and
+  cancel superseded queued runs. Before switching runner or image, diff it
+  against the hosted runner and dry-run once. Why: one failure per push made
+  serial fix cycles, and runner gaps surfaced one per run.
 
 ## Write timing tests that survive shared runners
 
@@ -203,6 +232,33 @@ Read this before the first task of a large or long build (many tasks, several ag
 - Docs-only, test-only and mechanical changes (renames, stand-in swaps,
   regenerated files) get no review; CI covers them. Why: a reviewer adds
   nothing a passing build has not already shown.
+
+## Design and UI work
+
+- Before the first UI task, collect the logo and colours, light or dark,
+  fonts, one to three sites the owner likes, the focus style and the public
+  identity (name, contact channels, which legal names may appear). Ask once
+  for any identity or legal fact shown publicly; never default one. Owner
+  away: leave public identity and legal facts out, and record a Ruling for
+  the other gaps; ask about all of them first on return. Why: direction that
+  came after the build reworked the same files about four times, and a
+  Ruling on a phone number or legal entity is a default.
+- A clone or like-X brief starts with the reference capture (BrowserOS, 1440
+  and 390). Why: a checkout built from memory was rebuilt.
+- Keep a banned-names list (owner, legal entity, upstream brands) in a `user`
+  note (personal memory), and paste it into every UI brief and review. Why:
+  forks and stores leaked upstream and owner names, and project memory is
+  committed.
+- A UI task's one review is ui-reviewer on the PR head, rendered, while CI
+  runs, before merge. When the owner wants less review, shrink it to the
+  measured pass, never skip it; only an explicit owner "skip review" skips
+  it. Why: in three projects UI merged unreviewed, and the owner found the
+  faults.
+- A review or QA brief names the build or URL. Why: one audit round ran on
+  the older live site.
+- Check the first capture by eye before running the batch, and take product
+  screenshots only from merged main or a deployed build. Why: about 20 shots
+  were unusable and had to be retaken.
 
 ## Merge in batches
 
@@ -253,6 +309,8 @@ Read this before the first task of a large or long build (many tasks, several ag
 - Give a time estimate only from durations you measured (timestamps you
   read); otherwise write "unknown". Say what it depends on. Why: a guessed
   estimate that slips costs more trust than an honest "unknown".
+- Report a start only after the dispatch call returns. Why: a start announced
+  before the dispatch is false when the call fails.
 
 ```text
 Done: <features that now work>.

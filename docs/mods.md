@@ -18,6 +18,7 @@ The routing guide says the main session plans, briefs agents, checks and merges,
 - **Allowed without a refusal.**
   - Notes the lead keeps. Under `CLAUDE_CONFIG_DIR` (else `~/.claude`): `projects/<project>/memory/` (Claude Code's auto memory), `plans/` and `anthology/personal-memory/`. The folder in your `autoMemoryDirectory` setting, when you set one. In the project: `.claude/memory/` (the repo memory, where setup turned auto memory off), `.superpowers/` and `docs/superpowers/plans/`. `~` and `..` are folded and a relative path is taken from the session's directory before the match.
   - Files that are not project code: everything in the Claude config folder (`~/.claude`, or `CLAUDE_CONFIG_DIR`), even when a dotfiles repo holds it, and any file outside every git repo (a folder or file named `.git` in its folder or above it makes it part of a repo; when that check cannot run, the file counts as project code). Any size, no budget.
+  - Local setup: a file in the repo that git ignores and does not track, such as `.env.<name>.local`. Only the main checkout holds it, and Claude Code refuses an agent in a worktree a write there, so no agent could make it. Git decides: `git check-ignore` must report it ignored and `git ls-files --error-unmatch` must find it outside the index, with the `git` found on the absolute `PATH` entries only. Nothing under `.git` counts, nor a symbolic link, and when any step fails or git is missing the file is handed off as before. Any size, no budget.
   - A tiny fix: one `Edit`, no `replace_all`, at most 3 of them per turn, all in one file. The count starts again at each turn, and an edit that failed or was refused by another hook does not count. A `Write` or `NotebookEdit` is never a tiny fix. How much it may change depends on the risk: code that is added or changed, at most 5 lines each in `old_string` and `new_string` and about 2 KB in all (2048 characters); a small config file (`.json`, `.jsonc`, `.json5`, `.yaml`, `.yml`, `.toml`, `.ini`, `.cfg`, `.conf`, `.env`, `.properties`, `.plist`), 15 lines and the same 2 KB; a pure deletion (`new_string` exactly empty; blank text is a replacement), up to 30 lines and 4 KB, in any file. CI pipeline files (`.github/`, `.gitlab-ci.yml`, `.circleci/` and the like) run code, so they keep the 5-line code limit.
 - **Limits.** Bash writes (`sed -i`, a redirect) are not seen; the routing guide covers them. Paths are matched as written, with no symlinks resolved, so a link that points into a repo from outside one is judged by where the link sits. "Outside every git repo" means no `.git` folder or file in the file's folder or above it: a bare repository used through `GIT_DIR` (a dotfiles repo with its work tree at `~`), a Jujutsu (`.jj`) or Mercurial (`.hg`) checkout has none, so its files count as outside and are yours to edit. A repo can switch the mod off with `"delegation": false` in its `.claude/anthology.json`, but only when it is approved in `/anthology:setup` (see [Your own agents and skills](agents.md#your-own-agents-and-skills)). A teammate in a pane of its own looks like a lead to a hook (nothing tells them apart), so the `Agent` tool in its pool is the rule there. This is a workflow rule, not a safety boundary: if the mod fails, Claude Code's own verdict stands and the edit runs.
 - **Not built yet.** A gate on MCP tools that do not say they are read-only, with an allowlist for `mcp__plugin-authoring__scan_secrets`. For now only the file tools above are gated.
@@ -29,7 +30,9 @@ When a writing agent (`implementer`, `debugger`, `docs-writer`, `ui-designer`) r
 - no commit (a sha, or the word "committed");
 - no test evidence (a test word; "tests not run" or "skipped" counts as none);
 - attribution lines (`Co-Authored-By: Claude`, "Generated with") in the report, which must not be there;
-- uncommitted files in the agent's own worktree.
+- uncommitted files in the agent's own worktree;
+- AI tells in the agent's changes, as `anthology slop check` finds them (see [The slop gate](slop-gate.md)): the gap names the first three and asks the lead to send the agent back to rewrite them;
+- slop waivers or ignore regions the agent added: the gap names the first three and asks the lead to confirm the user asked for that wording.
 
 Two more items are reminders, not gaps. They ride in a block that a gap raised and never raise one:
 
@@ -38,7 +41,11 @@ Two more items are reminders, not gaps. They ride in a block that a gap raised a
 
 The agent's own text is never rewritten or cut. A report with no gap is delivered with no block, so no block means no gap found. The check is string matching on the report, with no model call, and it is a hint, not proof: a report can mention a test it did not run.
 
-When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out). Any git failure leaves the text-only check. Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are.
+When the agent has its own worktree, the mod also runs one `git status --porcelain` there (2 second limit, the agent's memory notes left out). Any git failure leaves the text-only check.
+
+The two slop gaps come from one more run in that worktree: `anthology slop check --since <the main session's HEAD>`, which looks at the lines the agent added and at the files it left untracked (4 second limit, plus a 1.5 second `git rev-parse HEAD`). The slop gate refuses a Write, Edit or MultiEdit that adds a tell, so this part is there for text that reached a file another way, such as a scaffolder or `sed` run through the shell, and for waivers. It adds nothing when the binary is not installed (the mod never downloads it), when the run times out or fails, or when the agent works in the main session's own folder.
+
+Reports of the reviewer and scout, nested reports, and reports of failed or stopped runs are left as they are.
 
 ## The status pane
 
@@ -75,4 +82,5 @@ Set these in the environment, for example in the `env` block of `~/.claude/setti
 | `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the status pane, and the read-only commands mod |
 | `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation (for one approved repo only: `{"delegation": false}` in its `.claude/anthology.json`, see [Your own agents and skills](agents.md#your-own-agents-and-skills)) |
 | `ANTHOLOGY_AFTERWORK=0` | Turns off the after-work check |
+| `ANTHOLOGY_SLOP_GATE=0` | Turns off the slop gate (see [The slop gate](slop-gate.md)) and its part of the after-work check |
 | `ANTHOLOGY_HOST_MODE=full` | Opts back in when another program drives the session (see [Host mode](agents.md#host-mode)) |

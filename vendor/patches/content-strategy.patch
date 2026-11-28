@@ -1,0 +1,15 @@
+--- a/references/headless-cms.md
++++ b/references/headless-cms.md
+@@ -187,8 +187,8 @@
+ 
+ ---
+ 
+-## Relevant Integration Guides
++## Relevant Tools
+ 
+-- [Sanity](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/sanity.md) — GROQ queries, mutations, CLI
+-- [Contentful](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/contentful.md) — Delivery/Management APIs, publishing
+-- [Strapi](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/strapi.md) — REST CRUD, filters, document API
++- Sanity — GROQ queries, mutations, CLI
++- Contentful — Delivery/Management APIs, publishing
++- Strapi — REST CRUD, filters, document API

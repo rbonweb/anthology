@@ -1,0 +1,22 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -318,16 +318,9 @@
+ 
+ ## Tool Integrations
+ 
+-For implementation, see the [tools registry](https://github.com/coreyhaines31/marketingskills/blob/main/tools/REGISTRY.md). Key email tools:
+-
+-| Tool | Fits | MCP | Guide |
+-|------|----------|:---:|-------|
+-| **Customer.io** | Behavior-based automation | ✓ | [customer-io.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/customer-io.md) |
+-| **Mailchimp** | SMB email marketing | ✓ | [mailchimp.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/mailchimp.md) |
+-| **Nitrosend** | AI-native email (sequences via prompts) | ✓ | [nitrosend.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/nitrosend.md) |
+-| **Resend** | Developer-friendly transactional | ✓ | [resend.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/resend.md) |
+-| **SendGrid** | Transactional email at scale | - | [sendgrid.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/sendgrid.md) |
+-| **Kit** | Creator/newsletter focused | ✓ | [kit.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/kit.md) |
++In Anthology, no paid keys, vendor CLIs or marketing-tool MCP servers: work from exports, screenshots or numbers the user gives, and name a paid tool only as an option the user runs.
++
++Email tools the user may already run: Customer.io (behavior-based automation), Mailchimp (SMB email marketing), Nitrosend (AI-native email), Resend (developer-friendly transactional), SendGrid (transactional email at scale), Kit (creator and newsletter focused).
+ 
+ ---
+ 

@@ -313,6 +313,27 @@ fn slug_ok(slug: &str) -> bool {
         })
 }
 
+/// The most characters of a slug derived from a note name (under [`MAX_SLUG`]).
+pub const DERIVED_SLUG_CHARS: usize = 60;
+
+/// The slug `save` uses when `--slug` is left out: `name` in ASCII lowercase, every run of
+/// characters that are not ASCII letters or digits made one `-`, cut to [`DERIVED_SLUG_CHARS`]
+/// characters and trimmed of `-`. It is empty when `name` holds no ASCII letter or digit, and
+/// the caller then asks for an explicit `--slug`. The result still goes through the same slug and
+/// privacy checks as an explicit slug.
+pub fn slug_from_name(name: &str) -> String {
+    let mut slug = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.truncate(DERIVED_SLUG_CHARS);
+    slug.trim_end_matches('-').to_string()
+}
+
 fn rel(path: &Path, root: &Path) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)

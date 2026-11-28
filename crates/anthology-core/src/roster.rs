@@ -3,8 +3,9 @@
 //! `port/difftest/oracle/data.py` compares it with the Python value.
 
 /// The anthology agents, sorted.
-pub const ROSTER: [&str; 11] = [
+pub const ROSTER: [&str; 12] = [
     "architect",
+    "blog-writer",
     "debugger",
     "docs-writer",
     "implementer",

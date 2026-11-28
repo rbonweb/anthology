@@ -347,6 +347,337 @@
       ]
     },
     {
+      "name": "brand-review",
+      "repo": "https://github.com/anthropics/knowledge-work-plugins",
+      "path": "marketing/skills/brand-review",
+      "ref": "main",
+      "commit": "0e0fcacddcc892eb92a1b7873ff9d68159c47571",
+      "license": "Apache-2.0",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/brand-review",
+      "transform": [
+        {
+          "patch": "vendor/patches/brand-review.patch"
+        }
+      ]
+    },
+    {
+      "name": "product-marketing",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/product-marketing",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/product-marketing",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "copywriting",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/copywriting",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/copywriting",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "copy-editing",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/copy-editing",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/copy-editing",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "emails",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/emails",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/emails",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/emails.patch"
+        }
+      ]
+    },
+    {
+      "name": "social",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/social",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/social",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/social.patch"
+        }
+      ]
+    },
+    {
+      "name": "ad-creative",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/ad-creative",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/ad-creative",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals",
+            "references/generative-tools.md"
+          ]
+        },
+        {
+          "patch": "vendor/patches/ad-creative.patch"
+        }
+      ]
+    },
+    {
+      "name": "launch",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/launch",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/launch",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/launch.patch"
+        }
+      ]
+    },
+    {
+      "name": "public-relations",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/public-relations",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/public-relations",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/public-relations.patch"
+        }
+      ]
+    },
+    {
+      "name": "cro",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/cro",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/cro",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ab-testing",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/ab-testing",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/ab-testing",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "analytics",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/analytics",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/analytics",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/analytics.patch"
+        }
+      ]
+    },
+    {
+      "name": "programmatic-seo",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/programmatic-seo",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/programmatic-seo",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/programmatic-seo.patch"
+        }
+      ]
+    },
+    {
+      "name": "content-strategy",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/content-strategy",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/content-strategy",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/content-strategy.patch"
+        }
+      ]
+    },
+    {
+      "name": "ai-seo",
+      "repo": "https://github.com/coreyhaines31/marketingskills",
+      "path": "skills/ai-seo",
+      "ref": "v2.14.29",
+      "commit": "2bf95edb4ebd37198ab7fd18b99ba95c2145ec64",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/ai-seo",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "evals"
+          ]
+        },
+        {
+          "patch": "vendor/patches/ai-seo.patch"
+        }
+      ]
+    },
+    {
+      "name": "landing-page-copywriter",
+      "repo": "https://github.com/OneWave-AI/claude-skills",
+      "path": "landing-page-copywriter",
+      "ref": "main",
+      "commit": "b2267d9171af4f56848d82992381b20b89b44056",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/landing-page-copywriter",
+      "transform": []
+    },
+    {
+      "name": "ux-microcopy",
+      "repo": "https://github.com/humbleteam/ux-writing",
+      "path": "",
+      "ref": "main",
+      "commit": "c6a63c59c846c6cadc3d8b1067b4bec531c8f2dc",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/ux-microcopy",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            ".github",
+            "CHANGELOG.md",
+            "README.md"
+          ]
+        },
+        {
+          "name": "rename-skill",
+          "old": "ux-writing",
+          "new": "ux-microcopy"
+        }
+      ]
+    },
+    {
       "name": "landing-page",
       "repo": "https://github.com/uxkin/agent",
       "path": "plugins/website-design/skills/landing-page",
@@ -474,6 +805,176 @@
         },
         {
           "patch": "vendor/patches/website-clone.patch"
+        }
+      ]
+    },
+    {
+      "name": "humanizer",
+      "repo": "https://github.com/blader/humanizer",
+      "path": "",
+      "ref": "main",
+      "commit": "a32f24407364c74c812b43c15926d638bee1e072",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/humanizer",
+      "transform": [
+        {
+          "patch": "vendor/patches/humanizer.patch"
+        }
+      ]
+    },
+    {
+      "name": "avoid-ai-design",
+      "repo": "https://github.com/funboy322/avoid-ai-design",
+      "path": "references",
+      "ref": "main",
+      "commit": "60f5853a706873da3a30b3ddf3cc29f9683c885c",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "target": "plugins/anthology/knowledge/avoid-ai-design",
+      "transform": [
+        {
+          "patch": "vendor/patches/avoid-ai-design.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "SKILL.md",
+            "references/blog-delivery-contract.md",
+            "references/orchestration-details.md"
+          ]
+        },
+        {
+          "patch": "vendor/patches/blog.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-discourse",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-discourse",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-discourse",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "scripts"
+          ]
+        },
+        {
+          "patch": "vendor/patches/blog-discourse.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-brief",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-brief",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-brief",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-brief.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-outline",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-outline",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-outline",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-outline.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-write",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-write",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-write",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-write.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-factcheck",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-factcheck",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-factcheck",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-factcheck.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-cluster",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-cluster",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-cluster",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-cluster.patch"
         }
       ]
     },

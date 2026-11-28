@@ -44,7 +44,7 @@ use anthology_testkit::session::{
 
 const DATA_LINE: &str = "anthology: Claude Code did not pass CLAUDE_PLUGIN_DATA to the hook; atl and the memory search index have no data folder (compatibility check)";
 const MODEL_LINE: &str = "anthology: CLAUDE_CODE_SUBAGENT_MODEL is set, so every agent runs on that model and the roster's model tiers do not apply; run /anthology:setup to see where it is set";
-const AGENTS: [&str; 11] = [
+const AGENTS: [&str; 12] = [
     "researcher",
     "architect",
     "implementer",
@@ -56,6 +56,7 @@ const AGENTS: [&str; 11] = [
     "ui-reviewer",
     "product-planner",
     "marketer",
+    "blog-writer",
 ];
 
 // --- the fixture --------------------------------------------------------------------------
@@ -2866,8 +2867,11 @@ mod guide_test {
     #[test]
     fn test_size_and_shape() {
         let text = guide();
-        // 3800 raised to 3950 for the fan-out rule, owner 2026-11-28 (the guide is 3923).
-        assert!(text.chars().count() <= 3950);
+        // 3800 raised to 3950 for the fan-out rule, owner 2026-11-28 (the guide is 3949 with the credentials line).
+        // 4000: blog-writer row (copy plan Task C, 2026-11-28); the guide was 3975 with it.
+        // 4050: the implementer resolves a merge conflict in its own worktree (lead, 2026-11-28);
+        // the guide is 4041.
+        assert!(text.chars().count() <= 4050);
         assert!(!text.starts_with("---"));
         for n in 1..9 {
             let head = format!("## {n}. ");
@@ -2899,6 +2903,13 @@ mod guide_test {
         }
         assert!(text.contains("claude-security"));
         assert!(text.contains("ui-designer builds, then ui-reviewer checks"));
+    }
+
+    // A UI task is reviewed on the rendered build before it merges; the owner's "less review"
+    // shrinks the review, it never removes it (design-feedback fix F1).
+    #[test]
+    fn test_ui_review_comes_before_merge() {
+        assert!(guide().contains("ui-designer builds, then ui-reviewer checks before merge"));
     }
 
     #[test]

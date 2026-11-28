@@ -210,8 +210,12 @@ fn present() -> BTreeSet<String> {
         .collect()
 }
 
-/// `skill_files(folder)`: the SKILL.md files of a folder; design-skills is a repo of skills.
+/// `skill_files(folder)`: the SKILL.md files of a folder; design-skills is a repo of skills; a
+/// support folder holds none.
 fn skill_files(folder: &str) -> Vec<PathBuf> {
+    if repo::SUPPORT_KNOWLEDGE.contains(&folder) {
+        return Vec::new();
+    }
     if folder == "design-skills" {
         let skills = format!("{}/{folder}/skills", repo::KNOWLEDGE);
         let mut found: Vec<PathBuf> = repo::list_dir(&skills)
@@ -262,7 +266,108 @@ mod knowledge_folders_test {
     #[test]
     fn test_expected_set_is_the_22_plus_the_other_seven() {
         assert_eq!(repo::stripped_knowledge().len(), 22);
-        assert_eq!(repo::expected_knowledge().len(), 30);
+        assert_eq!(repo::expected_knowledge().len(), 57);
+    }
+
+    /// Every `target` of `vendor/sources.json` that is a folder directly under the knowledge folder.
+    fn source_folders() -> BTreeSet<String> {
+        let sources = read_json("vendor/sources.json");
+        let prefix = format!("{}/", repo::KNOWLEDGE);
+        get(&sources, "sources")
+            .as_array()
+            .expect("sources is a list")
+            .iter()
+            .filter_map(|e| e.as_object()?.get("target")?.as_str().map(str::to_string))
+            .filter_map(|t| t.strip_prefix(&prefix).map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn test_first_party_folders_are_hand_written() {
+        let targets = source_folders();
+        for folder in repo::FIRST_PARTY_KNOWLEDGE {
+            assert!(
+                !targets.contains(folder),
+                "{folder} is first-party but a source targets it"
+            );
+            assert!(present().contains(folder), "{folder} is missing");
+        }
+        let unpinned: Vec<String> = present()
+            .into_iter()
+            .filter(|n| !repo::FIRST_PARTY_KNOWLEDGE.contains(&n.as_str()))
+            .filter(|n| !targets.contains(n))
+            .collect();
+        assert_eq!(unpinned, Vec::<String>::new());
+    }
+
+    #[test]
+    fn test_dashboard_copy_shape() {
+        let folder = knowledge_dir().join("dashboard-copy");
+        let shipped: Vec<String> = files_of("dashboard-copy")
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&folder)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        assert_eq!(shipped, ["LICENSE", "SKILL.md"]);
+        assert_eq!(
+            std::fs::read(folder.join("LICENSE")).unwrap(),
+            std::fs::read(repo::path("plugins/anthology/LICENSE")).unwrap()
+        );
+        let text = repo::read(&format!("{}/dashboard-copy/SKILL.md", repo::KNOWLEDGE));
+        let mut at = 0;
+        for heading in [
+            "# Dashboard copy",
+            "## When to use",
+            "## Labels",
+            "## Units",
+            "## Numbers",
+            "## Dates and times",
+            "## Truncation",
+            "## Statuses",
+            "## Empty states",
+            "## Errors",
+            "## Check before you ship",
+            "## Sources",
+        ] {
+            let pattern = Regex::new(&format!(r"(?m)^{}{S}*$", regex::escape(heading))).unwrap();
+            let found = pattern
+                .find(&text[at..])
+                .unwrap_or_else(|| panic!("{heading} is missing or out of order"));
+            at += found.end();
+        }
+        for needle in [
+            "Open Government Licence v3.0",
+            "carbondesignsystem.com",
+            "nngroup.com",
+        ] {
+            assert!(text.contains(needle), "{needle}");
+        }
+        assert!(text.len() <= 12000, "{} bytes", text.len());
+        assert_eq!(
+            repo_tests::links::dangling_links("plugins/anthology/knowledge/dashboard-copy"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn test_support_folders_are_linked_not_read() {
+        for folder in repo::SUPPORT_KNOWLEDGE {
+            assert!(
+                !knowledge_dir().join(folder).join("SKILL.md").exists(),
+                "{folder} is a support folder and must not hold a SKILL.md"
+            );
+            let needle = format!("../{folder}/");
+            let linked = present()
+                .into_iter()
+                .filter(|n| n != folder)
+                .flat_map(|n| files_of(&n))
+                .any(|p| std::fs::read_to_string(&p).is_ok_and(|t| t.contains(&needle)));
+            assert!(linked, "no other knowledge file links {needle}");
+        }
     }
 
     #[test]
@@ -301,6 +406,9 @@ mod knowledge_folders_test {
     fn test_every_skill_has_its_folder_name_and_a_description() {
         let expected = repo::expected_knowledge();
         for folder in present().intersection(&expected) {
+            if repo::SUPPORT_KNOWLEDGE.contains(&folder.as_str()) {
+                continue;
+            }
             let files = skill_files(folder);
             assert!(!files.is_empty(), "{folder}");
             for path in files {

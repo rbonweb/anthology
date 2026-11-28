@@ -4,7 +4,9 @@
 // in the agent's worktree); the project-map and leftover items are reminders that ride in a block
 // a gap raised. The test's own hooks sit beneath the plugin and stand for Claude Code:
 // `agent.report` is the engine's delivery of the text, `env.get` the environment, `agent.list`,
-// `session.*` and `fs.stat` where the agent worked, and `process.run` the one git call.
+// `session.*` and `fs.stat` where the agent worked, and `process.run` the one git call. The slop
+// part adds a second git call (the lead's HEAD) and one call to the installed anthology binary,
+// which `World.slop` stands for; both are kept apart from `runs`, the `git status` calls.
 import type { AgentInfo, AgentReportInput, On, ProcessRunResult } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
@@ -31,10 +33,22 @@ type World = {
   gitDirs?: readonly string[]
   /** The paths of a link called `git`, with what it leads to (a dangling link is `other`). */
   gitLinks?: Record<string, 'file' | 'dir' | 'other'>
+  /** The installed anthology binary and what `slop check` does; absent: no binary is installed. */
+  slop?: (run: Run) => ProcessRunResult | Promise<ProcessRunResult>
+  /** What `git rev-parse HEAD` does in the lead's folder; by default it prints HEAD. */
+  head?: (run: Run) => ProcessRunResult | Promise<ProcessRunResult>
+  /** Every call the slop part makes: the `rev-parse` and the binary, in order. */
+  calls?: Run[]
 }
 
 /** The PATH the test session has unless `env.PATH` says otherwise. */
 const SYSTEM_PATH = '/usr/local/bin:/usr/bin:/bin'
+
+/** The install the shim would find: <ah>/bin/<lock version>/anthology and its .sha256 (as util.ts reads it). */
+const AH = '/home/user/.claude/anthology'
+const SLOP_BIN = `${AH}/bin/0.1.1/anthology`
+const LOCK = '{\n  "version": "0.1.1",\n  "tag": "anthology-bin--v0.1.1",\n  "repo": "rbonweb/anthology",\n  "sha256": {}\n}\n'
+const HEAD = 'a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0'
 
 const CLEAN: ProcessRunResult = {
   exitCode: 0,
@@ -48,11 +62,19 @@ const CLEAN: ProcessRunResult = {
 function engine(on: On, w: World = {}) {
   const runs: Run[] = []
   on('agent.report', (_$, e) => ({ text: e.text, review: 'cleared', ...w.review }))
-  on('env.get', (_$, e) => ({ value: w.env?.[e.name] ?? (e.name === 'PATH' ? SYSTEM_PATH : undefined) }))
+  on('env.get', (_$, e) => ({
+    value: w.env?.[e.name] ?? (e.name === 'PATH' ? SYSTEM_PATH : e.name === 'HOME' && w.slop ? '/home/user' : undefined),
+  }))
   on('agent.list', () => ({ value: w.agents?.() ?? [] }))
   on('session.cwd', () => ({ value: w.cwd ?? '/work/repo' }))
   on('session.root', () => ({ value: w.root ?? '/work/repo' }))
+  on('fs.read', (_$, e) => {
+    if (w.slop && e.path.endsWith('/anthology.lock')) return { value: LOCK }
+    throw new Error(`ENOENT: ${e.path}`)
+  })
   on('fs.stat', (_$, e) => {
+    if (w.slop && e.path === SLOP_BIN) return { value: { kind: 'file', size: 100, mtimeMs: 0, isLink: false } }
+    if (w.slop && e.path === `${AH}/bin/0.1.1/.sha256`) return { value: { kind: 'file', size: 65, mtimeMs: 0, isLink: false } }
     const fileAt = (w.gitAt ?? ['/usr/bin/git']).includes(e.path)
     const link = w.gitLinks?.[e.path]
     // What `$.fs.stat` says of a `git` path: a link is followed, a dangling one is `other`, a missing path rejects.
@@ -65,6 +87,14 @@ function engine(on: On, w: World = {}) {
   })
   on('fs.exists', (_$, e) => ({ value: w.files?.includes(e.path) ?? false }))
   on('process.run', async (_$, e) => {
+    if (e.argv[0] === SLOP_BIN) {
+      w.calls?.push(e)
+      return { value: await (w.slop ?? (() => CLEAN))(e) }
+    }
+    if (e.argv.includes('rev-parse')) {
+      w.calls?.push(e)
+      return { value: await (w.head ?? (() => ({ ...CLEAN, stdout: `${HEAD}\n` })))(e) }
+    }
     runs.push(e)
     return { value: await (w.git ?? (() => CLEAN))(e) }
   })
@@ -163,6 +193,85 @@ test('test evidence is a test word, and "not run" or "skipped" in any order is n
   ]) {
     const text = withVerification(bad)
     expect((await $.agent.report(report(text))).text).toContain('what was tested')
+  }
+})
+
+test('the reported wording, hash checks and live downloads that verified the result, is test evidence', async ($, on) => {
+  engine(on)
+  const line = 'hash checks matched the pinned sha256 for every asset, and live downloads of each URL verified the result.'
+  expect((await $.agent.report(report(withVerification(line)))).text).toBe(withVerification(line))
+})
+
+// The common ways a report says it checked, by what was checked: code, a download, a service, a
+// screenshot, a page of prose. None of them holds the word "test".
+const EVIDENCE = [
+  'verified the output by hand',
+  'checked the result against the spec',
+  'confirmed the file opens',
+  'sha256 matched the published checksum',
+  'the checksum matched',
+  'hashes are identical',
+  'downloaded the asset again and compared it with the original',
+  'ran the script twice',
+  're-ran it after the fix, same result',
+  'smoke run of the install path',
+  'curl returned 200 for the health endpoint',
+  'GET /health: HTTP 200',
+  'status code 204 from the API',
+  'screenshot checked at 1280px',
+  'inspected the screenshot, layout holds',
+  '12 passed',
+  'all green in CI',
+  'build ok, 0 errors',
+  'compiles cleanly',
+  'exit code 0',
+]
+
+test('test evidence takes the common wording of a report that checked its work', async ($, on) => {
+  engine(on)
+  for (const ok of EVIDENCE) {
+    expect((await $.agent.report(report(withVerification(ok)))).text, ok).toBe(withVerification(ok))
+  }
+})
+
+test('test evidence is judged the same for the docs-writer and the ui-designer', async ($, on) => {
+  engine(on)
+  const cases: [string, string][] = [
+    ['anthology:docs-writer', 'cross-checked each claim against its three sources; all links resolve (curl 200).'],
+    ['anthology:docs-writer', 'verified every command in the page by running it.'],
+    ['anthology:ui-designer', 'screenshot taken and checked at 375px and 1280px.'],
+    ['anthology:ui-designer', 'inspected the screenshot: spacing and contrast hold.'],
+    ['anthology:debugger', 'reproduced the failure, applied the fix, re-ran it: 4 passed.'],
+  ]
+  for (const [subagentType, line] of cases) {
+    const text = withVerification(line)
+    expect((await $.agent.report(report(text, { subagentType }))).text, line).toBe(text)
+  }
+})
+
+test('a report that says nothing about checking its work still gets the tested note', async ($, on) => {
+  engine(on)
+  for (const bad of [
+    'x',
+    'Rewrote the intro and updated the table of contents.',
+    'Added a screenshot of the page to the README.',
+    'Changed the button to green and widened the layout.',
+    'Reviewed the sources and wrote the summary.',
+    'Added the verification section to the guide.',
+    'Summary of the download: three files, 40 MB.',
+    'not verified',
+    'nothing was checked',
+    'I did not check anything',
+    "couldn't run it here",
+    'never ran it',
+    'unable to verify the download',
+    'could not confirm the result',
+    'not compared with the original',
+  ]) {
+    const text = withVerification(bad)
+    expect((await $.agent.report(report(text))).text, bad).toContain('what was tested')
+    const docs = await $.agent.report(report(text, { subagentType: 'anthology:docs-writer' }))
+    expect(docs.text, bad).toContain('what was tested')
   }
 })
 
@@ -629,4 +738,183 @@ test('a failing path lookup keeps the checks', async ($, on) => {
   }
   engine(on, outsideWorld({ files: broken }))
   expect((await $.agent.report(report(OUTSIDE))).text).toContain('no commit')
+})
+
+// The slop part: `anthology slop check --since <lead HEAD>` in the writer's worktree. The lines are
+// the CLI contract's: `{shown}:{line}: {rule}: "{excerpt}"` and, for a waiver in the new text,
+// `{shown}:{line}: slop-ok {rule}: {reason}` or `{shown}:{line}: slop-ignore region`.
+const TELL_1 = 'docs/a.md:3: text.ai-vocab: "We delve into the cache layer."'
+const TELL_2 = 'docs/a.md:9: text.stock-phrase: "Let\'s dive in and read the code."'
+const TELL_3 = 'src/Hero.tsx:12: ui.purple-gradient: "linear-gradient(135deg, #6366f1, #a855f7)"'
+const TELL_4 = 'README.md:1: text.chat-residue: "I hope this helps!"'
+const WAIVER_1 = 'docs/b.md:4: slop-ok text.ai-vocab: the product is called Seamless Sync'
+const WAIVER_2 = 'docs/c.md:1: slop-ignore region'
+const WAIVER_3 = 'src/Hero.tsx:2: slop-ok ui.purple-gradient: brand colour from the style guide'
+const WAIVER_4 = 'docs/d.md:7: slop-ignore region'
+
+/** What `slop check` prints: one line each, with the exit code the contract gives (1 holds a finding). */
+const printed = (lines: readonly string[], exitCode = 1): ProcessRunResult => ({
+  ...CLEAN,
+  exitCode,
+  stdout: lines.map(l => `${l}\n`).join(''),
+})
+const slopWorld = (lines: readonly string[], exitCode = 1, calls: Run[] = []): World => ({
+  ...IN_WORKTREE(),
+  slop: () => printed(lines, exitCode),
+  calls,
+})
+const blockOf = (text: string | undefined) => text?.slice(FULL.length) ?? ''
+
+test('a writer whose changes hold tells gets a slop gap, from the lead HEAD and the agent folder', async ($, on) => {
+  const calls: Run[] = []
+  engine(on, slopWorld([TELL_1, TELL_2, TELL_3, TELL_4], 1, calls))
+  const r = await $.agent.report(report(FULL))
+  expect(r.text?.startsWith(`${FULL}\n\n`)).toBe(true)
+  expect(blockOf(r.text)).toContain(
+    `- the agent's changes hold 4 AI tells (anthology slop check): ${TELL_1}; ${TELL_2}; ${TELL_3}; send it back to rewrite them`,
+  )
+  expect(blockOf(r.text).match(/^- /gm)).toHaveLength(1)
+  expect(blockOf(r.text)).not.toContain(TELL_4)
+  expect(calls.map(c => [...c.argv])).toEqual([
+    ['/usr/bin/git', 'rev-parse', 'HEAD'],
+    [SLOP_BIN, 'slop', 'check', '--root', WORKTREE, '--since', HEAD],
+  ])
+  expect(calls[0]?.init?.cwd).toBe('/work/repo')
+  expect(calls[0]?.init?.timeoutMs).toBe(1500)
+  expect(calls[1]?.init?.timeoutMs).toBe(4000)
+})
+
+test('one tell reads in the singular', async ($, on) => {
+  engine(on, slopWorld([TELL_1]))
+  const r = await $.agent.report(report(FULL))
+  expect(blockOf(r.text)).toContain(`- the agent's changes hold 1 AI tell (anthology slop check): ${TELL_1}; send it back to rewrite them`)
+})
+
+test('added waivers raise their own gap, with a clean check beside them', async ($, on) => {
+  engine(on, slopWorld([WAIVER_1, WAIVER_2, WAIVER_3, WAIVER_4], 0))
+  const r = await $.agent.report(report(FULL))
+  expect(blockOf(r.text)).toContain(
+    `- the agent added 4 slop waivers or ignore regions: ${WAIVER_1}; ${WAIVER_2}; ${WAIVER_3}; confirm the user asked for that wording`,
+  )
+  expect(blockOf(r.text)).not.toContain('AI tell')
+  expect(blockOf(r.text).match(/^- /gm)).toHaveLength(1)
+})
+
+test('one waiver reads in the singular', async ($, on) => {
+  engine(on, slopWorld([WAIVER_2], 0))
+  const r = await $.agent.report(report(FULL))
+  expect(blockOf(r.text)).toContain(
+    `- the agent added 1 slop waiver or ignore region: ${WAIVER_2}; confirm the user asked for that wording`,
+  )
+})
+
+test('tells and waivers each count their own lines, tells first, after the dirty-files gap', async ($, on) => {
+  engine(on, {
+    ...slopWorld([TELL_1, WAIVER_1, TELL_2, WAIVER_2, WAIVER_3]),
+    git: () => ({ ...CLEAN, stdout: ' M src/a.ts\n' }),
+  })
+  const gaps = blockOf((await $.agent.report(report(FULL))).text).match(/^- .*$/gm) ?? []
+  expect(gaps).toEqual([
+    "- 1 uncommitted change in the agent's worktree (git status)",
+    `- the agent's changes hold 2 AI tells (anthology slop check): ${TELL_1}; ${TELL_2}; send it back to rewrite them`,
+    `- the agent added 3 slop waivers or ignore regions: ${WAIVER_1}; ${WAIVER_2}; ${WAIVER_3}; confirm the user asked for that wording`,
+  ])
+})
+
+test('lines that are not findings or waivers are ignored, and control characters are not passed on', async ($, on) => {
+  engine(on, slopWorld(['warning: something', '', 'docs/a.md:x: text.ai-vocab: "no line"', `docs/a.md:3: text.ai-vocab: "a\u001b[31mred\u0007"`]))
+  const r = await $.agent.report(report(FULL))
+  expect(blockOf(r.text)).toContain(`the agent's changes hold 1 AI tell (anthology slop check): docs/a.md:3: text.ai-vocab: "a [31mred "; send`)
+  expect(r.text).not.toContain('\u001b')
+  expect(r.text).not.toContain('\u0007')
+  expect(r.text).not.toContain('warning: something')
+})
+
+test('a clean check adds nothing', async ($, on) => {
+  const calls: Run[] = []
+  engine(on, slopWorld([], 0, calls))
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(calls).toHaveLength(2)
+})
+
+test('a missing binary, a timeout or exit 2 adds nothing', async ($, on) => {
+  const w: World = { ...IN_WORKTREE(), calls: [] }
+  engine(on, w)
+  // No binary installed: HEAD is read, nothing else runs.
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(w.calls?.map(c => c.argv[0])).toEqual(['/usr/bin/git'])
+  const stale = [TELL_1, WAIVER_1]
+  const cases: Record<string, (run: Run) => ProcessRunResult> = {
+    'timeout': () => {
+      throw new Error('process.run timed out')
+    },
+    'exit 2': () => printed(stale, 2),
+    'a crash': () => printed(stale, 101),
+    'a signal': () => printed(stale, -1),
+  }
+  for (const [name, slop] of Object.entries(cases)) {
+    w.slop = slop
+    w.calls = []
+    expect((await $.agent.report(report(FULL))).text, name).toBe(FULL)
+    expect(w.calls.map(c => c.argv[0]), name).toEqual(['/usr/bin/git', SLOP_BIN])
+  }
+})
+
+test('the check is not run without a HEAD to compare with', async ($, on) => {
+  const w: World = { ...slopWorld([TELL_1]), calls: [] }
+  engine(on, w)
+  const heads: Record<string, (run: Run) => ProcessRunResult> = {
+    'a git error': () => ({ ...CLEAN, exitCode: 128, stderr: 'fatal: not a git repository' }),
+    'empty output': () => CLEAN,
+    'an option': () => ({ ...CLEAN, stdout: '--output=/tmp/x\n' }),
+    'a branch name': () => ({ ...CLEAN, stdout: 'main\n' }),
+    'a timeout': () => {
+      throw new Error('process.run timed out')
+    },
+  }
+  for (const [name, head] of Object.entries(heads)) {
+    w.head = head
+    w.calls = []
+    expect((await $.agent.report(report(FULL))).text, name).toBe(FULL)
+    expect(w.calls.map(c => c.argv[0]), name).toEqual(['/usr/bin/git'])
+  }
+})
+
+test('ANTHOLOGY_SLOP_GATE=0 never runs the check', async ($, on) => {
+  const calls: Run[] = []
+  const w: World = { ...slopWorld([TELL_1], 1, calls), env: { ANTHOLOGY_SLOP_GATE: '0' } }
+  engine(on, w)
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(calls).toHaveLength(0)
+  w.env = { ANTHOLOGY_SLOP_GATE: '1' }
+  expect((await $.agent.report(report(FULL))).text).toContain('AI tell')
+  expect(calls).toHaveLength(2)
+})
+
+test("the session's own folder is not checked", async ($, on) => {
+  const calls: Run[] = []
+  engine(on, { ...slopWorld([TELL_1], 1, calls), cwd: '/work/repo', agents: () => [{ id: 'a1', cwd: '/work/repo' } as AgentInfo] })
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(calls).toHaveLength(0)
+})
+
+test('no agent folder, or a failing agent lookup, runs no check', async ($, on) => {
+  const calls: Run[] = []
+  const w: World = { ...slopWorld([TELL_1], 1, calls), agents: () => [] }
+  engine(on, w)
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  w.agents = () => {
+    throw new Error('no list')
+  }
+  expect((await $.agent.report(report(FULL))).text).toBe(FULL)
+  expect(calls).toHaveLength(0)
+})
+
+test('the slop check is for the writers the after-work check covers, and not for a nested or failed report', async ($, on) => {
+  const calls: Run[] = []
+  engine(on, slopWorld([TELL_1], 1, calls))
+  expect((await $.agent.report(report('Done.', { subagentType: 'anthology:reviewer' }))).text).toBe('Done.')
+  expect((await $.agent.report(report('Done.', { parentAgentId: 'p1' }))).text).toBe('Done.')
+  expect((await $.agent.report(report('Done.', { status: 'failed' }))).text).toBe('Done.')
+  expect(calls).toHaveLength(0)
 })

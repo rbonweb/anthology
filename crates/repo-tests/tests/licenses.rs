@@ -109,7 +109,7 @@ mod knowledge_license_test {
     #[test]
     fn test_every_knowledge_folder_has_a_license() {
         let folders = dirs_in(KNOWLEDGE);
-        assert_eq!(folders.len(), 30);
+        assert_eq!(folders.len(), 57);
         for folder in folders {
             assert!(
                 LICENSE_NAMES
@@ -123,7 +123,7 @@ mod knowledge_license_test {
     #[test]
     fn test_every_knowledge_source_ships_the_license_it_names() {
         let sources = knowledge_sources();
-        assert_eq!(sources.len(), 30);
+        assert_eq!(sources.len(), 56);
         for e in sources {
             let name = e.license_name();
             let shipped = format!("{}/{name}", e.target());
@@ -149,7 +149,7 @@ mod knowledge_license_test {
             assert_eq!(shipped, expected, "{}", e.name());
             checked += 1;
         }
-        assert_eq!(checked, 29);
+        assert_eq!(checked, 55);
     }
 
     #[test]

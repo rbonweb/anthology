@@ -10,6 +10,28 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.6.0] - 2026-11-28
+
+- Fix: auto mode no longer refuses a plain `grep ... | tail` with "a hook changed this call's input after auto mode reviewed it" when the ATL binary in use is older than the plugin. ATL `1.2.1-anthology.7` and later rewrite nothing in auto mode, but an older binary (a running session that began before an update, or an install that did not finish) still rewrote `grep -n "x" file | tail -8` into `atl grep ...`. `bin/atl-hook` now drops any plain rewrite when the hook input's `permission_mode` is `auto`, whatever the binary answered, so the call runs as typed. An ask on a line that mentions atl is kept in auto mode with its reason, but without the rewritten input, so you are asked about the line as typed. A deny is kept as before. Other modes behave as before. No ATL release is needed.
+- Add: blog-writer agent: trend research (Hacker News and Reddit public endpoints, WebSearch), brief, outline, draft and a 90/100 score gate before hand-off.
+- Add: marketer reads one knowledge set per deliverable: page copy, email, social, ads, launch and PR, CRO and A/B tests, tracking plans, SEO and AI search, content and campaign plans.
+- Add: reviewer checks marketing deliverables with brand-review and copy-editing.
+- Add: ui-designer and docs-writer read ux-microcopy and Anthology's own dashboard-copy for product and dashboard strings.
+- Change: a Startup line ending in "only when …" is read only for that job; the startup budget counts its largest such file.
+- Add: the slop gate refuses a Write, Edit or MultiEdit whose new text holds a known AI-writing or AI-design tell, and names the line and phrase.
+- Add: docs-writer, marketer and product-planner run a humanizer rewrite pass; ui-designer and ui-reviewer use the avoid-ai-design P0/P1 rubric.
+- Add: the after-work check lists AI tells and slop waivers in a writer's changes, including files written through the shell.
+- Add: a rule for credentials an agent fetches or generates: save them as `KEY=value` lines in `~/.config/<project>/<service>.env` (folder mode 700, file 600), never in the repo, a commit, a log or the output. It is in every agent's Shell section and, in short form, in the routing guide.
+- Fix: the after-work check no longer says "nothing about what was tested" for a report that did check its work in other words: verified, checked, confirmed, compared, ran or re-ran, hash or checksum matched, curl status, screenshot inspected, "N passed", build ok. A report that says nothing about checking, or says it did not check, still gets the note.
+- Fix: the delegation mod lets the lead Write or Edit a file in the repo that git ignores and does not track, such as `.env.<name>.local`. Only the main checkout holds such a file, so no agent in a worktree could make it, and the lead was refused too. Git decides (`check-ignore`, then not in the index); nothing under `.git`, no symbolic link, and any failed check keeps the refusal.
+- Add: ui-reviewer runs a measured pass per width (headings over 2 lines, clipped text, orphan rows, uneven section padding, overflow, broken images, click rings), clicks nav and open/close controls only (never delete, pay, buy, send, submit, post or sign-out on a live site), checks third-party marks are official assets, renders every entry the change reaches and searches rendered text and attribute values for banned names, the old brand, dummy phone numbers and model-vendor names.
+- Add: ui-designer takes direction first (logo, colours, fonts, theme mode) and stops with the gaps when logo, colours or theme mode are missing, captures a named reference before building, checks every surface and state itself, styles `:focus-visible` only (no ring on mouse click), uses official third-party marks, never invents testimonials, omits contacts it was not given and views every saved screenshot.
+- Change: ui-designer reads website-clone when the brief is a clone or names a reference site, not only for clones.
+- Add: product-planner starts use cases from real users' jobs and writes a navigation map before UI work on products with three or more modules.
+- Add: large-builds has a "Design and UI work" section: collect the design direction and public identity before the first UI task (an absent owner gets identity and legal facts left out, not defaulted), start a clone or like-X brief with the reference capture, keep a banned-names list in a personal note and paste it into each brief, review UI with ui-reviewer on the PR head while CI runs (less review means the measured pass, never none), and check the first screenshot capture by eye. It also gains rules to verify claims before stating them, to name the evidence for "done", to search for secrets with `grep -c` and mask matches, to fan per-unit work out at dispatch, to read every failed CI job before the next push, and to report a start only after the dispatch returns.
+- Change: the routing guide says ui-reviewer checks before merge.
+- Change: website-clone uses the user's own imagery first, falls back to the project's name instead of `[Brand name]` (the slop gate refuses it), omits contact channels the user has not given, removes out-of-scope links or renders them as text instead of `#`, and keeps capture read-only on the source site.
+
 ### [0.5.11] - 2026-11-28
 
 - Add: the `website-clone` knowledge, vendored from JCodesMore/ai-website-cloner-template (MIT) and adapted for Anthology. It copies a site's structure, layout, palette, fonts and feel into the project's own stack, starting from a tokens file, and always replaces the brand, images, text and form actions. Capture and comparison run in BrowserOS Neo, builds in Docker. `ui-designer` reads it only when the brief is a clone.
@@ -705,6 +727,10 @@ a new version section.
 ## anthology-guardrails
 
 ### [Unreleased]
+
+### [0.2.19] - 2026-11-28
+
+- The pinned anthology binary moves to 0.2.10, which adds the slop gate.
 
 ### [0.2.18] - 2026-11-27
 

@@ -119,7 +119,17 @@ pub fn stripped_knowledge() -> Vec<(String, &'static str, String)> {
 pub const UNCHANGED_KNOWLEDGE: [&str; 3] =
     ["frontend-design", "web-design-guidelines", "design-skills"];
 
-/// `test_knowledge.EXPECTED_KNOWLEDGE`: the stripped 22, the unchanged 3 and five more.
+/// Knowledge folders written by hand in this repo: no `vendor/sources.json` entry targets them,
+/// `anthology-dev vendor` never touches them, and `knowledge.rs` guards the list.
+pub const FIRST_PARTY_KNOWLEDGE: [&str; 1] = ["dashboard-copy"];
+
+/// Knowledge folders that hold shared references and templates for other knowledge files: they
+/// have no `SKILL.md` and no agent reads them, a skill links into them.
+pub const SUPPORT_KNOWLEDGE: [&str; 1] = ["blog"];
+
+/// `test_knowledge.EXPECTED_KNOWLEDGE`: the stripped 22, the unchanged 3, seven more, and the
+/// copy and marketing folders (14 marketingskills names, `brand-review`,
+/// `landing-page-copywriter`, `ux-microcopy`, the 7 blog names and `dashboard-copy`).
 pub fn expected_knowledge() -> BTreeSet<String> {
     let mut set: BTreeSet<String> = stripped_knowledge()
         .into_iter()
@@ -133,9 +143,41 @@ pub fn expected_knowledge() -> BTreeSet<String> {
             "design-taste-frontend",
             "karpathy-guidelines",
             "website-clone",
+            "humanizer",
+            "avoid-ai-design",
         ]
         .map(String::from),
     );
+    set.extend(
+        [
+            "product-marketing",
+            "copywriting",
+            "copy-editing",
+            "emails",
+            "social",
+            "ad-creative",
+            "launch",
+            "public-relations",
+            "cro",
+            "ab-testing",
+            "analytics",
+            "programmatic-seo",
+            "ai-seo",
+            "content-strategy",
+            "brand-review",
+            "landing-page-copywriter",
+            "ux-microcopy",
+            "blog",
+            "blog-write",
+            "blog-brief",
+            "blog-outline",
+            "blog-cluster",
+            "blog-discourse",
+            "blog-factcheck",
+        ]
+        .map(String::from),
+    );
+    set.extend(FIRST_PARTY_KNOWLEDGE.iter().map(|s| (*s).to_string()));
     set
 }
 
@@ -149,19 +191,23 @@ pub struct AgentSpec {
     pub worktree: bool,
     /// anthology-superpowers skills in the agent's `skills`.
     pub preloads: Vec<&'static str>,
-    /// Refs for [`knowledge_path`], in Startup order after caveman.
+    /// Refs for [`knowledge_path`] read on every start (the always lines), in Startup order
+    /// after caveman.
     pub knowledge: Vec<&'static str>,
+    /// Refs on conditional Startup lines ("`, only ..."), in Startup order after `knowledge`.
+    pub conditional: Vec<&'static str>,
 }
 
-/// The 11-agent roster (Part 1 section 5), in the order of `EXPECTED_ROSTER`.
+/// The 12-agent roster (Part 1 section 5), in the order of `EXPECTED_ROSTER`, then `blog-writer`.
 pub fn expected_roster() -> Vec<AgentSpec> {
-    let spec = |name, model, edits, worktree, preloads, knowledge| AgentSpec {
+    let spec = |name, model, edits, worktree, preloads, knowledge, conditional| AgentSpec {
         name,
         model,
         edits,
         worktree,
         preloads,
         knowledge,
+        conditional,
     };
     vec![
         spec(
@@ -177,6 +223,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/ux-research",
                 "ds/journey-mapping",
             ],
+            vec![],
         ),
         spec(
             "architect",
@@ -185,6 +232,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             false,
             vec!["writing-plans"],
             vec!["system-design", "architecture", "testing-strategy"],
+            vec![],
         ),
         spec(
             "implementer",
@@ -193,6 +241,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             true,
             vec!["test-driven-development", "verification-before-completion"],
             vec!["karpathy-guidelines"],
+            vec![],
         ),
         spec(
             "debugger",
@@ -201,6 +250,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             true,
             vec!["systematic-debugging"],
             vec!["karpathy-guidelines"],
+            vec![],
         ),
         spec(
             "reviewer",
@@ -208,21 +258,23 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "no",
             false,
             vec![],
+            vec!["code-review-checklist", "karpathy-guidelines"],
             vec![
-                "code-review-checklist",
-                "karpathy-guidelines",
                 "tech-debt",
                 "deploy-checklist",
+                "brand-review",
+                "copy-editing",
             ],
         ),
-        spec("scout", "haiku", "no", false, vec![], vec![]),
+        spec("scout", "haiku", "no", false, vec![], vec![], vec![]),
         spec(
             "docs-writer",
             "sonnet",
             "yes",
             true,
             vec![],
-            vec!["documentation", "ds/ux-writing"],
+            vec!["documentation", "ds/ux-writing", "humanizer"],
+            vec!["ux-microcopy", "dashboard-copy"],
         ),
         spec(
             "ui-designer",
@@ -240,8 +292,9 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/design-systems",
                 "ds/interaction-design",
                 "ds/design-elevation",
-                "website-clone",
+                "avoid-ai-design",
             ],
+            vec!["website-clone", "ux-microcopy", "dashboard-copy"],
         ),
         spec(
             "ui-reviewer",
@@ -254,7 +307,9 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "web-review",
                 "ds/design-critique",
                 "ds/accessibility-audit",
+                "avoid-ai-design",
             ],
+            vec![],
         ),
         spec(
             "product-planner",
@@ -269,7 +324,9 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "product-brainstorming",
                 "ds/ux-strategy",
                 "ds/design-ops",
+                "humanizer",
             ],
+            vec![],
         ),
         spec(
             "marketer",
@@ -277,11 +334,40 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "docs",
             false,
             vec![],
+            vec!["humanizer", "product-marketing"],
             vec![
-                "seo-audit",
-                "campaign-plan",
-                "content-creation",
+                "copywriting",
+                "landing-page-copywriter",
+                "copy-editing",
+                "emails",
                 "email-sequence",
+                "social",
+                "ad-creative",
+                "launch",
+                "public-relations",
+                "cro",
+                "ab-testing",
+                "analytics",
+                "seo-audit",
+                "programmatic-seo",
+                "ai-seo",
+                "content-strategy",
+                "content-creation",
+                "campaign-plan",
+            ],
+        ),
+        spec(
+            "blog-writer",
+            "sonnet",
+            "docs",
+            false,
+            vec![],
+            vec!["humanizer", "blog-write", "blog-factcheck"],
+            vec![
+                "blog-discourse",
+                "blog-brief",
+                "blog-outline",
+                "blog-cluster",
             ],
         ),
     ]
@@ -312,10 +398,11 @@ mod tests {
 
     #[test]
     fn the_roster_data_matches_tests_repo_py() {
-        assert_eq!(expected_roster().len(), 11);
+        assert_eq!(expected_roster().len(), 12);
         assert_eq!(stripped_knowledge().len(), 22);
-        assert_eq!(expected_knowledge().len(), 30);
+        assert_eq!(expected_knowledge().len(), 57);
         assert_eq!(roster_agent("ui-designer").knowledge.len(), 10);
+        assert_eq!(roster_agent("ui-designer").conditional.len(), 3);
         assert!(knowledge_path("ds/x").ends_with("design-skills/skills/x/SKILL.md"));
     }
 

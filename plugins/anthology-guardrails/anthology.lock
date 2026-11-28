@@ -1,11 +1,11 @@
 {
-  "version": "0.2.9",
-  "tag": "anthology-bin--v0.2.9",
+  "version": "0.2.10",
+  "tag": "anthology-bin--v0.2.10",
   "repo": "rbonweb/anthology",
   "sha256": {
-    "aarch64-apple-darwin": "82e322e58714f7adffc9e2920ec63817d0c4a910c68711e9d7b8bc84bb2d5783",
-    "x86_64-apple-darwin": "6f59a7fac08dfc925d17f0b9e7db4746504cca9dc9896fc9c76f2ee167177e27",
-    "x86_64-unknown-linux-musl": "509164e5a2deae3b58c3f80af78e8378c721d4a480547e535c647a166df318e2",
-    "aarch64-unknown-linux-musl": "3c54dcd7af0ba7b50c36230ac895cac31ab3a969a8c13045deb401981a8b25af"
+    "aarch64-apple-darwin": "7af390affad226b8209b824d176e1baa762c9c5c1109fb3ed2aca7e8e46947dd",
+    "x86_64-apple-darwin": "f746beb9a6fa5f62a3d47a8c8867d41c8e1bd04f1456b7d03d50596edbbb6eef",
+    "x86_64-unknown-linux-musl": "22f37f4b9a041bfbfa87a7609aa774d5b63c75c82c63e4c429f5ad03f27838a0",
+    "aarch64-unknown-linux-musl": "c23fa1e1903253672661aa5b93ac942c6caec6f313b61f4e7699b2e677f19add"
   }
 }

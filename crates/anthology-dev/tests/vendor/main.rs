@@ -3,6 +3,7 @@
 //! the tests Python skips without git return early when git is missing.
 
 mod compatibility_test;
+mod drop_paths_test;
 mod fixture;
 mod http_get_test;
 
