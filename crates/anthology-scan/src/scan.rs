@@ -3761,4 +3761,110 @@ mod tests {
             );
         }
     }
+
+    // A profile of one folder by hand: the time of each phase of the orchestrator and, summed over
+    // the worker threads, of each rule module.
+    use std::sync::Mutex;
+    use std::sync::atomic::AtomicU64;
+    use std::time::Instant as Clock;
+
+    static RULE_NANOS: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
+    static PHASES: Mutex<Vec<(String, Clock)>> = Mutex::new(Vec::new());
+
+    fn lap(slot: usize, since: Clock) {
+        RULE_NANOS[slot].fetch_add(
+            u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    fn timed_check(f: &FileCtx, out: &mut Vec<Finding>) {
+        let t = Clock::now();
+        hidden::check(f, out);
+        lap(0, t);
+        let t = Clock::now();
+        payload::check(f, out);
+        lap(1, t);
+        let t = Clock::now();
+        exfil::check(f, out);
+        lap(2, t);
+        let t = Clock::now();
+        deps::check(f, out);
+        lap(3, t);
+        let t = Clock::now();
+        scanner::check(f, out);
+        lap(4, t);
+    }
+
+    fn timed_surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
+        let t = Clock::now();
+        let mut s = autorun::surfaces(f, out);
+        lap(5, t);
+        let t = Clock::now();
+        s.extend(agent::surfaces(f, out));
+        lap(6, t);
+        s
+    }
+
+    fn timed_yara(f: &FileCtx) -> Vec<YaraHit> {
+        let t = Clock::now();
+        let hits = yara::guarddog().eval(f);
+        lap(7, t);
+        hits
+    }
+
+    fn mark(phase: &str) {
+        PHASES
+            .lock()
+            .unwrap()
+            .push((phase.to_string(), Clock::now()));
+    }
+
+    /// `SCAN_PERF_ROOT=<folder> cargo test --release -p anthology-scan profile_a_folder --
+    /// --ignored --nocapture`: where the time of a scan goes.
+    #[test]
+    #[ignore = "a profile of one folder, run by hand"]
+    fn profile_a_folder() {
+        let Some(root) = std::env::var_os("SCAN_PERF_ROOT") else {
+            return;
+        };
+        let t0 = Clock::now();
+        let tree = DiskTree::open(Path::new(&root), &WalkOpts::default(), None).unwrap();
+        let walk = t0.elapsed();
+        let h = Hooks {
+            check: timed_check,
+            surfaces: timed_surfaces,
+            yara: timed_yara,
+            probe: mark,
+            ..REAL
+        };
+        let t1 = Clock::now();
+        let s = run_with(&tree, &h);
+        let total = t1.elapsed();
+        let end = Clock::now();
+        eprintln!(
+            "PERF files={} entries={} walk={walk:?} scan={total:?}",
+            s.files,
+            tree.entries().len()
+        );
+        let phases = PHASES.lock().unwrap();
+        let mut last = t1;
+        for (name, at) in phases.iter() {
+            eprintln!("PERF   before {name}: {:?}", at.duration_since(last));
+            last = *at;
+        }
+        eprintln!(
+            "PERF   after the last phase: {:?}",
+            end.duration_since(last)
+        );
+        let names = [
+            "hidden", "payload", "exfil", "deps", "scanner", "autorun", "agent", "yara",
+        ];
+        for (name, n) in names.iter().zip(&RULE_NANOS) {
+            eprintln!(
+                "PERF   rule {name}: {:?} (summed over threads)",
+                std::time::Duration::from_nanos(n.load(Ordering::Relaxed))
+            );
+        }
+    }
 }
