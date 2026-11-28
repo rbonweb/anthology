@@ -396,8 +396,10 @@ fn analyze(tree: &DiskTree, entry: &Entry, hooks: &Hooks) -> FileOut {
                 let must = known || kind == FileKind::Agent || is_git_config(path);
                 out.cut = if must { Cut::Must } else { Cut::Maybe };
             }
-            if text.as_deref().is_some_and(|t| t.contains("filter."))
-                && text.as_deref().is_some_and(|t| t.contains("git"))
+            // Also a git hook: `raise_filters` lowers the finding of a stock hook stub.
+            if (text.as_deref().is_some_and(|t| t.contains("filter."))
+                && text.as_deref().is_some_and(|t| t.contains("git")))
+                || autorun::is_git_hook(path)
             {
                 out.filter_text = text;
             }
