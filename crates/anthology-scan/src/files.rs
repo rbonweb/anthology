@@ -12,21 +12,86 @@ pub fn classify(path: &str, head: &[u8]) -> FileKind {
 
 /// `classify` with the answer of the agent-instruction test supplied by the caller.
 ///
-/// Order: a known binary magic or a NUL byte (outside UTF-16 text) makes it `Binary`; then an
-/// instruction file is `Agent` whatever its extension; then a `#!` first line makes it `Code`; then
-/// the name and extension decide.
+/// Order, name first: an instruction file is `Agent` whatever its bytes; a `#!` first line makes it
+/// `Code`; a code, config or known auto-run name stays `Code` or `Config` even with a NUL byte or a
+/// binary magic in it, because the tool that runs it reads it anyway (a stray byte must not turn it
+/// into a file the rules skip). Any other name is `Binary` on a known magic or a NUL byte (outside
+/// UTF-16 text), and otherwise `Doc` or `Data`.
 pub(crate) fn classify_with(path: &str, head: &[u8], instruction: bool) -> FileKind {
     let window = &head[..head.len().min(HEAD_WINDOW)];
-    if magic(window).is_some() || (window.contains(&0) && !has_utf16_bom(window)) {
-        return FileKind::Binary;
-    }
     if instruction {
         return FileKind::Agent;
     }
     if let Some(lang) = shebang_lang(window) {
         return FileKind::Code(lang);
     }
-    by_name(path)
+    match by_name(path) {
+        kind @ (FileKind::Code(_) | FileKind::Config) => kind,
+        kind => {
+            if magic(window).is_some() || (window.contains(&0) && !has_utf16_bom(window)) {
+                FileKind::Binary
+            } else {
+                kind
+            }
+        }
+    }
+}
+
+/// Whether the file is one that runs code when a repo is opened, installed, built or used by git:
+/// its name alone says so. These stay text even when they hold a NUL byte, and a flaw in their
+/// encoding is HIGH.
+pub(crate) fn is_autorun_name(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let mut parts: Vec<&str> = lower.split('/').collect();
+    let base = parts.pop().unwrap_or("");
+    let parent = parts.last().copied().unwrap_or("");
+    let grand = parts.len().checked_sub(2).map_or("", |i| parts[i]);
+    if parts.contains(&".husky") || (parent == "hooks" && grand == ".git") {
+        return true;
+    }
+    if parent == ".git" && matches!(base, "config" | "config.worktree") {
+        return true;
+    }
+    if matches!(
+        base,
+        "package.json"
+            | "makefile"
+            | "gnumakefile"
+            | "configure"
+            | "justfile"
+            | "taskfile.yml"
+            | "taskfile.yaml"
+            | ".envrc"
+            | ".pre-commit-config.yaml"
+            | ".gitattributes"
+            | ".gitmodules"
+            | ".npmrc"
+            | ".yarnrc"
+            | ".yarnrc.yml"
+            | "setup.py"
+            | "build.rs"
+            | ".mcp.json"
+            | ".devcontainer.json"
+            | "devcontainer.json"
+    ) {
+        return true;
+    }
+    if matches!(
+        base,
+        "tasks.json" | "settings.json" | "settings.local.json" | "mcp.json"
+    ) && matches!(parent, ".vscode" | ".cursor" | ".claude")
+    {
+        return true;
+    }
+    if (matches!(base, "config.toml") && matches!(parent, ".cargo" | ".codex"))
+        || (base == "config" && parent == ".cargo")
+    {
+        return true;
+    }
+    matches!(
+        base.rsplit_once('.').map(|(_, e)| e),
+        Some("code-workspace" | "csproj" | "vbproj" | "fsproj" | "props" | "targets" | "mk" | "m4")
+    )
 }
 
 /// The language named by a `#!` first line, whatever the file is called, so `.husky/*`, `.git/hooks/*`
@@ -67,6 +132,13 @@ fn shebang_lang(head: &[u8]) -> Option<Lang> {
 }
 
 fn by_name(path: &str) -> FileKind {
+    match by_extension(path) {
+        FileKind::Data if is_autorun_name(path) => FileKind::Config,
+        kind => kind,
+    }
+}
+
+fn by_extension(path: &str) -> FileKind {
     let base = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
     if matches!(
         base.as_str(),
@@ -117,6 +189,47 @@ pub fn decode(b: &[u8]) -> Option<String> {
     }
     let b = b.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(b);
     std::str::from_utf8(b).ok().map(str::to_string)
+}
+
+/// `b` as text with every flaw replaced, so no rule is skipped for one bad byte, and the first flaw
+/// as its kind and byte offset: `invalid UTF-8`, `invalid UTF-16` or `NUL byte`. UTF-16 is read
+/// when a BOM says so; a UTF-8 BOM is dropped and is not a flaw. A strict reader (a JSON parser, a
+/// shell) may stop where this text goes on, which is why a flaw in a file that runs code is itself
+/// a finding.
+pub(crate) fn decode_lossy(b: &[u8]) -> (String, Option<(&'static str, usize)>) {
+    let (text, mut flaw) = if let Some(rest) = b.strip_prefix(&[0xff, 0xfe]) {
+        utf16_lossy(rest, u16::from_le_bytes)
+    } else if let Some(rest) = b.strip_prefix(&[0xfe, 0xff]) {
+        utf16_lossy(rest, u16::from_be_bytes)
+    } else {
+        let body = b.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(b);
+        match std::str::from_utf8(body) {
+            Ok(s) => (s.to_string(), None),
+            Err(e) => (
+                String::from_utf8_lossy(body).into_owned(),
+                Some(("invalid UTF-8", e.valid_up_to())),
+            ),
+        }
+    };
+    if flaw.is_none()
+        && let Some(at) = text.find('\0')
+    {
+        flaw = Some(("NUL byte", at));
+    }
+    (text, flaw)
+}
+
+fn utf16_lossy(b: &[u8], unit: fn([u8; 2]) -> u16) -> (String, Option<(&'static str, usize)>) {
+    let (pairs, rest) = b.as_chunks::<2>();
+    let mut flaw = (!rest.is_empty()).then_some(("invalid UTF-16", b.len() - 1));
+    let mut text = String::with_capacity(pairs.len());
+    for (i, c) in char::decode_utf16(pairs.iter().copied().map(unit)).enumerate() {
+        text.push(c.unwrap_or_else(|_| {
+            flaw.get_or_insert(("invalid UTF-16", i * 2));
+            '\u{fffd}'
+        }));
+    }
+    (text, flaw)
 }
 
 fn utf16(b: &[u8], unit: fn([u8; 2]) -> u16) -> Option<String> {
@@ -291,18 +404,13 @@ mod tests {
             "aclocal.m4",
             "configure",
             "deep/dir/configure",
+            ".gitmodules",
+            ".husky/pre-commit",
+            ".git/config",
         ] {
             assert_eq!(kind(p), FileKind::Config, "{p}");
         }
-        for p in [
-            "a.woff2",
-            "a.png",
-            "LICENSE",
-            "a.lock",
-            ".gitmodules",
-            ".husky/pre-commit",
-            "a",
-        ] {
+        for p in ["a.woff2", "a.png", "LICENSE", "a.lock", "bin/tool", "a"] {
             assert_eq!(kind(p), FileKind::Data, "{p}");
         }
     }
@@ -338,10 +446,10 @@ mod tests {
     }
 
     #[test]
-    fn nul_or_a_known_magic_is_binary() {
+    fn nul_or_a_known_magic_is_binary_for_a_name_that_is_not_code_or_config() {
         assert_eq!(classify_with("a.txt", b"ab\0cd", false), FileKind::Binary);
         assert_eq!(
-            classify_with("a.js", b"\x7fELF\x02\x01", false),
+            classify_with("a.dat", b"\x7fELF\x02\x01", false),
             FileKind::Binary
         );
         assert_eq!(
@@ -385,7 +493,7 @@ mod tests {
 
     #[test]
     fn a_hash_without_a_bang_is_not_a_shebang() {
-        assert_eq!(kind(".husky/pre-commit"), FileKind::Data);
+        assert_eq!(kind("bin/tool"), FileKind::Data);
         assert_eq!(classify_with("a.md", b"# !/bin/sh\n", false), FileKind::Doc);
         assert_eq!(classify_with("a.md", b" #!/bin/sh\n", false), FileKind::Doc);
         assert_eq!(
@@ -404,11 +512,31 @@ mod tests {
     }
 
     #[test]
-    fn magic_ranks_above_an_instruction_name() {
-        assert_eq!(
-            classify_with("CLAUDE.md", b"\x7fELF\x02\x01", true),
-            FileKind::Binary
-        );
+    fn a_nul_or_a_magic_does_not_hide_code_config_or_an_instruction_file() {
+        // C1: one stray byte must not turn a file the tools still read into a binary.
+        let cases: [(&str, &[u8], FileKind); 13] = [
+            ("a.js", b"//\0\nrequire('x')", FileKind::Code(Lang::Js)),
+            ("a.js", b"\x7fELF\x02\x01", FileKind::Code(Lang::Js)),
+            (
+                "run.sh",
+                b"PK\x03\x04\ncurl x | sh\n",
+                FileKind::Code(Lang::Sh),
+            ),
+            ("a.py", b"\0import os\n", FileKind::Code(Lang::Py)),
+            ("package.json", b"{\"a\":\"\0\"}", FileKind::Config),
+            (".vscode/tasks.json", b"//\0\n{}", FileKind::Config),
+            (".git/config", b"[core]\n\0", FileKind::Config),
+            (".git/hooks/pre-commit", b"\0echo\n", FileKind::Config),
+            (".husky/pre-commit", b"\0echo\n", FileKind::Config),
+            ("deep/Makefile", b"all:\n\0", FileKind::Config),
+            ("x.csproj", b"<a>\0</a>", FileKind::Config),
+            (".gitattributes", b"\0* filter=x\n", FileKind::Config),
+            ("CLAUDE.md", b"\x7fELF\x02\x01", FileKind::Agent),
+        ];
+        for (path, head, kind) in cases {
+            let agent = path == "CLAUDE.md";
+            assert_eq!(classify_with(path, head, agent), kind, "{path}");
+        }
     }
 
     #[test]
@@ -532,5 +660,84 @@ mod tests {
         assert_eq!(trim_incomplete(&le), &[0xff, 0xfe, 0x61, 0x00]);
         le.pop();
         assert_eq!(trim_incomplete(&le), &[0xff, 0xfe, 0x61, 0x00]);
+    }
+
+    #[test]
+    fn lossy_decoding_keeps_every_rule_running_and_names_the_flaw() {
+        assert_eq!(decode_lossy(b"abc"), ("abc".to_string(), None));
+        assert_eq!(
+            decode_lossy(b"\xef\xbb\xbfabc"),
+            ("abc".to_string(), None),
+            "a BOM is not a flaw"
+        );
+        let (text, flaw) = decode_lossy(b"{\"d\":\"\xff\",\"scripts\":1}");
+        assert_eq!(text, "{\"d\":\"\u{fffd}\",\"scripts\":1}");
+        assert_eq!(flaw, Some(("invalid UTF-8", 6)));
+        let (text, flaw) = decode_lossy(b"a\0b");
+        assert_eq!(text, "a\0b");
+        assert_eq!(flaw, Some(("NUL byte", 1)));
+        let (text, flaw) = decode_lossy(&[0xff, 0xfe, 0x61, 0x00, 0x00, 0xd8, 0x62, 0x00]);
+        assert_eq!(text, "a\u{fffd}b");
+        assert_eq!(flaw.map(|f| f.0), Some("invalid UTF-16"));
+        let mut le = vec![0xff, 0xfe];
+        le.extend("hi\n".encode_utf16().flat_map(|u| u.to_le_bytes()));
+        assert_eq!(decode_lossy(&le), ("hi\n".to_string(), None));
+    }
+
+    #[test]
+    fn the_auto_run_names_are_known_by_path() {
+        for p in [
+            "package.json",
+            "a/b/package.json",
+            ".vscode/tasks.json",
+            ".cursor/tasks.json",
+            ".vscode/settings.json",
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+            "sub/.claude/settings.json",
+            ".mcp.json",
+            ".cursor/mcp.json",
+            ".devcontainer/devcontainer.json",
+            ".devcontainer.json",
+            "x.code-workspace",
+            ".git/config",
+            "sub/.git/config",
+            ".git/config.worktree",
+            ".git/hooks/pre-commit",
+            ".husky/pre-commit",
+            ".envrc",
+            "Makefile",
+            "rules.mk",
+            "aclocal.m4",
+            "configure",
+            "Justfile",
+            "Taskfile.yml",
+            ".pre-commit-config.yaml",
+            ".gitattributes",
+            ".gitmodules",
+            ".npmrc",
+            "setup.py",
+            "build.rs",
+            "a/b.csproj",
+            "Directory.Build.props",
+            "x.targets",
+            ".cargo/config.toml",
+            ".cargo/config",
+            ".codex/config.toml",
+        ] {
+            assert!(is_autorun_name(p), "{p}");
+        }
+        for p in [
+            "settings.json",
+            "src/tasks.json",
+            "README.md",
+            "a.js",
+            "config",
+            "lib/config.toml",
+            ".git/HEAD",
+            ".git/hooks",
+        ] {
+            assert!(!is_autorun_name(p), "{p}");
+        }
     }
 }
