@@ -34,6 +34,22 @@ type World = {
    * unset, no binary is installed
    */
   switchAnswer?: string
+  /**
+   * Puts a `git` at /usr/bin/git on the PATH and lets it answer `check-ignore` and `ls-files`;
+   * unset, there is no git on the PATH
+   */
+  git?: {
+    /** absolute paths that `git check-ignore` reports as ignored, tracked or not (stricter than git) */
+    ignored?: readonly string[]
+    /** absolute paths that are in the index */
+    tracked?: readonly string[]
+    /** exit code of every git call instead of the answers above (git's own failure is 128) */
+    exit?: number
+    /** the git call cannot start */
+    cannotStart?: boolean
+  }
+  /** absolute paths that are symbolic links */
+  links?: readonly string[]
 }
 
 const boom = (): never => {
@@ -43,7 +59,7 @@ const boom = (): never => {
 /** Stands for Claude Code beneath the plugin. Returns what the tools were asked to do. */
 function engine(on: On, world: World = {}): string[] {
   const ran: string[] = []
-  const env = { HOME, ...world.env } as { readonly [name: string]: string }
+  const env = { HOME, ...(world.git ? { PATH: '/usr/bin' } : {}), ...world.env } as { readonly [name: string]: string }
   const fails = new Set<string>(world.fails)
   const tools = world.tools ?? ['Agent', 'Read']
   on('session.surfaces', () => ({ value: world.surfaces ?? ['terminal'] }))
@@ -79,6 +95,8 @@ function engine(on: On, world: World = {}): string[] {
   )
   // the installed binary, as the shim finds it, when the world answers `anthology switch`
   on('fs.stat', (_$, e) => {
+    if (world.git && e.path === '/usr/bin/git') return { value: { kind: 'file' as const, size: 100, mtimeMs: 0, isLink: false } }
+    if (world.links?.includes(e.path)) return { value: { kind: 'file' as const, size: 0, mtimeMs: 0, isLink: true } }
     const ah = `${HOME}/.claude/anthology`
     const known: { [path: string]: { kind: 'dir' | 'file'; size: number } } = {
       [`${ah}/bin`]: { kind: 'dir', size: 0 },
@@ -91,6 +109,16 @@ function engine(on: On, world: World = {}): string[] {
     return { value: { ...s, mtimeMs: 0, isLink: false } }
   })
   on('process.run', (_$, e) => {
+    if (world.git && e.argv[0] === '/usr/bin/git') {
+      const sub = e.argv.findIndex(a => a === 'check-ignore' || a === 'ls-files')
+      const path = e.argv[e.argv.length - 1] ?? ''
+      ran.push(`git ${e.init?.cwd ?? ''}: ${e.argv.slice(sub).join(' ')}`)
+      if (world.git.cannotStart) throw new Error('spawn git ENOENT')
+      const answer = (exitCode: number) => ({ value: { exitCode: world.git?.exit ?? exitCode, stdout: '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } })
+      // check-ignore: 0 ignored, 1 not. ls-files --error-unmatch: 0 in the index, 1 not.
+      if (e.argv[sub] === 'check-ignore') return answer(world.git.ignored?.includes(path) ? 0 : 1)
+      return answer(world.git.tracked?.includes(path) ? 0 : 1)
+    }
     ran.push(`run ${e.argv.slice(1).join(' ')}`)
     return { value: { exitCode: 0, stdout: `${world.switchAnswer}\n`, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
@@ -852,6 +880,109 @@ test('when the repo check cannot run the file is treated as project code', async
   const ran = engine(on, { fails: ['fs.exists'], repos: [] })
   expect((await $.tool.call({ tool: 'Write', file_path: '/srv/other/a.ts', content: 'x' })).deny).toContain('anthology:')
   expect(ran).toHaveLength(0)
+})
+
+// --- local setup: a file that is gitignored and untracked --------------------------------------------
+// No agent can reach such a file (it exists only in the main checkout), so the lead makes it. Git
+// decides, by `check-ignore` and the index, never a name pattern.
+
+const LOCAL = `${ROOT}/.env.foo.local`
+const gitCalls = (ran: string[]) => ran.filter(r => r.startsWith('git '))
+
+test('the lead may Write, Edit and NotebookEdit a file that git ignores and does not track', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT], git: { ignored: [LOCAL, `${ROOT}/n.ipynb`] } })
+  expect((await $.tool.call({ tool: 'Write', file_path: LOCAL, content: lines(40) })).deny).toBeUndefined()
+  expect((await edit($, LOCAL, lines(30), lines(31))).deny).toBeUndefined()
+  expect((await $.tool.call({ tool: 'NotebookEdit', notebook_path: `${ROOT}/n.ipynb`, new_source: 'x' })).deny).toBeUndefined()
+  expect(ran.filter(r => !r.startsWith('git '))).toEqual([`Write ${LOCAL}`, `Edit ${LOCAL}`, `NotebookEdit ${ROOT}/n.ipynb`])
+  // none of that cost the tiny-fix budget
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+})
+
+test('git is asked from the repo top, about the absolute path, with the path after --', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT], cwd: `${ROOT}/pkg`, git: { ignored: [LOCAL] } })
+  expect((await $.tool.call({ tool: 'Write', file_path: '../.env.foo.local', content: 'x' })).deny).toBeUndefined()
+  expect(gitCalls(ran)).toEqual([
+    `git ${ROOT}: check-ignore -q -- ${LOCAL}`,
+    `git ${ROOT}: ls-files --error-unmatch -- ${LOCAL}`,
+  ])
+})
+
+test('a file in a nested repo is asked about in that repo', async ($, on) => {
+  const inner = `${ROOT}/inner/.env.local`
+  const ran = engine(on, { repos: [ROOT, `${ROOT}/inner`], git: { ignored: [inner] } })
+  expect((await $.tool.call({ tool: 'Write', file_path: inner, content: 'x' })).deny).toBeUndefined()
+  expect(gitCalls(ran)[0]).toBe(`git ${ROOT}/inner: check-ignore -q -- ${inner}`)
+})
+
+test('a file that is not ignored is still handed off, whatever its name', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT], git: { ignored: [] } })
+  for (const p of [LOCAL, `${ROOT}/.env.local`, `${ROOT}/src/app.ts`]) {
+    expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toContain('anthology:')
+  }
+  expect((await edit($, LOCAL, lines(6), lines(6))).deny).toContain('anthology:implementer')
+  expect(ran.filter(r => !r.startsWith('git '))).toHaveLength(0)
+})
+
+test('an ignored file that is tracked is still handed off', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT], git: { ignored: [LOCAL], tracked: [LOCAL] } })
+  expect((await $.tool.call({ tool: 'Write', file_path: LOCAL, content: 'x' })).deny).toContain('anthology:')
+  expect((await edit($, LOCAL, lines(6), lines(6))).deny).toContain('anthology:implementer')
+  expect(ran.filter(r => !r.startsWith('git '))).toHaveLength(0)
+})
+
+test('nothing under .git is ever the lead own, ignored or not', async ($, on) => {
+  const inside = [
+    `${ROOT}/.git/config`,
+    `${ROOT}/.git/hooks/pre-commit`,
+    `${ROOT}/.git`,
+    `${ROOT}/inner/.git/config`,
+    `${ROOT}/src/../.git/config`,
+    `${ROOT}/.GIT/config`,
+    '.git/info/exclude',
+  ]
+  const ran = engine(on, { repos: [ROOT], git: { ignored: inside } })
+  for (const p of inside) expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny, p).toContain('anthology:')
+  // git was not even asked
+  expect(ran).toHaveLength(0)
+})
+
+test('a name that only looks like .git is judged by git', async ($, on) => {
+  const p = `${ROOT}/.gitlocal/.env`
+  engine(on, { repos: [ROOT], git: { ignored: [p] } })
+  expect((await $.tool.call({ tool: 'Write', file_path: p, content: 'x' })).deny).toBeUndefined()
+})
+
+// git's own failure is 128; a run that cannot start or is killed at the timeout rejects
+for (const git of [{ ignored: [LOCAL], exit: 128 }, { ignored: [LOCAL], exit: 2 }, { ignored: [LOCAL], cannotStart: true }]) {
+  test(`a git that answers ${JSON.stringify(git)} leaves the refusal`, async ($, on) => {
+    const ran = engine(on, { repos: [ROOT], git })
+    expect((await $.tool.call({ tool: 'Write', file_path: LOCAL, content: 'x' })).deny).toContain('anthology:')
+    expect(ran.filter(r => !r.startsWith('git '))).toHaveLength(0)
+  })
+}
+
+test('with no git on the PATH the refusal stands, and nothing is spawned', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT] })
+  expect((await $.tool.call({ tool: 'Write', file_path: LOCAL, content: 'x' })).deny).toContain('anthology:')
+  expect(ran).toHaveLength(0)
+})
+
+test('a symbolic link is handed off even when git ignores it: a write goes through it', async ($, on) => {
+  const ran = engine(on, { repos: [ROOT], git: { ignored: [LOCAL] }, links: [LOCAL] })
+  expect((await $.tool.call({ tool: 'Write', file_path: LOCAL, content: 'x' })).deny).toContain('anthology:')
+  expect(ran.filter(r => !r.startsWith('git '))).toHaveLength(0)
+})
+
+test('when the repo check cannot run, git is not asked and the refusal stands', async ($, on) => {
+  const ran = engine(on, { fails: ['fs.exists'], repos: [], git: { ignored: [LOCAL] } })
+  expect((await $.tool.call({ tool: 'Write', file_path: LOCAL, content: 'x' })).deny).toContain('anthology:')
+  expect(ran).toHaveLength(0)
+})
+
+test('the refusal says that ignored, untracked files are the lead own', async ($, on) => {
+  engine(on, { repos: [ROOT] })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: 'x' })).deny).toContain('gitignored and untracked')
 })
 
 // --- risk, not only size ---------------------------------------------------------------------------
