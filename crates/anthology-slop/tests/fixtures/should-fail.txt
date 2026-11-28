@@ -1,0 +1,25 @@
+text.ai-vocab	markdown	We delve into the cache layer.
+text.ai-vocab	markdown	The sync is seamless across devices.
+text.ai-vocab	html	<p>Elevate your morning routine.</p>
+text.stock-phrase	markdown	In today’s fast-paced world, teams ship daily.
+text.stock-phrase	markdown	Let's dive in and read the code.
+text.chat-residue	markdown	I hope this helps!
+text.chat-residue	markdown	Let me know if you have any questions about the setup.
+text.not-x-but-y	markdown	It's not a tool, it's a platform.
+text.not-x-but-y	markdown	This isn’t just a cache; it’s a memory layer.
+text.not-x-but-y	markdown	It's not about speed.\nIt's about trust.
+text.hype-cta	jsx	export const Hero = () => <h1>Take your team to the next level</h1>
+text.hype-cta	html	<a href="/join">Join thousands of happy teams</a>
+text.em-dash-density	markdown	The hook runs first — before the guard — and then the mod reads the result — once.
+text.triad-density	markdown	Plans, specs and roadmaps go to the planner. Pages, themes and widgets go to the designer. Tests, builds and releases go to the runner.
+ui.purple-gradient	css	.hero { background: linear-gradient(135deg, #6366f1, #a855f7); }
+ui.purple-gradient	jsx	export const A = () => <div className="bg-gradient-to-r from-indigo-500 to-purple-600" />
+ui.gradient-text	css	.title { background-clip: text; -webkit-text-fill-color: transparent; }
+ui.gradient-text	jsx	export const T = () => <h1 className="bg-clip-text text-transparent">Hi</h1>
+ui.shadcn-default	css	:root { --primary: oklch(0.205 0 0); }
+ui.glow-orb	css	.orb { border-radius: 50%; filter: blur(96px); }
+ui.effect-library	jsx	export const B = () => <ShimmerButton>Go</ShimmerButton>
+ui.placeholder-media	html	<img src="https://i.pravatar.cc/150?img=3" alt="Ana">
+ui.placeholder-text	html	<p>Lorem ipsum dolor sit amet.</p>
+ui.five-star-row	html	<span>★★★★★</span>
+ui.generator-signature	html	<meta name="generator" content="v0">
