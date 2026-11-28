@@ -35,7 +35,11 @@
 - 41 more — use `anthology-mem search`
 - [anthology-mem save --repo and reindex: where the code is](project-mem-repo-save-and-reindex.md) — Repo notes reuse check_note_text and write_note in save.rs; --slug is optional (slug_from_name); h…
 - 41 more — use `anthology-mem search`
+- 42 more — use `anthology-mem search`
+- 41 more — use `anthology-mem search`
+- 42 more — use `anthology-mem search`
 ## reference
+- [Formatting Rust when only the remote host builds](reference-format-rust-with-remote-build-only.md) — How to apply rustfmt output when cargo runs only on the build host and lint fails on fmt
 - [Slop gate: repo-wide before/after scan in the container](reference-slop-repo-wide-scan-recipe.md) — How to count gate hits per rule over every tracked file, with a baseline binary from a clean arc…
 - [Zorin lint: rustfmt diffs are not applied back, so write to the 60-column chain width](reference-remote-lint-rustfmt-no-autofix.md) — lint on Zorin prints fmt diffs and clippy errors one stage at …
 - [remote-build.sh test filters and lint order](reference-remote-lint-and-test-filters.md) — cargo test takes one filter: pass several after --; lint runs fmt before clippy and only reports diffs
