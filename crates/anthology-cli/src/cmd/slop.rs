@@ -436,12 +436,8 @@ fn path_files(base: &Path, args: &[PathBuf], config: &Path) -> Result<Vec<CheckF
         }
         // From the folder the user checks from (`--root`, else the cwd), so a file of a clone below
         // it is not shown from the clone's own root. A path outside it is shown from its repo.
-        let from = if path.starts_with(base) {
-            base
-        } else {
-            root.as_deref().unwrap_or(base)
-        };
-        let shown = paths::shown(&path, Some(from));
+        let shown = shown_below(&path, base)
+            .unwrap_or_else(|| paths::shown(&path, Some(root.as_deref().unwrap_or(base))));
         files.push(CheckFile {
             path,
             shown,
@@ -449,6 +445,24 @@ fn path_files(base: &Path, args: &[PathBuf], config: &Path) -> Result<Vec<CheckF
         });
     }
     Ok(files)
+}
+
+/// `path` as shown from `base`, or None when it is not below it. The two may name the same folder
+/// through different links (the OS reports the cwd as `/private/var/...` on macOS, while a path
+/// is often given as `/var/...`), so when the plain prefix test fails the folder of `path` and
+/// `base` are compared as the disk resolves them. The file name is kept as it is: a file that is
+/// itself a link shows under its own name.
+fn shown_below(path: &Path, base: &Path) -> Option<String> {
+    if path.starts_with(base) {
+        return Some(paths::shown(path, Some(base)));
+    }
+    let real_base = std::fs::canonicalize(base).ok()?;
+    let real_path = std::fs::canonicalize(path.parent()?)
+        .ok()?
+        .join(path.file_name()?);
+    real_path
+        .starts_with(&real_base)
+        .then(|| paths::shown(&real_path, Some(&real_base)))
 }
 
 /// Walks `dir`, below the folder the user named. A folder below it that holds a `.git` folder is a
