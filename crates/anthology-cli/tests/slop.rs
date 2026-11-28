@@ -2,9 +2,10 @@
 //! Task 7), run as the built binary with a cleared environment, a sandbox home and config folder,
 //! and temp repos.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anthology_slop::{Kind, MAX_DOC, report};
 
@@ -106,15 +107,29 @@ impl Fx {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn().expect("run anthology");
+        let stdout = drain(child.stdout.take().unwrap());
+        let stderr = drain(child.stderr.take().unwrap());
         let mut stdin = child.stdin.take().unwrap();
         // The binary may exit before it reads everything; a broken pipe is fine.
         let _ = stdin.write_all(input.as_bytes());
         drop(stdin);
-        let out = child.wait_with_output().unwrap();
+        // A run that hangs (a read of a FIFO or a device) fails the test instead of the suite.
+        let deadline = Instant::now() + RUN_LIMIT;
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("anthology {args:?} did not finish in {RUN_LIMIT:?}");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         Run {
-            code: out.status.code().expect("exit code"),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: status.code().expect("exit code"),
+            stdout: String::from_utf8_lossy(&stdout.join().unwrap()).into_owned(),
+            stderr: String::from_utf8_lossy(&stderr.join().unwrap()).into_owned(),
         }
     }
 
@@ -130,6 +145,25 @@ impl Fx {
         let all = [&["slop", "check"][..], args].concat();
         self.run(&all, cwd, "", &[])
     }
+}
+
+/// The longest a run may take.
+const RUN_LIMIT: Duration = Duration::from_secs(30);
+
+/// Reads a pipe to its end on its own thread.
+fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// A FIFO at `path` (no process ever opens its other end).
+fn mkfifo(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let status = Command::new("mkfifo").arg(path).status().expect("mkfifo");
+    assert!(status.success());
 }
 
 /// A JSON string literal.
@@ -438,6 +472,32 @@ fn hook_fails_open_on_bad_input() {
 }
 
 #[test]
+fn hook_allows_a_fifo_or_a_device_promptly_and_unchecked() {
+    let fx = Fx::new();
+    let fifo = fx.repo.join("docs/fifo.md");
+    mkfifo(&fifo);
+    let zero = fx.repo.join("docs/zero.md");
+    std::os::unix::fs::symlink("/dev/zero", &zero).unwrap();
+    for (ctx, file) in [("FIFO", &fifo), ("symlink to /dev/zero", &zero)] {
+        for input in [
+            edit_input(s(file), "x", TELL),
+            write_input(s(file), TELL),
+            edit_input(s(file), "", TELL),
+        ] {
+            let tool = if input.contains("old_string") {
+                "Edit"
+            } else {
+                "Write"
+            };
+            let start = Instant::now();
+            let run = fx.hook(&payload(tool, &input, &fx.repo));
+            assert_allowed(&run, ctx);
+            assert!(start.elapsed() < Duration::from_secs(10), "{ctx}");
+        }
+    }
+}
+
+#[test]
 fn hook_creates_from_an_empty_old_string_on_a_missing_file() {
     let fx = Fx::new();
     let file = fx.repo.join("docs/new.md");
@@ -588,6 +648,34 @@ fn check_clean_exits_0() {
     assert_eq!(run.code, 0, "{}", run.stderr);
     assert_eq!(run.stdout, "");
     assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn check_skips_fifos_and_devices_promptly() {
+    let fx = Fx::new();
+    fx.write(&fx.repo.join("docs/a.md"), TELL.as_bytes());
+    mkfifo(&fx.repo.join("docs/fifo.md"));
+    std::os::unix::fs::symlink("/dev/zero", fx.repo.join("docs/zero.md")).unwrap();
+    let start = Instant::now();
+    let run = fx.check(&["docs"], &fx.repo);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(run.stdout.lines().count(), 1, "{}", run.stdout);
+    assert!(run.stdout.starts_with("docs/a.md:1: "), "{}", run.stdout);
+    // named on the command line, they are still skipped
+    let run = fx.check(&["docs/fifo.md", "docs/zero.md"], &fx.repo);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "");
+    // and as untracked files of a --since check
+    let repo = fx.git_repo();
+    fx.write(&repo.join("base.txt"), b"x\n");
+    fx.git(&repo, &["add", "-A"]);
+    fx.git(&repo, &["commit", "-q", "-m", "base"]);
+    mkfifo(&repo.join("docs/fifo.md"));
+    std::os::unix::fs::symlink("/dev/zero", repo.join("docs/zero.md")).unwrap();
+    let run = fx.check(&["--root", s(&repo), "--since", "HEAD"], &fx.base);
+    assert_eq!(run.code, 0, "{}", run.stderr);
+    assert_eq!(run.stdout, "");
+    assert!(start.elapsed() < Duration::from_secs(20));
 }
 
 #[test]
