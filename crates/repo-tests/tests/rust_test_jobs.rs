@@ -559,8 +559,8 @@ fn runner_volumes() -> BTreeSet<String> {
 #[test]
 fn the_cache_volumes_are_the_ones_the_test_runner_mounts() {
     // The registry, the toolchain, the checkout's target folder and the shared sccache. The target
-    // volume is made for one run and removed with it, so only the other three are kept: sccache
-    // holds what the dependencies compiled.
+    // volume belongs to one checkout and is not shared between runners, so only the other three are
+    // cached: sccache holds what the dependencies compiled.
     let mut volumes = runner_volumes();
     assert_eq!(volumes.len(), 4, "{volumes:?}");
     volumes.retain(|v| !v.starts_with("anthology-rust-target-"));

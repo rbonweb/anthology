@@ -44,7 +44,7 @@ Answer or ask the user; resume.
 
 ## 5. Docker
 - If the repo has tests, builds, E2E: containers mounting only the worktree; tag images, name containers per worktree.
-- No host installs. Remove your own containers, images, volumes; never stop Docker. Docker unavailable: stop and tell the user.
+- No host installs. Remove your own containers and per-run volumes; keep pulled images and caches; never stop Docker. Docker unavailable: stop and tell the user.
 - Delete literal paths only, never `rm -rf $VAR`: Claude Code asks on removals it can't prove safe.
 
 ## 6. Web

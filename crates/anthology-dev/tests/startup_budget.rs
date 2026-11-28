@@ -376,8 +376,8 @@ mod lead_extras {
             [
                 ("researcher", 89267),
                 ("architect", 24131), // +393 credential path rule (owner, 2026-11-28)
-                ("implementer", 26561),
-                ("debugger", 22686), // +393 credential path rule (owner, 2026-11-28)
+                ("implementer", 26601), // +40 Docker cache rule (owner, 2026-11-28)
+                ("debugger", 22774), // +393 credential path rule, +88 Docker cache rule (owner, 2026-11-28)
                 ("reviewer", 37538), // measured 32641, copy plan 2026-11-28
                 ("scout", 7677), // GC-13 5944, plus the Shell section; +393 credential path rule (owner, 2026-11-28)
                 ("docs-writer", 117281),

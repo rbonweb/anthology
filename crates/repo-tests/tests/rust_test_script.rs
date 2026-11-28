@@ -1,5 +1,5 @@
 //! `scripts/rust-test.sh`: which cargo scope the container runs, the sessions, and the target
-//! volume clean-up (`gc`, `session-stop`, one-shot runs). A stub `docker` on PATH records its
+//! volume policy (kept by one-shot runs; `gc` and `session-stop` remove it). A stub `docker` on PATH records its
 //! argv, so the script runs without a container.
 
 use std::env;
@@ -491,47 +491,58 @@ fn without_a_session_run_is_still_one_fresh_container_with_the_setup() {
     assert!(script.contains("apt-get install") && script.contains("runuser"));
 }
 
-// ---- one-shot runs: the target volume goes when the run ends --------------------------------
+// ---- one-shot runs: the target volume stays, so the next run is incremental -----------------
 
 #[test]
-fn a_one_shot_run_removes_its_target_volume_when_it_ends() {
+fn a_one_shot_run_keeps_its_target_volume_when_it_ends() {
     for args in [
         &["run", "echo", "hi"][..],
         &["test", "-p", "foo"],
         &["lint"],
         &[],
     ] {
-        let s = session(args, &[], false);
+        // Unset, empty and `1` all keep it: only `0` asks for it to go.
+        for env in [
+            &[][..],
+            &[("ANTHOLOGY_KEEP_TARGET", "")],
+            &[("ANTHOLOGY_KEEP_TARGET", "1")],
+        ] {
+            let s = session(args, env, false);
+            assert_eq!(s.status, 0, "{args:?}: {}", s.stderr);
+            assert_eq!(s.verbs(), ["run"], "{args:?} {env:?}");
+            assert!(s.target_volume().starts_with(TARGET), "{args:?}");
+        }
+    }
+}
+
+#[test]
+fn a_one_shot_run_removes_its_target_volume_only_when_asked_with_zero() {
+    for args in [&["test"][..], &["run", "echo", "hi"], &["lint"]] {
+        let s = session(args, &[("ANTHOLOGY_KEEP_TARGET", "0")], false);
         assert_eq!(s.status, 0, "{args:?}: {}", s.stderr);
         assert_eq!(s.verbs(), ["run", "volume"], "{args:?}");
         let volume = s.target_volume();
-        assert!(volume.starts_with(TARGET), "{args:?}: {volume}");
         assert_eq!(s.calls[1], ["volume", "rm", volume], "{args:?}");
     }
 }
 
 #[test]
-fn a_one_shot_run_keeps_its_target_volume_on_request() {
-    let s = session(&["test"], &[("ANTHOLOGY_KEEP_TARGET", "1")], false);
-    assert_eq!(s.verbs(), ["run"]);
-    // `0` and the empty string are not a request.
-    for off in ["0", ""] {
-        let s = session(&["test"], &[("ANTHOLOGY_KEEP_TARGET", off)], false);
-        assert_eq!(s.verbs(), ["run", "volume"], "{off:?}");
+fn a_failed_run_keeps_the_volume_and_its_exit_status() {
+    for (env, verbs) in [
+        (&[][..], &["run"][..]),
+        (&[("ANTHOLOGY_KEEP_TARGET", "0")], &["run", "volume"]),
+    ] {
+        let s = go(
+            &["test"],
+            &Rig {
+                env,
+                fail_run: true,
+                ..Rig::default()
+            },
+        );
+        assert_eq!(s.status, 3, "{}", s.stderr);
+        assert_eq!(s.verbs(), verbs, "{env:?}");
     }
-}
-
-#[test]
-fn a_failed_run_still_removes_the_volume_and_keeps_its_exit_status() {
-    let s = go(
-        &["test"],
-        &Rig {
-            fail_run: true,
-            ..Rig::default()
-        },
-    );
-    assert_eq!(s.status, 3, "{}", s.stderr);
-    assert_eq!(s.verbs(), ["run", "volume"]);
 }
 
 #[test]
@@ -539,6 +550,7 @@ fn a_run_survives_docker_refusing_to_remove_the_volume() {
     let s = go(
         &["lint"],
         &Rig {
+            env: &[("ANTHOLOGY_KEEP_TARGET", "0")],
             fail_volume_rm: true,
             ..Rig::default()
         },
@@ -790,23 +802,40 @@ fn gc_keeps_a_young_volume_of_a_live_worktree() {
 }
 
 #[test]
-fn gc_removes_an_old_dangling_volume_even_when_its_worktree_lives() {
+fn gc_keeps_an_old_volume_of_a_live_worktree() {
+    // The target volume lives as long as its worktree, however long ago it was made, so that
+    // the worktree's runs stay incremental.
     let live = tempfile::tempdir().unwrap();
     let name = target_of(live.path());
-    let s = gc(&[vol(&name, 49)], &[live.path().to_path_buf()], &[]);
-    assert_eq!(s.removed(), [name]);
+    let s = gc(
+        &[vol(&name, 5000)],
+        &[live.path().to_path_buf()],
+        &[("ANTHOLOGY_GC_HOURS", "2")],
+    );
+    assert!(s.removed().is_empty(), "{:?}", s.calls);
 }
 
 #[test]
 fn gc_hours_come_from_the_environment() {
-    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (old, young) = (target_of(a.path()), target_of(b.path()));
-    let s = gc(
-        &[vol(&old, 3), vol(&young, 1)],
-        &[a.path().to_path_buf(), b.path().to_path_buf()],
-        &[("ANTHOLOGY_GC_HOURS", "2")],
+    // Judged by age alone: the worktrees cannot be listed, and the ATL volume has none.
+    let s = go(
+        &["gc"],
+        &Rig {
+            env: &[("ANTHOLOGY_GC_HOURS", "2")],
+            volumes: &[
+                vol(&format!("{TARGET}1"), 3),
+                vol(&format!("{TARGET}2"), 1),
+                vol("anthology-atl-target", 3),
+            ],
+            worktrees: None,
+            ..Rig::default()
+        },
     );
-    assert_eq!(s.removed(), [old]);
+    assert_eq!(s.status, 0, "{}", s.stderr);
+    assert_eq!(
+        s.removed(),
+        [format!("{TARGET}1"), "anthology-atl-target".to_owned()]
+    );
 }
 
 #[test]
@@ -874,17 +903,22 @@ fn gc_with_no_worktree_list_goes_by_age_only() {
 
 #[test]
 fn gc_reads_zone_offsets_and_fractions_of_a_second() {
-    let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     // 3 hours old, written as the wall clock 5:30 ahead of UTC with fractional seconds;
     // 1 hour old, written 8 hours behind UTC. Read as UTC, each would be judged the wrong way.
-    let (old, young) = (target_of(a.path()), target_of(b.path()));
+    // Age is judged here because the worktrees cannot be listed.
+    let (old, young) = (format!("{TARGET}1"), format!("{TARGET}2"));
     let old_at = rfc3339(now() - 3 * HOUR, 330).replace('+', ".123456789+");
     let young_at = rfc3339(now() - HOUR, -480);
-    let s = gc(
-        &[(old.clone(), old_at), (young, young_at)],
-        &[a.path().to_path_buf(), b.path().to_path_buf()],
-        &[("ANTHOLOGY_GC_HOURS", "2")],
+    let s = go(
+        &["gc"],
+        &Rig {
+            env: &[("ANTHOLOGY_GC_HOURS", "2")],
+            volumes: &[(old.clone(), old_at), (young, young_at)],
+            worktrees: None,
+            ..Rig::default()
+        },
     );
+    assert_eq!(s.status, 0, "{}", s.stderr);
     assert_eq!(s.removed(), [old]);
 }
 
