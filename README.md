@@ -15,7 +15,7 @@ Three plugins. Installing `anthology` brings the other two with it.
   - Claude Code mods: strict delegation, an after-work check on agent reports and an `/anthology-status` pane. See [Mods](docs/mods.md).
   - Commits that carry only your name: no `Co-Authored-By` trailer and no "Generated with" line. See [Commit attribution](docs/guardrails.md#commits-carry-only-your-name).
   - A slop gate: an edit whose new text holds a known AI-writing or AI-design tell is refused, with the line and the phrase. See [The slop gate](docs/slop-gate.md).
-  - The commands `/anthology:setup`, `/anthology:export`, `/anthology:import` and `/anthology-status`.
+  - The commands `/anthology:setup`, `/anthology:export`, `/anthology:import`, `/anthology:check-repo` and `/anthology-status`.
 - **`anthology-guardrails`** blocks what agents must not do: install or launch a browser on your machine, touch your Chrome profile, use any browser other than BrowserOS Neo, or write secrets into memory. See [Guardrails](docs/guardrails.md).
 - **`anthology-superpowers`** is the superpowers skills for the main session, renamed so they do not clash with the official copy.
 
@@ -79,6 +79,7 @@ See [Removing](docs/setup.md#removing) for what it keeps and what to delete by h
 - [Agents, commands and working rules](docs/agents.md): model roles, the roster, the commands and host mode.
 - [Claude Code mods](docs/mods.md): strict delegation, the after-work check, the status pane, and the switches that turn them off.
 - [The slop gate](docs/slop-gate.md): the rules, what counts as new text, waivers and the switch.
+- [Check a repo before you open it](docs/check-repo.md): `anthology check-repo` and `/anthology:check-repo` read a clone or a git URL for malicious code, from outside the repo, before any hook, install or build can run.
 - [Guardrails](docs/guardrails.md): what the guard blocks, its known limits, commit attribution and the browser rule.
 - [ATL](docs/atl.md): condensed command output, local history and the `Bash(atl *)` risk.
 - [Memory](docs/memory.md): approved repos, re-clones, team merges, CODEOWNERS, `anthology-mem`, export and import.
