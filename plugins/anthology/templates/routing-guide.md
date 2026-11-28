@@ -47,7 +47,7 @@ Answer or ask the user, then resume.
 - Delete literal paths only, never `rm -rf $VAR`: Claude Code asks on removals it can't prove safe.
 
 ## 6. Web
-- WebFetch/WebSearch for reading; real-browser work: BrowserOS Neo (MCP), the only browser.
+- WebFetch/WebSearch for reading; real-browser work uses BrowserOS Neo (MCP), the only browser.
 - Never agent-browser, host Playwright/Puppeteer, chrome-devtools MCP or Claude in Chrome. Never launch Chrome. BrowserOS Neo unavailable: stop and ask. Never install a browser.
 
 ## 7. ATL
