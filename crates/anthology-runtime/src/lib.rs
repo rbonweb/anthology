@@ -4,6 +4,7 @@
 
 pub mod atl_install;
 pub mod bootstrap;
+pub mod check_hint;
 pub mod compat;
 pub mod doctor;
 pub mod fetch;

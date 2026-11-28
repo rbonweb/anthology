@@ -2200,7 +2200,11 @@ mod skills_folder_test {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["export", "import", "large-builds", "setup"]);
+        // `check-repo` is the model-invoked check that setup offers.
+        assert_eq!(
+            names,
+            vec!["check-repo", "export", "import", "large-builds", "setup"]
+        );
     }
 
     #[test]
@@ -3370,6 +3374,327 @@ mod not_a_repo {
             lines(&out),
             vec!["anthology: the git folder check failed (RuntimeError)".to_string()]
         );
+    }
+}
+
+// --- Rust-only: the once-per-repo check-repo hint ------------------------------------------
+
+mod check_hint_test {
+    use super::*;
+    use anthology_runtime::check_hint::{self, CHECK_REPO_HINT};
+
+    const SETTINGS: &str = "hooks, env or helper commands in .claude/settings.json";
+    const LOCAL: &str = "the same in .claude/settings.local.json";
+    const MCP: &str = ".mcp.json servers";
+    const TASK: &str = "a VS Code task that runs on folder open";
+    const ENVRC: &str = ".envrc";
+    const HOOKS: &str =
+        r#"{"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "sh x.sh"}]}]}}"#;
+
+    fn repo(f: &Fx, name: &str) -> PathBuf {
+        let dir = f.tmp().join(name);
+        fs::create_dir_all(dir.join(".git")).unwrap();
+        dir
+    }
+
+    fn put(repo: &Path, rel: &str, text: &str) {
+        write(&repo.join(rel), text, None);
+    }
+
+    /// A set-up fixture and a repo that holds a hooks file.
+    fn hooked(name: &str) -> (Fx, PathBuf) {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = repo(&f, name);
+        put(&dir, ".claude/settings.json", HOOKS);
+        (f, dir)
+    }
+
+    fn hint_for(list: &[&str]) -> String {
+        CHECK_REPO_HINT.replace("{list}", &list.join("; "))
+    }
+
+    fn hints(out: &Value) -> Vec<String> {
+        lines(out)
+            .into_iter()
+            .filter(|l| l.starts_with("anthology: this repo has files that run code"))
+            .collect()
+    }
+
+    fn sdk(f: &Fx) -> Env {
+        f.env()
+            .with("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")
+            .with("CLAUDE_CODE_SESSION_ATTENDED", "0")
+    }
+
+    fn at(f: &Fx, dir: &Path, source: &str) -> Value {
+        f.go_d(&f.deps(), Some(dir), &f.env(), &[("source", source)])
+    }
+
+    #[test]
+    fn hint_once_per_repo() {
+        let (f, dir) = hooked("app");
+        let first = f.go_cwd(&dir);
+        assert_eq!(hints(&first), vec![hint_for(&[SETTINGS])], "{first:?}");
+        let seen = f.state();
+        let seen = seen
+            .get("check_repo_hinted")
+            .and_then(Value::as_object)
+            .expect("check_repo_hinted");
+        assert_eq!(seen.iter().count(), 1);
+        for _ in 0..2 {
+            let again = f.go_cwd(&dir);
+            assert!(hints(&again).is_empty(), "{again:?}");
+        }
+        // the key is the repo top: a subfolder is the same repo, another repo is a new hint
+        fs::create_dir_all(dir.join("src/deep")).unwrap();
+        assert!(hints(&f.go_cwd(&dir.join("src/deep"))).is_empty());
+        let other = repo(&f, "other");
+        put(&other, ".envrc", "export A=1\n");
+        assert_eq!(hints(&f.go_cwd(&other)), vec![hint_for(&[ENVRC])]);
+        let state = f.state();
+        let seen = state
+            .get("check_repo_hinted")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert_eq!(seen.iter().count(), 2);
+        // the agent-memory note keeps its own key
+        assert!(state.get("agent_memory_warned").is_none());
+    }
+
+    #[test]
+    fn no_hint_when_embedded_resumed_or_clean() {
+        let (f, dir) = hooked("app");
+        for source in ["resume", "compact", "clear"] {
+            let out = at(&f, &dir, source);
+            assert!(hints(&out).is_empty(), "{source}: {out:?}");
+        }
+        let out = f.go_d(&f.deps(), Some(&dir), &sdk(&f), &[]);
+        assert!(!has_msg(&out), "{out:?}");
+        assert!(f.state().get("check_repo_hinted").is_none());
+
+        // a repo with nothing that runs code, and a folder that is no repo at all
+        let clean = repo(&f, "clean");
+        put(
+            &clean,
+            ".claude/settings.json",
+            r#"{"permissions": {"allow": ["Read"]}}"#,
+        );
+        put(&clean, "README.md", "hi\n");
+        assert!(hints(&f.go_cwd(&clean)).is_empty());
+        let plain = f.tmp().join("plain");
+        put(&plain, ".envrc", "x\n");
+        assert!(hints(&f.go_cwd(&plain)).is_empty());
+        assert!(f.state().get("check_repo_hinted").is_none());
+
+        // the hint is still there for the startup that follows
+        assert_eq!(hints(&at(&f, &dir, "startup")).len(), 1);
+    }
+
+    #[test]
+    fn hint_is_in_system_message_not_context() {
+        let (f, dir) = hooked("app");
+        let out = f.go_cwd(&dir);
+        assert!(sys(&out).contains(&hint_for(&[SETTINGS])), "{out:?}");
+        let ctx = context(&out);
+        assert!(!ctx.contains("files that run code"), "{ctx}");
+        assert!(!ctx.contains(".claude/settings.json"), "{ctx}");
+    }
+
+    #[test]
+    fn hint_lists_each_surface() {
+        let f = Fx::new();
+        f.mark_setup(None);
+        let dir = repo(&f, "all");
+        let cases: [(&str, &str, &str); 5] = [
+            (".claude/settings.json", HOOKS, SETTINGS),
+            (
+                ".claude/settings.local.json",
+                r#"{"env": {"A": "b"}}"#,
+                LOCAL,
+            ),
+            (
+                ".mcp.json",
+                r#"{"mcpServers": {"x": {"command": "npx"}}}"#,
+                MCP,
+            ),
+            (
+                ".vscode/tasks.json",
+                "{\n // runs when the folder opens\n \"tasks\": [{\"runOptions\": {\"runOn\": \"folderOpen\"}}]}\n",
+                TASK,
+            ),
+            (".envrc", "layout node\n", ENVRC),
+        ];
+        let mut seen = Vec::new();
+        for (rel, text, label) in cases {
+            put(&dir, rel, text);
+            seen.push(label);
+            assert_eq!(check_hint::surfaces(&dir), seen, "{rel}");
+        }
+        let out = f.go_cwd(&dir);
+        assert_eq!(hints(&out), vec![hint_for(&seen)], "{out:?}");
+        assert!(CHECK_REPO_HINT.contains("/anthology:check-repo <path>"));
+        assert!(CHECK_REPO_HINT.contains("from a session in another folder"));
+    }
+
+    #[test]
+    fn each_helper_command_key_counts_and_empty_ones_do_not() {
+        let f = Fx::new();
+        let dir = repo(&f, "keys");
+        let file = ".claude/settings.json";
+        for yes in [
+            HOOKS,
+            r#"{"env": {"NODE_OPTIONS": "--require ./x.js"}}"#,
+            r#"{"statusLine": {"type": "command", "command": "sh s.sh"}}"#,
+            r#"{"apiKeyHelper": "sh k.sh"}"#,
+            r#"{"awsAuthRefresh": "sh a.sh"}"#,
+            r#"{"awsCredentialExport": "sh c.sh"}"#,
+            r#"{"otelHeadersHelper": "sh o.sh"}"#,
+        ] {
+            put(&dir, file, yes);
+            assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS], "{yes}");
+        }
+        for no in [
+            "{}",
+            "[]",
+            "null",
+            r#"{"hooks": {}, "env": {}}"#,
+            r#"{"apiKeyHelper": ""}"#,
+            r#"{"permissions": {"allow": ["Bash"]}}"#,
+            r#"{"hooks": "#,
+            "not json",
+            "",
+        ] {
+            put(&dir, file, no);
+            assert!(check_hint::surfaces(&dir).is_empty(), "{no}");
+        }
+        put(&dir, ".mcp.json", r#"{"mcpServers": {}}"#);
+        put(
+            &dir,
+            ".vscode/tasks.json",
+            r#"{"tasks": [{"runOn": "default"}]}"#,
+        );
+        assert!(check_hint::surfaces(&dir).is_empty());
+    }
+
+    #[test]
+    fn a_surface_that_is_not_a_regular_file_is_skipped_and_a_link_is_read() {
+        let f = Fx::new();
+        let dir = repo(&f, "odd");
+        // a folder where a file belongs
+        fs::create_dir_all(dir.join(".envrc")).unwrap();
+        fs::create_dir_all(dir.join(".mcp.json")).unwrap();
+        fs::create_dir_all(dir.join(".vscode/tasks.json")).unwrap();
+        fs::create_dir_all(dir.join(".claude/settings.json")).unwrap();
+        assert!(check_hint::surfaces(&dir).is_empty());
+        // a link to a file elsewhere is read as the file
+        fs::remove_dir(dir.join(".claude/settings.json")).unwrap();
+        let outside = f.tmp().join("outside.json");
+        write(&outside, HOOKS, None);
+        symlink(&outside, dir.join(".claude/settings.json")).unwrap();
+        assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS]);
+    }
+
+    #[test]
+    fn a_file_over_the_read_cap_counts_without_being_parsed() {
+        let f = Fx::new();
+        let dir = repo(&f, "padded");
+        let cap = check_hint::READ_LIMIT as usize;
+        // Not JSON and nothing in it: if it were read, it would be no surface. Only its size counts.
+        let junk = "x".repeat(cap + 1);
+        for (rel, label) in [
+            (".claude/settings.json", SETTINGS),
+            (".claude/settings.local.json", LOCAL),
+            (".mcp.json", MCP),
+            (".vscode/tasks.json", TASK),
+        ] {
+            put(&dir, rel, &junk);
+            assert!(check_hint::surfaces(&dir).contains(&label), "{rel}");
+            fs::remove_file(dir.join(rel)).unwrap();
+            assert!(check_hint::surfaces(&dir).is_empty(), "{rel}");
+        }
+        // Padding a real hooks file past the cap does not hide it either.
+        put(
+            &dir,
+            ".claude/settings.json",
+            &format!("{HOOKS}{}", " ".repeat(cap)),
+        );
+        assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS]);
+        // A file of exactly the cap is read, so a clean one is no surface.
+        let clean = r#"{"permissions": {}}"#;
+        put(
+            &dir,
+            ".claude/settings.json",
+            &format!("{clean}{}", " ".repeat(cap - clean.len())),
+        );
+        assert_eq!(
+            fs::metadata(dir.join(".claude/settings.json"))
+                .unwrap()
+                .len(),
+            cap as u64
+        );
+        assert!(check_hint::surfaces(&dir).is_empty());
+        // A folder is no file, whatever its size.
+        fs::remove_file(dir.join(".claude/settings.json")).unwrap();
+        fs::create_dir_all(dir.join(".claude/settings.json")).unwrap();
+        assert!(check_hint::surfaces(&dir).is_empty());
+    }
+
+    #[test]
+    fn guide_plus_memory_still_within_9000() {
+        let (f, dir) = hooked("app");
+        let personal = f.c.mem.anth.join("personal-memory");
+        for i in 0..300 {
+            let name = format!("project-topic-{i:03}");
+            let note = Note::new(&name)
+                .type_("project")
+                .desc(&format!("A fairly descriptive note number {i}"))
+                .text();
+            write(&personal.join(format!("{name}.md")), &note, None);
+        }
+        let out = f.go_cwd(&dir);
+        assert_eq!(hints(&out).len(), 1, "{out:?}");
+        let ctx = context(&out);
+        assert!(ctx.chars().count() <= session_start::CONTEXT_BUDGET);
+        assert!(ctx.contains("# Anthology routing guide"));
+        assert!(ctx.contains("## Personal memory"));
+        assert!(sys(&out).chars().count() <= session_start::MESSAGE_CAP);
+    }
+
+    #[test]
+    fn a_subagent_never_gets_it_and_uses_no_state() {
+        let (f, dir) = hooked("app");
+        let out = f.go_d(
+            &f.deps(),
+            Some(&dir),
+            &f.env(),
+            &[("source", "compact"), ("agent_id", "a0b1c2d3e4f5a6b7c")],
+        );
+        assert!(!has_msg(&out), "{out:?}");
+        assert!(f.state().get("check_repo_hinted").is_none());
+    }
+
+    #[test]
+    fn the_step_is_isolated() {
+        let (f, dir) = hooked("app");
+        let fail = |n: &str| (n == "_check_repo_hint").then(|| exc("RuntimeError", "boom"));
+        let mut d = f.deps();
+        d.fail = &fail;
+        let out = f.go_d(&d, Some(&dir), &f.env(), &[]);
+        assert!(context(&out).contains("# Anthology routing guide"));
+        assert_eq!(
+            lines(&out),
+            vec!["anthology: the check-repo hint failed (RuntimeError)".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_broken_compat_import_does_not_touch_the_hint() {
+        let (f, dir) = hooked("app");
+        let mut d = f.deps();
+        d.compat = None;
+        let out = f.go_d(&d, Some(&dir), &f.env(), &[]);
+        assert_eq!(hints(&out).len(), 1, "{out:?}");
     }
 }
 
