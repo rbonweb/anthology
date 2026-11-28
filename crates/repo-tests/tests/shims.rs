@@ -24,6 +24,7 @@ mod shims {
     mod planted;
     mod recovery;
     mod scan;
+    mod slop_gate;
     mod slow;
     mod statics;
 }
