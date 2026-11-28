@@ -16,7 +16,10 @@ mod rules;
 pub use mask::{MASK, View, Waiver};
 pub use rules::RULES;
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+
+use mask::common::{IndexScope, LineIndex, index_for, scoped_index};
 
 /// The largest document checked; a larger one is allowed unchecked.
 pub const MAX_DOC: usize = 1 << 20;
@@ -135,11 +138,16 @@ pub fn check_all(kind: Kind, doc: &str) -> Vec<Finding> {
 
 /// The waiver comments and region starts on lines touching `new`.
 pub fn waivers_in(kind: Kind, doc: &str, new: &[Span]) -> Vec<Waiver> {
+    let _scope = IndexScope::enter(doc);
     touching(doc, &mask::view(kind, doc).waivers, new)
 }
 
-/// The 1-based line of byte `at`.
+/// The 1-based line of byte `at`. One lookup scans the document up to `at`; the engine looks
+/// lines up in a `LineIndex` instead.
 pub fn line_of(doc: &str, at: usize) -> usize {
+    if let Some(index) = scoped_index(doc) {
+        return index.line_of(at);
+    }
     let bytes = doc.as_bytes();
     bytes[..at.min(bytes.len())]
         .iter()
@@ -166,13 +174,55 @@ pub fn excerpt(doc: &str, span: Span) -> String {
 }
 
 pub(crate) fn check_with(kind: Kind, doc: &str, new: &[Span], rules: &[Rule]) -> Vec<Finding> {
+    let _scope = IndexScope::enter(doc);
     let view = mask::view(kind, doc);
     findings(kind, doc, &view, new, rules)
 }
 
+/// The new text as sorted, disjoint spans, so "does this span touch new text" is a binary
+/// search and not a scan of every new span. Empty spans hold no text and touch nothing.
+struct NewText(Vec<Span>);
+
+impl NewText {
+    fn new(new: &[Span]) -> NewText {
+        let mut spans: Vec<Span> = new.iter().copied().filter(|s| s.start < s.end).collect();
+        spans.sort();
+        let mut merged: Vec<Span> = Vec::with_capacity(spans.len());
+        for span in spans {
+            match merged.last_mut() {
+                Some(last) if span.start < last.end => last.end = last.end.max(span.end),
+                _ => merged.push(span),
+            }
+        }
+        NewText(merged)
+    }
+
+    /// Whether `span` intersects any new span (`Span::intersects`).
+    fn touches(&self, span: Span) -> bool {
+        let first = self.0.partition_point(|n| n.end <= span.start);
+        self.0.get(first).is_some_and(|n| n.start < span.end)
+    }
+}
+
 /// The engine after masking, so tests can hand it a view with waivers.
 fn findings(kind: Kind, doc: &str, view: &View, new: &[Span], rules: &[Rule]) -> Vec<Finding> {
-    let new_waivers = touching(doc, &view.waivers, new);
+    let index = index_for(doc);
+    let new_text = NewText::new(new);
+    let new_waivers = touching_new(&index, &view.waivers, &new_text);
+    // The first valid waiver of each rule on a line of new text (for density rules), and the
+    // first valid waiver of each rule on each line (for block rules), in document order.
+    let mut density_waivers: HashMap<&'static str, &Waiver> = HashMap::new();
+    for w in new_waivers.iter().filter(|w| w.valid) {
+        if let Some(id) = w.rule {
+            density_waivers.entry(id).or_insert(w);
+        }
+    }
+    let mut line_waivers: BTreeMap<(&'static str, usize), &Waiver> = BTreeMap::new();
+    for w in view.waivers.iter().filter(|w| w.valid) {
+        if let Some(id) = w.rule {
+            line_waivers.entry((id, w.line)).or_insert(w);
+        }
+    }
     let mut out = Vec::new();
     for rule in rules.iter().filter(|r| r.kinds.contains(&kind)) {
         let (hits, density) = match rule.run {
@@ -185,15 +235,20 @@ fn findings(kind: Kind, doc: &str, view: &View, new: &[Span], rules: &[Rule]) ->
             } else {
                 &hit.parts[..]
             };
-            if !density && !parts.iter().any(|p| new.iter().any(|n| p.intersects(*n))) {
+            if !density && !parts.iter().any(|p| new_text.touches(*p)) {
                 continue;
             }
-            let line = line_of(doc, hit.span.start);
-            let covers = |w: &&Waiver| w.valid && w.rule == Some(hit.rule);
+            let line = index.line_of(hit.span.start);
             let waiver = if density {
-                new_waivers.iter().find(covers)
+                density_waivers.get(hit.rule).copied()
             } else {
-                view.waivers.iter().filter(|w| w.line == line).find(covers)
+                // A waiver on any line the hit spans covers it, so one on the last line of a
+                // wrapped phrase counts.
+                let last = index.line_of(hit.span.end.saturating_sub(1).max(hit.span.start));
+                line_waivers
+                    .range((hit.rule, line)..=(hit.rule, last))
+                    .next()
+                    .map(|(_, w)| *w)
             };
             out.push(Finding {
                 rule: hit.rule,
@@ -210,38 +265,15 @@ fn findings(kind: Kind, doc: &str, view: &View, new: &[Span], rules: &[Rule]) ->
 
 /// The waivers whose line touches one of `new`.
 fn touching(doc: &str, waivers: &[Waiver], new: &[Span]) -> Vec<Waiver> {
-    waivers
-        .iter()
-        .filter(|w| {
-            let line = line_span(doc, w.line);
-            new.iter().any(|n| n.intersects(line))
-        })
-        .cloned()
-        .collect()
+    touching_new(&index_for(doc), waivers, &NewText::new(new))
 }
 
-/// The bytes of 1-based line `line`, without its newline (at least one byte wide, so an empty
-/// line can still be touched by a span that covers its newline).
-fn line_span(doc: &str, line: usize) -> Span {
-    let bytes = doc.as_bytes();
-    let mut start = 0;
-    for _ in 1..line {
-        match bytes[start..].iter().position(|&b| b == b'\n') {
-            Some(i) => start += i + 1,
-            None => {
-                start = bytes.len();
-                break;
-            }
-        }
-    }
-    let end = bytes[start..]
+fn touching_new(index: &LineIndex, waivers: &[Waiver], new: &NewText) -> Vec<Waiver> {
+    waivers
         .iter()
-        .position(|&b| b == b'\n')
-        .map_or(bytes.len(), |i| start + i);
-    Span {
-        start,
-        end: end.max(start + 1),
-    }
+        .filter(|w| new.touches(index.line_span(w.line)))
+        .cloned()
+        .collect()
 }
 
 #[cfg(test)]
@@ -577,6 +609,126 @@ mod tests {
         assert_eq!(line_of("a\nb\nc", 1), 1);
         assert_eq!(line_of("a\nb\nc", 2), 2);
         assert_eq!(line_of("a\nb\nc", 99), 3);
+    }
+
+    fn two_line_hit(_: &View) -> Vec<Hit> {
+        vec![hit("text.stock-phrase", sp(0, 8), vec![])]
+    }
+
+    #[test]
+    fn a_waiver_on_any_line_a_hit_spans_waives_it() {
+        let rules = [test_rule(
+            "text.stock-phrase",
+            Severity::Block,
+            Run::Text(two_line_hit),
+        )];
+        // the hit [0, 8) runs over lines 1 and 2; the waiver sits on line 2
+        let doc = "ab\ncd ef <!-- slop-ok: text.stock-phrase quoting the brief -->";
+        let view = with_comment_waivers(doc);
+        let got = findings(Kind::Markdown, doc, &view, &[sp(0, doc.len())], &rules);
+        assert_eq!(
+            got,
+            [finding(
+                "text.stock-phrase",
+                1,
+                "0-8",
+                Some("quoting the brief")
+            )]
+        );
+        // a waiver one line past the hit does not count
+        let doc = "ab\ncd ef\n<!-- slop-ok: text.stock-phrase quoting the brief -->";
+        let view = with_comment_waivers(doc);
+        let got = findings(Kind::Markdown, doc, &view, &[sp(0, doc.len())], &rules);
+        assert_eq!(got, [finding("text.stock-phrase", 1, "0-8", None)]);
+    }
+
+    #[test]
+    fn new_text_matches_span_intersects_for_unsorted_overlapping_spans() {
+        let new = [
+            sp(20, 30),
+            sp(0, 5),
+            sp(3, 8),
+            sp(8, 10),
+            sp(12, 12),
+            sp(40, 41),
+        ];
+        let text = NewText::new(&new);
+        for start in 0..45 {
+            for end in start..46 {
+                let probe = sp(start, end);
+                let want = new.iter().any(|n| n.start < n.end && probe.intersects(*n));
+                assert_eq!(text.touches(probe), want, "{probe:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_waiver_on_the_last_line_of_a_wrapped_phrase_waives_it() {
+        let doc = "Gone are\nthe days <!-- slop-ok: text.stock-phrase quoted from the brief -->\n";
+        let got = check_all(Kind::Markdown, doc);
+        assert_eq!(
+            got,
+            [finding(
+                "text.stock-phrase",
+                1,
+                "Gone are the days",
+                Some("quoted from the brief")
+            )]
+        );
+        // with no waiver the same phrase is still a finding
+        let got = check_all(Kind::Markdown, "Gone are\nthe days\n");
+        assert_eq!(
+            got,
+            [finding("text.stock-phrase", 1, "Gone are the days", None)]
+        );
+    }
+
+    /// The engine must scale with the size of the document, not with hits times size.
+    const TIME_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[test]
+    fn a_megabyte_with_170k_hits_is_checked_in_time() {
+        let doc = "delve\n".repeat(170_000);
+        assert!(doc.len() < MAX_DOC);
+        let start = std::time::Instant::now();
+        let got = check_all(Kind::Markdown, &doc);
+        let took = start.elapsed();
+        assert_eq!(got.len(), 170_000);
+        assert_eq!(got[169_999].line, 170_000);
+        assert!(took < TIME_LIMIT, "took {took:?}");
+    }
+
+    #[test]
+    fn eighteen_thousand_waiver_lines_are_checked_in_time() {
+        let line = "delve <!-- slop-ok: text.ai-vocab named by the user -->\n";
+        let doc = line.repeat(18_000);
+        assert!(doc.len() < MAX_DOC);
+        let start = std::time::Instant::now();
+        let got = check_all(Kind::Markdown, &doc);
+        let waivers = waivers_in(Kind::Markdown, &doc, &[sp(0, doc.len())]);
+        let took = start.elapsed();
+        assert_eq!(got.len(), 18_000);
+        assert!(
+            got.iter()
+                .all(|f| f.waiver.as_deref() == Some("named by the user"))
+        );
+        assert_eq!(waivers.len(), 18_000);
+        assert!(took < TIME_LIMIT, "took {took:?}");
+    }
+
+    #[test]
+    fn many_new_spans_are_checked_in_time() {
+        // every other line is new: 85k new spans against 170k hits
+        let doc = "delve\n".repeat(170_000);
+        let new: Vec<Span> = (0..170_000)
+            .step_by(2)
+            .map(|i| sp(i * 6, i * 6 + 6))
+            .collect();
+        let start = std::time::Instant::now();
+        let got = check(Kind::Markdown, &doc, &new);
+        let took = start.elapsed();
+        assert_eq!(got.len(), 85_000);
+        assert!(took < TIME_LIMIT, "took {took:?}");
     }
 
     #[test]
