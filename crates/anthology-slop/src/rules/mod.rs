@@ -1,4 +1,4 @@
-//! The v1 rules: the 16 rules of the plan's rule table, in that order.
+//! The v1 rules: the 17 rules of the plan's rule table, in that order.
 
 // The colour helpers are frozen in Task 1 and used by the UI rules of Task 5.
 #[allow(dead_code)]
@@ -21,7 +21,7 @@ const PROSE: &[Kind] = &[Markdown, Html, Jsx];
 const PAGES: &[Kind] = &[Markdown, Html];
 const STYLED: &[Kind] = &[Css, Html, Jsx];
 
-/// The 16 rules of "The v1 rules", in that order.
+/// The 17 rules of "The v1 rules", in that order.
 pub static RULES: &[Rule] = &[
     Rule {
         id: "text.ai-vocab",
@@ -134,6 +134,14 @@ pub static RULES: &[Rule] = &[
         summary: "placeholder copy",
         hint: "write the real copy for this screen",
         run: Run::Text(ui::placeholder_text),
+    },
+    Rule {
+        id: "ui.dummy-contact",
+        severity: Block,
+        kinds: &[Html, Jsx],
+        summary: "dummy phone number or chat link",
+        hint: "use the user's real contact, or leave the channel out",
+        run: Run::Text(ui::dummy_contact),
     },
     Rule {
         id: "ui.five-star-row",
