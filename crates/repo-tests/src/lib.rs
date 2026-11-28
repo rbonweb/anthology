@@ -2,5 +2,6 @@
 #![forbid(unsafe_code)]
 
 pub mod frontmatter;
+pub mod links;
 pub mod repo;
 pub mod yaml;
