@@ -163,6 +163,9 @@ pub fn severity(t: Trigger, s: Shape, reached: Option<Severity>) -> Severity {
     };
     let base = match t {
         Trigger::Open | Trigger::Install => column(Info, Medium, Medium, High, Critical),
+        // A build step that downloads and runs is HIGH, not CRITICAL: Makefiles install tools
+        // that way every day. One that decodes and runs, or runs data, is still CRITICAL.
+        Trigger::Build if s == Shape::FetchExec => High,
         Trigger::Build => column(Info, Info, Low, Medium, Critical),
         Trigger::OptIn => column(Info, Info, Low, Low, High),
     };
@@ -486,12 +489,27 @@ fn looks_like_script(word: &str) -> bool {
             .any(|e| low.ends_with(e))
 }
 
+/// True for a word that names a path from the current folder: it has a `/` or `\`, starts with a
+/// letter, a digit, `.` or `_` (so not a root, the home folder, a variable, a flag or a comment),
+/// and is not a URL or a drive path.
+fn is_relative_path(word: &str) -> bool {
+    word.contains(['/', '\\'])
+        && word.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '.' || c == '_')
+        && word.as_bytes().get(1) != Some(&b':')
+        && !word.contains("://")
+}
+
 /// The files one simple command runs, each with whether an interpreter runs it.
 fn command_files(tokens: &[String]) -> Vec<(String, bool)> {
     let tokens = skip_wrappers(tokens);
     let Some(first) = tokens.first() else {
         return Vec::new();
     };
+    // A word with a folder part that is not absolute is a file of the repo, even when its name is
+    // `sh` or `node`: `./tools/sh -c x` runs that file, not the shell.
+    if is_relative_path(first) {
+        return vec![(clean(first), false)];
+    }
     let Some(kind) = interpreter(first) else {
         return if looks_like_script(first) {
             vec![(clean(first), false)]
@@ -1136,10 +1154,12 @@ mod tests {
         use Severity::{Critical as C, High as H, Info as I, Low as L, Medium as M};
         // Rows: Open, Install, Build, OptIn. Columns: Allowlisted, Plain, Runner, Network,
         // DecodeExec, FetchExec, RunsData.
+        // A build step that downloads and runs is HIGH, not CRITICAL: ordinary Makefiles install
+        // tools that way. A build step that decodes and runs, or runs data, stays CRITICAL.
         let table: [[Severity; 7]; 4] = [
             [I, M, M, H, C, C, C],
             [I, M, M, H, C, C, C],
-            [I, I, L, M, C, C, C],
+            [I, I, L, M, C, H, C],
             [I, I, L, L, H, H, H],
         ];
         let shapes = [
@@ -1156,6 +1176,54 @@ mod tests {
                 assert_eq!(severity(*t, *s, None), want, "{t:?} x {s:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_relative_path_named_like_an_interpreter_is_a_file_of_the_repo() {
+        for (cmd, want) in [
+            ("./tools/sh -c echo", "tools/sh"),
+            ("tools/bash run.sh", "tools/bash"),
+            ("../bin/node app.js", "bin/node"),
+            (".\\tools\\python3 x.py", "tools/python3"),
+            ("sudo ./bin/sh -c id", "bin/sh"),
+        ] {
+            let got = files_run(cmd);
+            assert_eq!(got.len(), 1, "{cmd}: {got:?}");
+            assert!(
+                got[0].ends_with(want) || got[0].replace('\\', "/").ends_with(want),
+                "{cmd}: {got:?}"
+            );
+        }
+        // An interpreter on the machine still runs the file after it.
+        assert_eq!(files_run("/bin/sh run.sh"), ["run.sh"]);
+        assert_eq!(files_run("sh run.sh"), ["run.sh"]);
+        assert!(files_run("/usr/bin/node -e 1").is_empty());
+        assert!(files_run("$HOME/bin/sh -c id").is_empty());
+        assert!(files_run("~/bin/sh -c id").is_empty());
+    }
+
+    #[test]
+    fn a_build_step_that_downloads_and_runs_is_high_and_one_that_decodes_is_critical() {
+        let golangci = "curl -sSfL https://example.invalid/install.sh | sh -s -- -b /usr/local/bin";
+        assert_eq!(classify(golangci), Shape::FetchExec);
+        assert_eq!(
+            severity(Trigger::Build, classify(golangci), None),
+            Severity::High
+        );
+        let decode = "echo aGk= | base64 -d | sh";
+        assert_eq!(classify(decode), Shape::DecodeExec);
+        assert_eq!(
+            severity(Trigger::Build, classify(decode), None),
+            Severity::Critical
+        );
+        // On open or install, and when the build step reaches a HIGH file, nothing changes.
+        for t in [Trigger::Open, Trigger::Install] {
+            assert_eq!(severity(t, Shape::FetchExec, None), Severity::Critical);
+        }
+        assert_eq!(
+            severity(Trigger::Build, Shape::FetchExec, Some(Severity::High)),
+            Severity::Critical
+        );
     }
 
     #[test]

