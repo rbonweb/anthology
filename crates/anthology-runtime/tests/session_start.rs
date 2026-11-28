@@ -2200,7 +2200,11 @@ mod skills_folder_test {
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         names.sort();
-        assert_eq!(names, vec!["export", "import", "large-builds", "setup"]);
+        // `check-repo` is the model-invoked check that setup offers.
+        assert_eq!(
+            names,
+            vec!["check-repo", "export", "import", "large-builds", "setup"]
+        );
     }
 
     #[test]
