@@ -1,0 +1,164 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -327,25 +327,7 @@
+ - Leave gaps for spontaneous posts
+ - Adjust timing based on performance data
+ 
+-### Publishing From Your Agent
+-
+-Everything above produces drafts and a calendar — actually getting posts onto
+-accounts still needs a scheduling tool. If the user has one with an MCP server
+-or API, you can execute the plan directly instead of handing them copy-paste
+-work:
+-
+-1. **Check what's connected.** Ask the user what they schedule with. Many
+-   scheduling tools (Typefully, Buffer, Post Bridge, Marky, Magister, and others)
+-   expose drafting and scheduling through an MCP server or an API, so you can
+-   create and schedule posts directly. Magister is built by this repository's
+-   maintainer; say so if you name it. Check the [tools registry](https://github.com/coreyhaines31/marketingskills/blob/main/tools/REGISTRY.md) for guides.
+-2. **Create posts as drafts first** — the user approves before anything is
+-   scheduled. Never auto-publish without an explicit go-ahead.
+-3. **Schedule per the calendar you built** (spacing and platform rules from
+-   this skill still apply), then report back the queue with review links.
+-4. **Close the loop.** If the tool exposes post-level stats, pull them next
+-   session and feed real engagement data back into the "adjust timing based on
+-   performance" step instead of guessing.
++Publishing: hand over the drafts and the calendar; the user schedules them in their own tool. Never post or schedule for them.
+ 
+ ---
+ 
+--- a/references/listening-sources-template.md
++++ b/references/listening-sources-template.md
+@@ -27,7 +27,7 @@
+ 
+ Engage with **every** post from these accounts when relevant. Keep this list to 20-50 max.
+ 
+-### LinkedIn (browser-driven — use dev-browser to view feed)
++### LinkedIn (browser-driven — use BrowserOS Neo (the mcp__browseros-neo__* tools, in your own tab) to view feed)
+ - [Name] — `linkedin.com/in/handle`
+ - [Name] — `linkedin.com/in/handle`
+ 
+@@ -91,7 +91,7 @@
+ 
+ ## Saved Searches (manual / browser-driven)
+ 
+-URLs Claude opens via dev-browser to scan.
++URLs Claude opens via BrowserOS Neo (the mcp__browseros-neo__* tools, in your own tab) to scan.
+ 
+ ### LinkedIn Sales Navigator
+ - [Search name] — `https://linkedin.com/sales/search/people?...`
+@@ -117,7 +117,7 @@
+ ## Notes for Claude
+ 
+ - When asked for "today's top 10," output in the format defined in [listening.md](listening.md#the-daily-triage-loop)
+-- For LinkedIn and X, use dev-browser with the persistent session (user is logged in)
++- For LinkedIn and X, use BrowserOS Neo (the mcp__browseros-neo__* tools, in your own tab) with the user's logged-in session
+ - For everything else, use the curl recipes in [listening.md](listening.md#sources--light-tooling-curl-recipes)
+ - Default lookback: 24h. User can override.
+ - Always ask before posting — output drafts, user approves and posts manually
+--- a/references/listening.md
++++ b/references/listening.md
+@@ -107,14 +107,7 @@
+ 
+ ## Sources & Light Tooling (curl recipes)
+ 
+-These are public JSON endpoints — no auth needed. Run them from bash, pipe to `jq`, and Claude can parse the output to score and draft comments.
+-
+-**Requires:** `jq` (most recipes) and `xmllint` (RSS only). Install once:
+-```bash
+-# macOS
+-brew install jq
+-# xmllint ships with macOS; on Linux: apt install libxml2-utils
+-```
++These are public JSON endpoints — no auth needed. Run them from bash with `curl` and read the JSON yourself to score and draft comments; jq is never installed on the host. Each `| jq …` or `| xmllint …` part below only shows which fields matter: leave the pipe off and read those fields from the `curl` output.
+ 
+ ### Reddit (free, scriptable)
+ 
+@@ -138,14 +131,14 @@
+ 
+ **Recent stories mentioning a keyword (last 24h):**
+ ```bash
+-SINCE=$(($(date +%s) - 86400))
+-curl -s "https://hn.algolia.com/api/v1/search_by_date?query=KEYWORD&tags=story&numericFilters=created_at_i>${SINCE}" \
++# SINCE: get the epoch with `date -u +%s` in its own call and subtract 86400
++curl -s "https://hn.algolia.com/api/v1/search_by_date?query=KEYWORD&tags=story&numericFilters=created_at_i>SINCE" \
+   | jq '.hits[] | {title, url, author, points, num_comments, created_at, story_id: .objectID, hn_url: ("https://news.ycombinator.com/item?id="+.objectID)}'
+ ```
+ 
+ **Recent comments mentioning a keyword:**
+ ```bash
+-curl -s "https://hn.algolia.com/api/v1/search_by_date?query=KEYWORD&tags=comment&numericFilters=created_at_i>${SINCE}" \
++curl -s "https://hn.algolia.com/api/v1/search_by_date?query=KEYWORD&tags=comment&numericFilters=created_at_i>SINCE" \
+   | jq '.hits[] | {author, comment_text, story_title, hn_url: ("https://news.ycombinator.com/item?id="+.objectID)}'
+ ```
+ 
+@@ -170,16 +163,16 @@
+ 
+ ### LinkedIn & X — use the browser
+ 
+-LinkedIn and X don't expose useful public APIs, but you can drive a real browser session. **dev-browser** (MCP, already in the global setup) and **Playwright** both maintain persistent state — log in once, the session stays alive, Claude can navigate the authenticated feed.
+-
+-**dev-browser workflow (preferred — already wired up):**
+-1. User logs into LinkedIn / X once in the dev-browser session
++LinkedIn and X don't expose useful public APIs, but you can drive BrowserOS Neo (the mcp__browseros-neo__* tools, in your own tab). It keeps the user's logged-in state — they log in once, the session stays alive, Claude can navigate the authenticated feed.
++
++**BrowserOS Neo workflow:**
++1. User logs into LinkedIn / X once in the BrowserOS Neo session
+ 2. Claude navigates to a target URL (feed, profile, saved search, hashtag)
+ 3. Claude reads the accessibility tree / page text, extracts posts
+ 4. Claude scores using the [rubric](#scoring-rubric) and drafts comments
+ 5. User reviews and posts manually (don't auto-post — high-stakes, bot detection risk)
+ 
+-**Useful URLs to feed dev-browser:**
++**Useful URLs to open in BrowserOS Neo:**
+ 
+ | URL pattern | What it shows |
+ |-------------|---------------|
+@@ -193,7 +186,7 @@
+ **Tips:**
+ - On X, build a private list of target accounts and use the list URL. Far cleaner than the algorithmic feed.
+ - LinkedIn's `/recent-activity/all/` URL is the cleanest way to see one person's posts without the algorithm.
+-- For both platforms, scroll programmatically (dev-browser supports it) to load more posts before extracting.
++- For both platforms, scroll programmatically (BrowserOS Neo supports it) to load more posts before extracting.
+ 
+ **Paid alternatives if you don't want to drive a browser:**
+ 
+@@ -236,14 +229,14 @@
+ ## Per-Platform Notes
+ 
+ ### LinkedIn
+-- **Browser-driven** (dev-browser with persistent session) — see [LinkedIn & X — use the browser](#linkedin--x--use-the-browser)
++- **Browser-driven** (BrowserOS Neo with the user's session) — see [LinkedIn & X — use the browser](#linkedin--x--use-the-browser)
+ - **First-hour comments matter most** — algorithm weights early engagement heavily. Prioritize posts <2h old from target accounts.
+ - Comments with 5+ words get more reach than reactions
+ - Replying to other commenters can put you in front of their network
+ - Tag the author in your reply only if it adds context
+ 
+ ### Twitter/X
+-- **Browser-driven** (dev-browser) — build a private list of target accounts and point dev-browser at the list URL
++- **Browser-driven** (BrowserOS Neo) — build a private list of target accounts and open the list URL in BrowserOS Neo
+ - Reply within first 30 min for max reach on big accounts
+ - Quote-tweet > reply when adding substantial value
+ - Threading your reply (multi-tweet) signals effort
+--- a/references/ship-post.md
++++ b/references/ship-post.md
+@@ -52,7 +52,7 @@
+ - **No claims about user behaviour nobody reported.** Don't write that people dropped off, complained, asked for it or kept requesting it unless the user said so in this conversation. Don't write it with a hedge either; leave it out or ask.
+ - **Check old numbers against the current code.** A limit or price set in an earlier commit may have changed since. Date it ("in September…") or verify it.
+ - **If the user's sentence doesn't match the code, say so.** If they describe a feature the diff doesn't contain, or a name the product never uses, point it out and write what the code actually does.
+-- **Drafts only.** Never post, schedule or publish. If a scheduling tool is connected, create drafts and follow the skill's "Publishing From Your Agent" steps.
++- **Drafts only.** Never post, schedule or publish. Hand over the drafts and the calendar; the user schedules them in their own tool.
+ - **No AI tells.** The skill's No AI Tells list applies in full. In particular: no "excited to announce", no emoji bullets, no em dashes, no engagement-bait closers.
+ 
+ ---
+--- a/references/short-form-video.md
++++ b/references/short-form-video.md
+@@ -241,7 +241,7 @@
+ 
+ ### Post Once, Publish Everywhere
+ 
+-Make each video once and send it to TikTok, Reels, Shorts, and the other short-form feeds. A scheduler that posts to several accounts and platforms through one API or MCP (Buffer, Post Bridge, and others in `tools/REGISTRY.md`) keeps the routine to about an hour a day.
++Make each video once and send it to TikTok, Reels, Shorts, and the other short-form feeds. A scheduler that posts to several accounts and platforms through one API or MCP (Buffer, Post Bridge, and others the user runs) keeps the routine to about an hour a day.
+ 
+ ### Batch Creation Workflow
+ 

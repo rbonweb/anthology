@@ -1,0 +1,53 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -138,7 +138,7 @@
+ Go to [newsjacking.md](references/newsjacking.md), run the scoring rubric, draft 2–3 angles, pick the best, draft the pitch.
+ 
+ ### "Find journalists who cover [beat]"
+-Go to [journalist-pitching.md](references/journalist-pitching.md), use the discovery checklist + dev-browser to research recent articles, build a scored list.
++Go to [journalist-pitching.md](references/journalist-pitching.md), use the discovery checklist + WebFetch, or BrowserOS Neo for pages behind a login, to research recent articles, build a scored list.
+ 
+ ### "What's worth pitching this week?"
+ Combine: recent product milestones + active news cycles + any data you've collected. Score each potential story by the quality bar above.
+--- a/references/journalist-pitching.md
++++ b/references/journalist-pitching.md
+@@ -326,7 +326,7 @@
+ 
+ ### Researching their recent work (browser-driven)
+ 
+-Use `dev-browser` (persistent session, no rate limits) to:
++Use BrowserOS Neo (the mcp__browseros-neo__* tools, in your own tab) to:
+ - Open the journalist's outlet author page → scrape last 5 article headlines + dates
+ - Open their X/Twitter profile → note recent topics
+ - Open their LinkedIn → confirm current role
+--- a/references/newsjacking.md
++++ b/references/newsjacking.md
+@@ -144,7 +144,7 @@
+ 
+ ## Sources & Tooling
+ 
+-Reuses tooling from the `social` skill's listening workflow. Same install: `brew install jq`.
++Reuses tooling from the `social` skill's listening workflow: run `curl` from bash and read the JSON yourself; jq is never installed on the host. Each `| jq …` or `| xmllint …` part below only shows which fields matter: leave the pipe off and read those fields from the `curl` output.
+ 
+ ### Google News RSS (no auth)
+ 
+@@ -157,8 +157,8 @@
+ ### Hacker News (Algolia) for tech stories
+ 
+ ```bash
+-SINCE=$(($(date +%s) - 86400))
+-curl -s "https://hn.algolia.com/api/v1/search_by_date?query=QUERY&tags=story&numericFilters=created_at_i>${SINCE}" \
++# SINCE: get the epoch with `date -u +%s` in its own call and subtract 86400
++curl -s "https://hn.algolia.com/api/v1/search_by_date?query=QUERY&tags=story&numericFilters=created_at_i>SINCE" \
+   | jq '.hits[] | {title, url, points, num_comments, created_at, hn_url: ("https://news.ycombinator.com/item?id="+.objectID)}'
+ ```
+ 
+@@ -173,7 +173,7 @@
+ ### Journalist research (browser-driven)
+ 
+ For finding *which* journalists are covering the story right now:
+-- **dev-browser** → Google News search for the story → click through to articles → note the bylines
++- **BrowserOS Neo (the mcp__browseros-neo__* tools, in your own tab)** → Google News search for the story → click through to articles → note the bylines
+ - Then go to those journalists' X / LinkedIn / Muck Rack profile to confirm beat and recent coverage
+ 
+ See also [journalist-pitching.md](journalist-pitching.md) for the full discovery workflow.
