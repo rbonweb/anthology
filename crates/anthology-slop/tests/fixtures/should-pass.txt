@@ -5,6 +5,12 @@ The elevator elevates the car to the top floor in eight seconds.
 The mill rolls seamless steel pipe in three diameters.
 
 A seamless merge of two sorted lists runs in linear time.
+
+Shoot the product on a seamless paper backdrop.
+
+On hover the card elevates by 2 dp and its shadow grows.
+
+Elevate the dialog above the page with a larger shadow.
 %%
 Use a seamless texture so the floor tiles repeat without a visible edge.
 %%
@@ -27,6 +33,16 @@ That's not a typo, it is spelled that way in the spec.
 It's not an error, it's logged as a warning.
 
 The lock file isn't only read by the CLI; it is also checked by CI.
+
+This is not a bug, it is how POSIX sh splits words.
+
+This is not the default, it is opt-in.
+
+That is not a typo; it is in the spec.
+
+It is not a cache miss, it is because the key changed.
+
+It is not a leak, it is there for the retry loop.
 %%
 Tests, builds and end-to-end suites run in containers that mount only the worktree.
 %%
@@ -41,6 +57,12 @@ Start the Unleash server before the SDK connects.
 MediaPipe Holistic tracks the body and the face in one pass.
 
 The Synergy client shares one keyboard between two computers.
+
+The delve server listens on port 2345.
+
+- A seamless-immutable object is cloned before merge (#398).
+
+Edit elevate-config.yaml and restart.
 %%
 The rule flags "I hope this helps" when it appears outside quotes.
 %%
@@ -69,6 +91,8 @@ The walker descends to the next level of the tree.
 The cursor moves to the next level of the outline when you press Tab.
 
 The parser takes one token and recurses to the next level of the grammar.
+
+When the timer ends the player takes the stairs to the next level.
 
 Say goodbye to the v1 config: it is removed in 2.0.
 %%
