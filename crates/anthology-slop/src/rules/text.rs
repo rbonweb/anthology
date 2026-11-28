@@ -97,7 +97,7 @@ static AI_VOCAB_WORDS: LazyLock<Regex> = LazyLock::new(|| {
 /// The nouns that make `seamless` a literal word (a seamless pipe, a seamless texture).
 static SEAMLESS_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?i)^\s+(?:pipes?|tubes?|tubing|steel|knit|knitted|knitting|garments?|textures?|tiles?|tiling|tileable|patterns?|loops?|gutters?|flooring|stockings|socks|underwear)\b",
+        r"(?i)^\s+(?:pipes?|tubes?|tubing|steel|knit|knitted|knitting|garments?|textures?|tiles?|tiling|tileable|patterns?|loops?|gutters?|flooring|stockings|socks|underwear|backdrops?|backgrounds?|paper|sweeps?|ground|plain\s+(?:ground|backdrop|background|paper))\b",
     )
 });
 
@@ -107,6 +107,21 @@ static ELEVATE_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
         r"(?i)^\s+(?:the\s+|your\s+|their\s+|its\s+|a\s+)?(?:privileges?|permissions?|rights|access|process|shell|user|account|token|session|prompt)\b",
     )
 });
+
+/// What `elevate` takes when it is a UI term: raise the card, the dialog, a sheet. Only after an
+/// article, so `elevate your menu` (a brand verb) still counts.
+static ELEVATE_UI_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)^\s+(?:the|this|that|a|an)\s+(?:cards?|dialogs?|modals?|sheets?|menus?|surfaces?|layers?|elements?|buttons?|panels?|popovers?|tooltips?|drawers?)\b",
+    )
+});
+
+/// A z-depth word near `elevate`: a shadow, a z-index, an elevation, a length in `px` or `dp`.
+static ELEVATION_CUE: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)\b(?:shadows?|z-index|elevations?)\b|\b\d+(?:\.\d+)?\s*(?:px|dp)\b"));
+
+/// How far each side of `elevate` the z-depth words are read.
+const ELEVATION_WINDOW: usize = 60;
 
 static TAPESTRY_AFTER: LazyLock<Regex> = LazyLock::new(|| {
     re(r"(?i)^\s+(?:weaving|weavers?|looms?|museum|kits?|wool|yarn|workshops?)\b")
@@ -125,14 +140,65 @@ static ELEVATE_SUBJECT: LazyLock<Regex> =
 /// A merge that leaves no seam, as in merging two sorted lists.
 static SEAMLESS_MERGE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^\s+(?:merges?|merging)\b"));
 
+/// The words that are also the name of a tool, so a lowercase use can be a command or a server.
+const TOOL_NAMES: [&str; 5] = ["delve", "unleash", "tapestry", "synergy", "holistic"];
+
+/// What a tool name is followed by in a sentence about the tool: `the delve server`, `delve
+/// --headless`.
+static TOOL_AFTER: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)^(?:\s+(?:server|debugger|cli|command|daemon|binary|client|proxy|port|process|sdk)\b|\s+--?[a-z])",
+    )
+});
+
+/// A shell prompt, then a few words, right before the name: `$ delve debug`.
+static TOOL_PROMPT: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?m)^[ \t]*[$>][ \t]+(?:[\w./=-]+[ \t]+){0,3}$"));
+
+/// A verb that takes a command or a server as its object (`run delve`, `install unleash`).
+static TOOL_VERB_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)\b(?:install|installs|installed|installing|run|runs|running|start|starts|starting|restart|launch|launches|attach|attaches)\s+$",
+    )
+});
+
+/// True when a lowercase tool name is used as the tool: `the delve server`, `run delve`.
+fn is_tool_use(text: &str, m: &Match<'_>) -> bool {
+    let word = m.as_str().to_ascii_lowercase();
+    if !TOOL_NAMES.contains(&word.as_str()) {
+        return false;
+    }
+    let lead = before(text, m.start(), BEFORE);
+    TOOL_AFTER.is_match(after(text, m.end(), AFTER))
+        || TOOL_PROMPT.is_match(lead.rfind('\n').map_or(lead, |i| &lead[i + 1..]))
+        || (matches!(word.as_str(), "delve" | "unleash") && TOOL_VERB_BEFORE.is_match(lead))
+}
+
+/// True when a word of a name or a path (`seamless-immutable`, `delve.json`, `src/elevate/mod.rs`)
+/// holds the stock word: a `-`, `.`, `/` or `_` joins it to a letter or a digit on either side.
+fn is_part_of_a_name(text: &str, m: &Match<'_>) -> bool {
+    let joins = |c: char| matches!(c, '-' | '.' | '/' | '_');
+    let mut lead = text[..m.start()].chars().rev();
+    let mut tail = text[m.end()..].chars();
+    (lead.next().is_some_and(joins) && lead.next().is_some_and(char::is_alphanumeric))
+        || (tail.next().is_some_and(joins) && tail.next().is_some_and(char::is_alphanumeric))
+}
+
 /// True when the stock word is used for what it literally means.
 fn is_literal_use(text: &str, m: &Match<'_>) -> bool {
     let word = m.as_str().to_ascii_lowercase();
     let next = after(text, m.end(), AFTER);
+    if is_part_of_a_name(text, m) || is_tool_use(text, m) {
+        return true;
+    }
     if word.starts_with("seamless") {
         SEAMLESS_BEFORE.is_match(next) || (word == "seamless" && SEAMLESS_MERGE.is_match(next))
     } else if word.starts_with("elevat") {
-        ELEVATE_OBJECT.is_match(next) || ELEVATE_SUBJECT.is_match(before(text, m.start(), BEFORE))
+        ELEVATE_OBJECT.is_match(next)
+            || ELEVATE_UI_OBJECT.is_match(next)
+            || ELEVATE_SUBJECT.is_match(before(text, m.start(), BEFORE))
+            || ELEVATION_CUE.is_match(before(text, m.start(), ELEVATION_WINDOW))
+            || ELEVATION_CUE.is_match(after(text, m.end(), ELEVATION_WINDOW))
     } else if word.starts_with("tapestr") {
         TAPESTRY_AFTER.is_match(next) || TAPESTRY_BEFORE.is_match(before(text, m.start(), BEFORE))
     } else if word.starts_with("groundbreaking") {
@@ -248,7 +314,9 @@ pub(crate) fn stock_phrase(view: &View) -> Vec<Hit> {
 }
 
 /// The chat wordings, then a sentence-opening `Certainly!`, `Absolutely!` or `Sure!` (named group
-/// `c`, so the hit sits on the word and not on the full stop before it).
+/// `c`, so the hit sits on the word and not on the full stop before it). Bold or italic markers
+/// may sit between the full stop and the space, so an FAQ answer after a bold question counts
+/// (`**Can I self-host it?** Sure!`).
 static CHAT_PHRASES: LazyLock<Regex> = LazyLock::new(|| {
     let words = [
         r"(?:i\s+)?hope\s+(?:this|that)\s+helps",
@@ -264,7 +332,7 @@ static CHAT_PHRASES: LazyLock<Regex> = LazyLock::new(|| {
         r"here['’]s\s+(?:a|the)\s+(?:revised|rewritten|updated|polished|improved)\s+(?:version|draft)",
     ];
     re(&format!(
-        r"(?i)\b(?:{})\b|(?m:^|[.!?]\s+)(?P<c>(?:certainly|absolutely|sure)!)",
+        r"(?i)\b(?:{})\b|(?m:^|[.!?][*_]*\s+)(?P<c>(?:certainly|absolutely|sure)!)",
         words.join("|")
     ))
 });
@@ -289,8 +357,21 @@ static CONTRASTS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     .map(re)
 });
 
-/// A second clause that states a fact rather than renaming the thing: optional adverbs, then a
-/// past participle ("it is also read on reload", "it is set by the installer").
+/// A second clause that reframes the thing ("it is a platform", "it is about trust"): optional
+/// adverbs, then a determiner, `about` or a comparison. Any other second clause ("it is opt-in",
+/// "it is set by the installer", "it is how POSIX sh splits words") states a fact. The ruling of
+/// review 1, item 3, for the plain negations "not a/an/the/about X" (forms 1 and 2).
+static REFRAME_CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"(?i)^\s+(?:(?:also|still|then|now|only|always|usually|often|never|already)\s+)*",
+        r"(?:a|an|the|about|your|our|their|more|less|just|really)\b",
+    ))
+});
+
+/// A second clause that states a fact in an "only" contrast: optional adverbs, then a past
+/// participle ("it is also read on reload", "it is set by the installer"). The "not just X, it is
+/// Y" form (form 3) keeps firing on any other clause ("they are strategic instruments"): the
+/// emphasis word is the tell, and a plain fact there is told by the participle.
 static FACTUAL_CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
     re(concat!(
         r"(?i)^\s+(?:(?:also|still|then|now|only|always|usually|often|never|already)\s+)*",
@@ -300,8 +381,21 @@ static FACTUAL_CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
     ))
 });
 
-/// The forms whose second clause is a bare "it is" (1 to 3); forms 4 and 5 end on `about`.
+/// The forms whose second clause is a bare "it is": the plain negations (1 and 2) and the
+/// "not just" form (3); forms 4 and 5 end on `about`.
 const BARE_SECOND_CLAUSE: usize = 3;
+
+/// Of those, the "not just X" form: the others are plain negations.
+const EMPHASIS_FORM: usize = 2;
+
+/// True when the clause that follows a contrast match is a contrast, not a fact.
+fn is_a_contrast(form: usize, next: &str) -> bool {
+    match form {
+        EMPHASIS_FORM => !FACTUAL_CLAUSE.is_match(next),
+        f if f < BARE_SECOND_CLAUSE => REFRAME_CLAUSE.is_match(next),
+        _ => true,
+    }
+}
 
 pub(crate) fn not_x_but_y(view: &View) -> Vec<Hit> {
     let text = &view.text;
@@ -311,10 +405,7 @@ pub(crate) fn not_x_but_y(view: &View) -> Vec<Hit> {
         .flat_map(|(form, pattern)| {
             pattern
                 .find_iter(text)
-                .filter(move |m| {
-                    form >= BARE_SECOND_CLAUSE
-                        || !FACTUAL_CLAUSE.is_match(after(text, m.end(), AFTER + 20))
-                })
+                .filter(move |m| is_a_contrast(form, after(text, m.end(), AFTER + 20)))
                 .map(|m| span_of(&m))
         })
         .collect();
@@ -359,10 +450,21 @@ static DESCENT_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
-/// The verbs of the slogan: take, bring, elevate, push, kick or boost something to the next level.
-static LIFT_VERB: LazyLock<Regex> = LazyLock::new(|| {
+/// A slogan verb that governs the phrase: take, bring, elevate, push, kick or boost, then up to
+/// three words (the thing it lifts), then "to the next level" (group `object`).
+static LIFT_GOVERNS: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"(?i)\b(?:take|takes|taking|took|bring|brings|bringing|brought|elevat(?:e|es|ed|ing)|",
+        r"push(?:es|ed|ing)?|kick(?:s|ed|ing)?|boost(?:s|ed|ing)?)",
+        r"(?P<object>(?:\s+[\p{L}\p{N}'’-]+){0,3})\s+$",
+    ))
+});
+
+/// A place or a thing you walk through, as the object of `take` in a game or a building:
+/// `takes the stairs to the next level`.
+static MOTION_OBJECT: LazyLock<Regex> = LazyLock::new(|| {
     re(
-        r"(?i)\b(?:take|takes|taking|took|bring|brings|bringing|brought|elevat(?:e|es|ed|ing)|push(?:es|ed|ing)?|kick(?:s|ed|ing)?|boost(?:s|ed|ing)?)\b",
+        r"(?i)\b(?:stairs?|staircase|stairway|escalators?|elevators?|lifts?|ladders?|ramps?|steps?|portals?|doors?|exits?|warps?|pipes?|paths?|roads?|trains?|buses|bus|taxis?|trams?|gates?|tunnels?)\b",
     )
 });
 
@@ -377,7 +479,10 @@ fn is_plain_hype(text: &str, m: &Match<'_>) -> bool {
     if phrase.starts_with("to") {
         let lead = before(text, m.start(), SENTENCE);
         let sentence = lead.rfind(['.', '!', '?']).map_or(lead, |i| &lead[i + 1..]);
-        DESCENT_BEFORE.is_match(before(text, m.start(), BEFORE)) || !LIFT_VERB.is_match(sentence)
+        DESCENT_BEFORE.is_match(before(text, m.start(), BEFORE))
+            || LIFT_GOVERNS
+                .captures(sentence)
+                .is_none_or(|caps| MOTION_OBJECT.is_match(&caps["object"]))
     } else if phrase.starts_with("say") {
         VERSION_AFTER.is_match(after(text, m.end(), AFTER))
     } else {
@@ -672,6 +777,104 @@ mod tests {
     }
 
     #[test]
+    fn ai_vocab_skips_package_file_and_identifier_shapes() {
+        // review 2, I6: a stock word joined by - . / or _ to another word is a name
+        assert_none_flagged(
+            ai_vocab,
+            &[
+                "A seamless-immutable object is cloned before merge (#398).",
+                "[seamless-immutable](https://github.com/rtfeldman/seamless-immutable)",
+                "Edit elevate-config.yaml and restart.",
+                "Open delve.json and check the port.",
+                "Read seamless.css before you ship.",
+                "The module lives in src/elevate/mod.rs.",
+                "Set holistic_score to zero.",
+            ],
+        );
+        // the same words at the end of a sentence, or in a list, stay flagged
+        assert_each_flagged(
+            ai_vocab,
+            &[
+                ("The sync is seamless. Next, we ship.", "seamless"),
+                ("It is seamless, fast and small.", "seamless"),
+                ("It is seamless - and small.", "seamless"),
+                ("A seamless\u{2014}and small\u{2014}login.", "seamless"),
+            ],
+        );
+        // a hyphenated tell that holds the stock word in its own pattern is unchanged
+        assert_eq!(found(ai_vocab, "A game-changer."), ["game-changer"]);
+    }
+
+    #[test]
+    fn ai_vocab_skips_the_elevation_sense() {
+        // review 2, I6: elevate in the sense of z-depth
+        assert_none_flagged(
+            ai_vocab,
+            &[
+                "On hover the card elevates by 2 dp and its shadow grows.",
+                "Elevate the dialog above the page with a larger shadow.",
+                "Element elevates (shadow increase)",
+                "Elevate the modal to z-index 40.",
+                "The menu elevates 8px on open.",
+                "Elevate the card.",
+                "Elevate a sheet.",
+            ],
+        );
+        assert_each_flagged(
+            ai_vocab,
+            &[
+                ("Elevate your menu.", "Elevate"),
+                ("Elevate your brand.", "Elevate"),
+                ("The new card elevates your rewards.", "elevates"),
+            ],
+        );
+    }
+
+    #[test]
+    fn ai_vocab_skips_lowercase_tool_names() {
+        // review 2, M1
+        assert_none_flagged(
+            ai_vocab,
+            &[
+                "The delve server listens on port 2345.",
+                "Attach the delve debugger to the process.",
+                "Run the delve command with --headless.",
+                "Start unleash on port 4242.",
+                "Run delve --headless to start it.",
+                "$ delve debug ./cmd/app",
+                "Install delve and attach it.",
+            ],
+        );
+        assert_each_flagged(
+            ai_vocab,
+            &[
+                ("We delve into the server code.", "delve"),
+                ("Unleash the server.", "Unleash"),
+                ("We unleash commands for the team.", "unleash"),
+                ("Delve into the command line.", "Delve"),
+            ],
+        );
+    }
+
+    #[test]
+    fn ai_vocab_skips_the_photography_sense_of_seamless() {
+        // review 2, M2
+        assert_none_flagged(
+            ai_vocab,
+            &[
+                "Shoot the product on a seamless paper backdrop.",
+                "Hang a seamless background behind the model.",
+                "Use a seamless backdrop.",
+                "A seamless sweep lights the set.",
+                "Roll out the seamless paper.",
+                "An object shot on a seamless plain ground (lighter or darker than the object).",
+                "Shoot on a seamless ground.",
+            ],
+        );
+        assert_each_flagged(ai_vocab, &[("A seamless handover.", "seamless")]);
+    }
+
+    #[test]
     fn ai_vocab_windows_do_not_split_a_character() {
         // multi-byte characters around the match must not panic when the windows are cut
         let doc = format!("{} tapestry {}", "é".repeat(40), "é".repeat(40));
@@ -894,6 +1097,29 @@ mod tests {
     }
 
     #[test]
+    fn an_faq_answer_opening_with_a_chat_word_is_chat_residue() {
+        // review 2, M4 (lead ruling): both FAQ shapes block, with or without bold around the question
+        assert_eq!(
+            markdown_findings("**Does it work offline?**\n\nAbsolutely! Every page is cached."),
+            ["text.chat-residue Absolutely!"]
+        );
+        assert_eq!(
+            markdown_findings("**Can I self-host it?** Sure! Run the container."),
+            ["text.chat-residue Sure!"]
+        );
+        assert_eq!(
+            markdown_findings("__Can I self-host it?__ Sure! Run the container."),
+            ["text.chat-residue Sure!"]
+        );
+        assert_eq!(
+            found(chat_residue, "**Is it free?** Certainly! It is."),
+            ["Certainly!"]
+        );
+        // a sure! that is not an opening stays quiet
+        assert_none_flagged(chat_residue, &["**Is it free?** Not sure! Ask us."]);
+    }
+
+    #[test]
     fn not_x_but_y_flags_each_of_the_five_forms() {
         assert_each_flagged(
             not_x_but_y,
@@ -1052,15 +1278,58 @@ mod tests {
                     "It's not a tool, it's",
                 ),
                 (
-                    "It's not about speed, it's trust.",
+                    "It's not about speed, it's about trust.",
                     "It's not about speed, it's",
                 ),
                 (
                     "The cache isn't just a store. It's still a layer.",
                     "isn't just a store. It's",
                 ),
+                (
+                    "It is not a tool, it is a platform.",
+                    "It is not a tool, it is",
+                ),
+                (
+                    "This is not an error, it is a warning",
+                    "This is not an error, it is",
+                ),
             ],
         );
+    }
+
+    #[test]
+    fn not_x_but_y_needs_a_reframing_second_clause() {
+        // review 2, I3: the ruling of review 1 as written. A plain fact after a negation is not a
+        // contrast; only a second clause that goes on with a/an/the/about (a reframe) is.
+        assert_none_flagged(
+            not_x_but_y,
+            &[
+                "This is not a bug, it is how POSIX sh splits words.",
+                "This is not the default, it is opt-in.",
+                "That is not a typo; it is in the spec.",
+                "It is not a cache miss, it is because the key changed.",
+                "It is not a leak, it is there for the retry loop.",
+                "It's not about speed, it's trust.",
+            ],
+        );
+        // the "not just X" form keeps its emphasis word as the tell
+        assert_each_flagged(
+            not_x_but_y,
+            &[(
+                "Alignment diagrams are not just diagnostic tools \u{2014} they are strategic instruments.",
+                "are not just diagnostic tools \u{2014} they are",
+            )],
+        );
+        // and through the real mask, as a one-line Markdown file
+        for doc in [
+            "This is not a bug, it is how POSIX sh splits words.",
+            "This is not the default, it is opt-in.",
+            "That is not a typo; it is in the spec.",
+            "It is not a cache miss, it is because the key changed.",
+            "It is not a leak, it is there for the retry loop.",
+        ] {
+            assert_eq!(markdown_findings(doc), Vec::<String>::new(), "{doc}");
+        }
     }
 
     #[test]
@@ -1158,6 +1427,35 @@ mod tests {
                 "Take a backup. Indent the item to the next level of the list.",
                 "Say goodbye to the v1 config: it is removed in 2.0.",
                 "Say goodbye to version 1 of the API.",
+            ],
+        );
+    }
+
+    #[test]
+    fn hype_cta_needs_the_lift_verb_to_govern_the_phrase() {
+        // review 2, M3: a literal level reached by a verb that happens to be a lift verb
+        assert_none_flagged(
+            hype_cta,
+            &[
+                "When the timer ends the player takes the stairs to the next level.",
+                "The player takes the escalator to the next level of the mall.",
+                "After the boss, you take the portal to the next level.",
+            ],
+        );
+        assert_each_flagged(
+            hype_cta,
+            &[
+                ("Take it to the next level.", "to the next level"),
+                ("We take everything to the next level.", "to the next level"),
+                (
+                    "This tool takes your whole team to the next level.",
+                    "to the next level",
+                ),
+                ("Elevate to the next level.", "to the next level"),
+                (
+                    "Taking things to the next level, one build at a time.",
+                    "to the next level",
+                ),
             ],
         );
     }
