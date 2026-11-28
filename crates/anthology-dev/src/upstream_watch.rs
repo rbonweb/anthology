@@ -194,9 +194,9 @@ fn is_dropped_category(c: char) -> bool {
     cat.starts_with('C') || cat == "Zl" || cat == "Zp"
 }
 
-/// `sanitise_path`: control and format characters (`C*`), line and paragraph separators and
+/// `sanitize_path`: control and format characters (`C*`), line and paragraph separators and
 /// backticks removed, `strip()`ped, capped at [`MAX_PATH_LEN`] code points. Safe in a fence.
-pub fn sanitise_path(text: &str) -> String {
+pub fn sanitize_path(text: &str) -> String {
     let kept: String = text
         .chars()
         .filter(|&c| c != '`' && !is_dropped_category(c))
@@ -204,15 +204,15 @@ pub fn sanitise_path(text: &str) -> String {
     take_chars(pystr::strip_ws(&kept), MAX_PATH_LEN)
 }
 
-/// `sanitise_inline`: the same as [`sanitise_path`], for an inline code span.
-pub fn sanitise_inline(text: &str) -> String {
-    sanitise_path(text)
+/// `sanitize_inline`: the same as [`sanitize_path`], for an inline code span.
+pub fn sanitize_inline(text: &str) -> String {
+    sanitize_path(text)
 }
 
-/// `sanitise_prose(text, limit)`: only letters, digits, spaces and `. _ / : + ( ) , -` kept,
+/// `sanitize_prose(text, limit)`: only letters, digits, spaces and `. _ / : + ( ) , -` kept,
 /// on one line, at most `limit` code points.
-pub fn sanitise_prose(text: &str, limit: usize) -> String {
-    take_chars(&PROSE_DROP_RE.replace_all(&sanitise_path(text), ""), limit)
+pub fn sanitize_prose(text: &str, limit: usize) -> String {
+    take_chars(&PROSE_DROP_RE.replace_all(&sanitize_path(text), ""), limit)
 }
 
 fn expect(re: &Regex, value: Option<&Value>, what: &str) -> Result<String, Error> {
@@ -324,21 +324,21 @@ pub fn render_title(change: &Change) -> String {
 pub fn render_body(change: &Change, extra_sections: &[(String, String)]) -> String {
     let mut lines: Vec<String> = vec![
         format!("<!-- upstream-watch:{} -->", change.key),
-        format!("## Upstream change: `{}`", sanitise_inline(&change.key)),
+        format!("## Upstream change: `{}`", sanitize_inline(&change.key)),
         String::new(),
     ];
     for (label, value) in &change.details {
         lines.push(format!(
             "- **{}:** `{}`",
-            sanitise_inline(label),
-            sanitise_inline(value)
+            sanitize_inline(label),
+            sanitize_inline(value)
         ));
     }
     let mut summary: Vec<String> = change.notes.iter().map(|n| format!("- {n}")).collect();
     let files: Vec<String> = change
         .files
         .iter()
-        .map(|f| sanitise_path(f))
+        .map(|f| sanitize_path(f))
         .filter(|f| !f.is_empty())
         .collect();
     if !files.is_empty() {
@@ -385,13 +385,13 @@ pub type BudgetRow = (String, Option<u64>, Option<u64>);
 
 /// `render_startup_budget(key, rows)`: the markdown of the "Startup budget" section.
 pub fn render_startup_budget(key: &str, rows: &[BudgetRow]) -> String {
-    let agents: Vec<String> = rows.iter().map(|(a, _, _)| sanitise_prose(a, 80)).collect();
+    let agents: Vec<String> = rows.iter().map(|(a, _, _)| sanitize_prose(a, 80)).collect();
     let mut lines = vec![
         format!(
             "The vendored knowledge from `{}` is read at startup by the agents below, so this \
              change can grow their startup cost. Sizes are bytes: the agent body, its Startup \
              files and its preloaded skills.",
-            sanitise_prose(key, 80)
+            sanitize_prose(key, 80)
         ),
         String::new(),
         "| Agent | Now | Budget | Used |".into(),
@@ -666,13 +666,13 @@ impl Kind {
 /// `classify(entry)`: git, url or subtree; any other shape is an error.
 pub fn classify(entry: &Value) -> Result<Kind, Error> {
     let Some(m) = entry.as_object() else {
-        return Err(watch("unrecognised source shape: not an object"));
+        return Err(watch("unrecognized source shape: not an object"));
     };
     let upstream = matches!(m.get("upstream"), Some(Value::Object(_)));
     if upstream || m.get("managed_by").and_then(Value::as_str) == Some("subtree") {
         if !upstream {
             return Err(watch(
-                "unrecognised source shape: subtree entry without `upstream`",
+                "unrecognized source shape: subtree entry without `upstream`",
             ));
         }
         return Ok(Kind::Subtree);
@@ -683,7 +683,7 @@ pub fn classify(entry: &Value) -> Result<Kind, Error> {
     if m.contains_key("repo") {
         return Ok(Kind::Git);
     }
-    Err(watch("unrecognised source shape: no repo, url or upstream"))
+    Err(watch("unrecognized source shape: no repo, url or upstream"))
 }
 
 /// `parse_manifest(data)`: a sha256sum manifest as `{file: lowercase sha256}`.
@@ -873,7 +873,7 @@ impl Net for RealNet {
 
 /// The issue calls the watcher makes (the GC-19 seam; tests inject fakes).
 pub trait GitHub {
-    /// Every labelled issue, open and closed (pull requests included; callers skip them).
+    /// Every labeled issue, open and closed (pull requests included; callers skip them).
     fn list_issues(&self) -> Result<Vec<Value>, Error>;
     /// The created issue, as the API returns it.
     fn create_issue(&self, title: &str, body: &str) -> Result<Value, Error>;
@@ -1106,7 +1106,7 @@ impl<'a> Checker<'a> {
         let mut names = Vec::new();
         for f in files.iter().filter_map(Value::as_object) {
             if under(path, f.get("filename")) || under(path, f.get("previous_filename")) {
-                let name = sanitise_path(&f.get("filename").map_or(String::new(), py_str));
+                let name = sanitize_path(&f.get("filename").map_or(String::new(), py_str));
                 if !name.is_empty() {
                     names.push(name);
                 }
@@ -1224,7 +1224,7 @@ impl<'a> Checker<'a> {
         if GITHUB_REPO_RE.is_match(repo) {
             match self.compare(repo, pinned, &new_commit) {
                 Ok(data) => {
-                    summarise(&mut change, &data, path, true);
+                    summarize(&mut change, &data, path, true);
                 }
                 Err(_) => change
                     .notes
@@ -1277,7 +1277,7 @@ impl<'a> Checker<'a> {
             return Ok(Some(change));
         }
         let data = self.compare(repo, pinned, &head)?;
-        if !summarise(&mut change, &data, path, false) {
+        if !summarize(&mut change, &data, path, false) {
             return Ok(None);
         }
         Ok(Some(change))
@@ -1357,7 +1357,7 @@ impl<'a> Checker<'a> {
             );
             change.files = lines
                 .iter()
-                .map(|l| sanitise_path(l))
+                .map(|l| sanitize_path(l))
                 .filter(|l| !l.is_empty())
                 .collect();
             change.files_total = change.files.len();
@@ -1418,9 +1418,9 @@ impl<'a> Checker<'a> {
     }
 }
 
-/// `_summarise`: fills the change's summary from a compare response; false when nothing
+/// `_summarize`: fills the change's summary from a compare response; false when nothing
 /// changed under `path` (a branch diff then is no change).
-fn summarise(change: &mut Change, data: &Value, path: &str, tag_diff: bool) -> bool {
+fn summarize(change: &mut Change, data: &Value, path: &str, tag_diff: bool) -> bool {
     let (names, truncated) = Checker::files_under(data, path);
     match data.as_object().and_then(|m| m.get("total_commits")) {
         Some(Value::Int(Int::Small(n))) if *n >= 0 => change.notes.push(format!(
@@ -1434,13 +1434,13 @@ fn summarise(change: &mut Change, data: &Value, path: &str, tag_diff: bool) -> b
     if truncated {
         change
             .notes
-            .push("The compare API truncated the file list: diff too large to summarise.".into());
+            .push("The compare API truncated the file list: diff too large to summarize.".into());
         return true;
     }
     let scope = if path.is_empty() {
         "in the repository".to_string()
     } else {
-        format!("under `{}`", sanitise_path(path))
+        format!("under `{}`", sanitize_path(path))
     };
     change.files_total = names.len();
     change.files = names;
@@ -1495,7 +1495,7 @@ pub fn check_all(
             _ => "?".to_string(),
         };
         let result = checker.check_entry(entry);
-        attempt(sanitise_inline(&key), result);
+        attempt(sanitize_inline(&key), result);
     }
     let result = checker.check_claude_code();
     attempt(CLAUDE_CODE_KEY.into(), result);
@@ -1514,7 +1514,7 @@ fn normal(text: Option<&Value>) -> Result<String, Error> {
     }
 }
 
-/// `_without_budget(text)`: the normalised body without its "Startup budget" section (up to
+/// `_without_budget(text)`: the normalized body without its "Startup budget" section (up to
 /// the next `### ` heading). A backtrack-limit error names the pattern.
 pub fn without_budget(text: &str) -> Result<String, Uncaught> {
     without_budget_with(&BUDGET_SECTION_RE, text)
@@ -1541,7 +1541,7 @@ fn has_label(issue: &Map) -> bool {
     })
 }
 
-/// `_is_ours(issue)`: bot-authored, labelled, not a pull request.
+/// `_is_ours(issue)`: bot-authored, labeled, not a pull request.
 pub fn is_ours(issue: &Value) -> bool {
     let Some(m) = issue.as_object() else {
         return false;
@@ -1596,7 +1596,7 @@ fn num_cmp(a: &Value, b: &Value) -> Ordering {
 }
 
 /// `index_issues(issues)`: the newest (highest `number`) managed issue per marker key, open or
-/// closed. Pull requests, unlabelled issues, issues another author wrote and bodies that do not
+/// closed. Pull requests, unlabeled issues, issues another author wrote and bodies that do not
 /// start with the marker are ignored. Ruling DV3-R4: `number`s order as Python's `<` does for
 /// numbers and for strings; any other mix of two or more keys is the `TypeError` Python raises
 /// for most of them (a list key, which Python orders, is one too).

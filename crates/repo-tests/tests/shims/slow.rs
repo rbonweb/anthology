@@ -19,7 +19,7 @@ use anthology_testkit::bs::{self, Run, Sandbox, Shell};
 use super::common::*;
 
 /// A curl that serves `$BS_ARCHIVE` in `$BS_CHUNK`-byte pieces, `$BS_DELAY` seconds apart. It
-/// honours `-o` and `-C -` (it continues the file it finds) and logs where each run started.
+/// honors `-o` and `-C -` (it continues the file it finds) and logs where each run started.
 const SLOW_CURL: &str = r#"#!/bin/sh
 out= resume=
 while [ "$#" -gt 0 ]; do

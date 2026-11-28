@@ -776,7 +776,7 @@ fn a_read_rule_sees_through_links_and_cd() {
 }
 
 #[test]
-fn every_rule_anchor_is_honoured() {
+fn every_rule_anchor_is_honored() {
     let fx = Fx::new();
     let file = fx.write("conf/app.cfg", "c\n");
     let abs = format!("Read(/{})", file.display());
@@ -1994,7 +1994,7 @@ fn minor_grep_options_and_ripgrep_config_give_no_decision() {
     let fx = Fx::new();
     fx.write("a.txt", "a\n");
     if cfg!(target_os = "macos") {
-        // BSD grep (egrep and fgrep too) honours GREP_OPTIONS.
+        // BSD grep (egrep and fgrep too) honors GREP_OPTIONS.
         let out = Command::new("grep")
             .args(["a", "./a.txt"])
             .current_dir(&fx.root)

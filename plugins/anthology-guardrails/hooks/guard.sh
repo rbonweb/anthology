@@ -16,12 +16,12 @@ ANTH_MSG=
 # A hook timeout or an interrupt still blocks, with the fallback message, and takes the stdin
 # buffer with it.
 # shellcheck disable=SC2329 # invoked by the trap below
-anth_signalled() {
+anth_signaled() {
     [ -z "$anth_input" ] || rm -f "$anth_input"
     printf '%s\n' 'Blocked by anthology-guardrails (setup): the guard binary is not installed (the guard shim could not finish), so shell commands, file edits and MCP tools are blocked; run /anthology:setup (or start a new session while online) to install it; if this keeps happening, disable anthology-guardrails with /plugin' >&2
     exit 2
 }
-trap anth_signalled HUP INT TERM
+trap anth_signaled HUP INT TERM
 case $0 in
     */*) anth_hooks=${0%/*} ;;
     *) anth_hooks=. ;;

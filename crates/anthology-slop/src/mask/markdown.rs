@@ -1106,7 +1106,7 @@ mod tests {
     #[test]
     fn mdx_import_and_export_lines_are_masked() {
         check(
-            "import Foo from './foo'\nexport const meta = { title: 'x' }\nImport is capitalised prose\nimporting is prose\nexported prose\n",
+            "import Foo from './foo'\nexport const meta = { title: 'x' }\nImport is capitalized prose\nimporting is prose\nexported prose\n",
             &[
                 "import Foo from './foo'",
                 "export const meta = { title: 'x' }",

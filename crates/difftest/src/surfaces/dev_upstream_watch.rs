@@ -210,7 +210,7 @@ fn run_rust(case: &Value) -> Observed {
         "sanitise" => {
             let t = text(case, "text");
             let limit = field(case, "limit").as_i64().unwrap_or(80) as usize;
-            ok_json(&strs(&[uw::sanitise_path(t), uw::sanitise_prose(t, limit)]))
+            ok_json(&strs(&[uw::sanitize_path(t), uw::sanitize_prose(t, limit)]))
         }
         "ls_remote" => ok_json(&Value::Array(
             uw::parse_ls_remote(text(case, "text"))

@@ -57,7 +57,7 @@ const ALLOWED_AREAS: [(&str, &str); 14] = [
     ),
     (
         "crates/",
-        "the port's sources cite the Python behaviour they reproduce",
+        "the port's sources cite the Python behavior they reproduce",
     ),
     ("docs/superpowers/", "the port's plan and design"),
     ("port/", "the port's ledgers, divergences and reports"),

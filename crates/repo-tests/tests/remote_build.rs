@@ -975,10 +975,10 @@ fn clean_all_ours_removes_what_we_created_and_the_image_we_pulled() {
         rig.seed_volume(name, 1);
     }
     // A volume with our label but not our name, and ours by name but without the label.
-    rig.seed_volume("labelled-but-not-ours", 1);
+    rig.seed_volume("labeled-but-not-ours", 1);
     rig.seed_foreign_volume("anthology-rust-target-3", 1);
     rig.seed_container("c1", "anthology-rust-target-1", "running");
-    rig.seed_container("c2", "labelled-but-not-ours", "running");
+    rig.seed_container("c2", "labeled-but-not-ours", "running");
     // Our run pulls the image: the first run records it.
     assert_eq!(rig.run(&["lint"]).status.code(), Some(0));
     assert!(
@@ -1002,7 +1002,7 @@ fn clean_all_ours_removes_what_we_created_and_the_image_we_pulled() {
         .collect();
     assert_eq!(
         left,
-        ["labelled-but-not-ours", "anthology-rust-target-3"],
+        ["labeled-but-not-ours", "anthology-rust-target-3"],
         "{volumes}"
     );
     assert!(!rig.containers().contains("c1 "), "{}", rig.containers());
@@ -1187,7 +1187,7 @@ fn a_disk_at_or_under_85_percent_trims_nothing() {
 }
 
 #[test]
-fn the_trim_takes_only_our_labelled_volumes_and_the_image_we_pulled() {
+fn the_trim_takes_only_our_labeled_volumes_and_the_image_we_pulled() {
     let rig = rig!();
     seed_by_use(&rig);
     // Names like ours without our label, and an unrelated volume.
@@ -1368,7 +1368,7 @@ fn what_we_create_carries_our_label() {
 }
 
 #[test]
-fn nothing_unlabelled_or_unrelated_is_ever_touched() {
+fn nothing_unlabeled_or_unrelated_is_ever_touched() {
     let rig = rig!();
     // Same names as ours but no label, and things with no connection to us.
     for name in [
@@ -1379,7 +1379,7 @@ fn nothing_unlabelled_or_unrelated_is_ever_touched() {
     ] {
         rig.seed_foreign_volume(name, 100);
     }
-    rig.seed_volume("labelled-other", 100);
+    rig.seed_volume("labeled-other", 100);
     // The Rust image was on the host already (no record that we pulled it), beside another one.
     rig.append("images", &format!("{IMAGE}\nrust:unrelated\n"));
     rig.seed_container_of("u1", "unrelated-data", "running", "rust:unrelated");
@@ -1410,7 +1410,7 @@ fn nothing_unlabelled_or_unrelated_is_ever_touched() {
         "anthology-rustup-zzz ",
         "anthology-rust-target-777 ",
         "unrelated-data ",
-        "labelled-other ",
+        "labeled-other ",
     ] {
         assert!(volumes.contains(kept), "{kept}was removed:\n{volumes}");
     }
@@ -1434,7 +1434,7 @@ fn nothing_unlabelled_or_unrelated_is_ever_touched() {
         "volume rm anthology-rustup-zzz",
         "volume rm anthology-rust-target-777",
         "volume rm unrelated-data",
-        "volume rm labelled-other",
+        "volume rm labeled-other",
     ] {
         assert!(!docker.contains(never), "{never}:\n{docker}");
     }

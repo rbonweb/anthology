@@ -875,7 +875,7 @@ fn move_old_notes(
     Ok((migrated, Value::Array(blocked)))
 }
 
-/// Why `--move-old-notes` cannot be honoured (checked before anything is written).
+/// Why `--move-old-notes` cannot be honored (checked before anything is written).
 fn move_notes_error(
     promote: &[String],
     skip_approve: bool,
@@ -906,7 +906,7 @@ fn move_notes_error(
     None
 }
 
-/// `_promote_error(promote, skip_approve, cwd, env)`: why `--promote` cannot be honoured
+/// `_promote_error(promote, skip_approve, cwd, env)`: why `--promote` cannot be honored
 /// (checked before anything is written).
 fn promote_error(
     promote: &[String],

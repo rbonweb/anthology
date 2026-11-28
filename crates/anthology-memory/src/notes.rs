@@ -10,7 +10,7 @@
 //! frontmatter nested about a thousand levels deep raises `RecursionError`, which `parse_text`
 //! catches, resetting the note to its stem (type `other`). Rust parses any depth (an explicit
 //! stack, no recursion), so such a note keeps its fields. That only ever makes Rust stricter:
-//! a deep `type: user` note is still recognised as a user note.
+//! a deep `type: user` note is still recognized as a user note.
 //!
 //! [`NoteInfo`] field mapping: `kind` is Python's `type` and is always `Some` from the parser
 //! (`"other"` when the note names none; consumers that build a `NoteInfo` by hand may use

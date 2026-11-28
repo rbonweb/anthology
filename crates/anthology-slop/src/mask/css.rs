@@ -161,7 +161,7 @@ mod tests {
 
     #[test]
     fn comments_are_masked_and_waivers_kept() {
-        let doc = ".a { color: red; } /* slop-ok: ui.purple-gradient brand colour from the style guide */\n\
+        let doc = ".a { color: red; } /* slop-ok: ui.purple-gradient brand color from the style guide */\n\
             /* plain café\n   comment with linear-gradient(#6366f1, #a855f7) */\n\
             .b { margin: 0; } // slop-ok: ui.glow-orb the brand shows an orb\n\
             // full line note\n\
@@ -193,7 +193,7 @@ mod tests {
                 waiver(
                     1,
                     Some("ui.purple-gradient"),
-                    "brand colour from the style guide",
+                    "brand color from the style guide",
                     true
                 ),
                 waiver(4, Some("ui.glow-orb"), "the brand shows an orb", true),

@@ -301,7 +301,7 @@ mod branch_pinned_tests {
         // nothing under path is visible, but 300 means truncated
         let change = check(&git_entry(vec![]), &net, None).unwrap();
         assert!(change.is_some());
-        assert!(body_of(&change.unwrap()).contains("diff too large to summarise"));
+        assert!(body_of(&change.unwrap()).contains("diff too large to summarize"));
     }
 
     #[test]
@@ -649,7 +649,7 @@ mod check_all_tests {
         let (changes, errors) = uw::check_all(tmp.path(), &net, None);
         assert_eq!(keys(&changes), ["superpowers", "ui-taste", "claude-code"]);
         assert_eq!(error_keys(&errors), ["mystery"]);
-        assert!(errors[0].1.contains("unrecognised source shape"));
+        assert!(errors[0].1.contains("unrecognized source shape"));
     }
 
     #[test]
@@ -824,9 +824,9 @@ mod hostile_input_tests {
 
     #[test]
     fn test_sanitise_helpers() {
-        assert_eq!(uw::sanitise_path("a`b\nc\x00d\u{202e}e"), "abcde");
+        assert_eq!(uw::sanitize_path("a`b\nc\x00d\u{202e}e"), "abcde");
         assert_eq!(
-            uw::sanitise_path(&"x".repeat(1000)).chars().count(),
+            uw::sanitize_path(&"x".repeat(1000)).chars().count(),
             uw::MAX_PATH_LEN
         );
     }
@@ -1015,12 +1015,12 @@ mod sync_issues_tests {
             vec![("user", obj(vec![("login", st("mallory"))]))],
         );
         let no_user = bot_issue(&demo(), 9, vec![("user", Value::Null)]);
-        let unlabelled = bot_issue(
+        let unlabeled = bot_issue(
             &demo(),
             10,
             vec![("labels", Value::Array(vec![obj(vec![("name", st("bug"))])]))],
         );
-        let gh = FakeGitHub::new(vec![human, no_user, unlabelled]);
+        let gh = FakeGitHub::new(vec![human, no_user, unlabeled]);
         let actions = sync(&[demo()], &gh, false);
         assert_eq!(gh.write_kinds(), ["create"]);
         assert_eq!(action(&actions[0]), "create");
@@ -1884,10 +1884,10 @@ mod startup_budget_section_tests {
     #[test]
     fn test_sanitise_prose_whitelists_one_line_of_plain_text() {
         assert_eq!(
-            uw::sanitise_prose("@octocat <b>hi</b> [a](b)\nnext", 80),
+            uw::sanitize_prose("@octocat <b>hi</b> [a](b)\nnext", 80),
             "octocat bhi/b a(b)next"
         );
-        assert_eq!(uw::sanitise_prose(&"x".repeat(500), 80).chars().count(), 80);
+        assert_eq!(uw::sanitize_prose(&"x".repeat(500), 80).chars().count(), 80);
     }
 
     #[test]

@@ -156,7 +156,7 @@ fn verdict(env: &Env, raw: &str, deadline: Duration, rules: Rules) -> Option<Ver
     // `..` is resolved first, so `.claude/../docs/a.md` is read as the docs file it is.
     let path = absolute(given, cwd)?;
     let root = paths::repo_root(&path);
-    let config = normalise(&anthology_core::paths::config_dir(env));
+    let config = normalize(&anthology_core::paths::config_dir(env));
     if paths::exempt(&path, root.as_deref(), Some(&config)) {
         return None;
     }
@@ -224,18 +224,18 @@ fn tool_edit(tool: &str, input: &Map) -> Option<ToolEdit> {
     }
 }
 
-/// `path` made absolute against `cwd` and normalised; None when it is relative and there is no
+/// `path` made absolute against `cwd` and normalized; None when it is relative and there is no
 /// absolute `cwd`.
 fn absolute(path: &Path, cwd: Option<&Path>) -> Option<PathBuf> {
     if path.is_absolute() {
-        return Some(normalise(path));
+        return Some(normalize(path));
     }
     let cwd = cwd.filter(|c| c.is_absolute())?;
-    Some(normalise(&cwd.join(path)))
+    Some(normalize(&cwd.join(path)))
 }
 
 /// `path` with `.` dropped and `..` taking off the folder before it, without reading the disk.
-fn normalise(path: &Path) -> PathBuf {
+fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
@@ -324,8 +324,8 @@ fn check_with(env: &Env, git: &dyn Git, cwd: &Path, args: &[OsString]) -> Output
         Ok(args) => args,
         Err(message) => return check_error(&message),
     };
-    let base = normalise(&cwd.join(args.root.as_deref().unwrap_or(Path::new("."))));
-    let config = normalise(&anthology_core::paths::config_dir(env));
+    let base = normalize(&cwd.join(args.root.as_deref().unwrap_or(Path::new("."))));
+    let config = normalize(&anthology_core::paths::config_dir(env));
     let files = match &args.since {
         Some(since) => match since_files(env, git, &base, since, &config) {
             Ok(files) => files,
@@ -415,7 +415,7 @@ fn check_error(message: &str) -> Output {
 fn path_files(base: &Path, args: &[PathBuf], config: &Path) -> Result<Vec<CheckFile>, String> {
     let mut found = Vec::new();
     for arg in args {
-        let path = normalise(&base.join(arg));
+        let path = normalize(&base.join(arg));
         match std::fs::metadata(&path) {
             Ok(meta) if meta.is_dir() => walk(&path, config, &mut found),
             Ok(_) => found.push(path),
@@ -542,7 +542,7 @@ fn since_files(
     }
     let mut files = Vec::new();
     for (rel, lines) in changed {
-        let path = normalise(&top.join(OsStr::from_bytes(&rel)));
+        let path = normalize(&top.join(OsStr::from_bytes(&rel)));
         if anthology_slop::kind_of(&path).is_none()
             || paths::exempt(&path, Some(&top), Some(config))
         {
@@ -812,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn normalise_resolves_dots_without_the_disk() {
+    fn normalize_resolves_dots_without_the_disk() {
         for (path, want) in [
             ("/r/.claude/../docs/./a.md", "/r/docs/a.md"),
             ("/../a.md", "/a.md"),
@@ -820,7 +820,7 @@ mod tests {
             ("a/../../b.md", "../b.md"),
             ("./a.md", "a.md"),
         ] {
-            assert_eq!(normalise(Path::new(path)), Path::new(want), "{path}");
+            assert_eq!(normalize(Path::new(path)), Path::new(want), "{path}");
         }
         assert_eq!(absolute(Path::new("a.md"), None), None);
         assert_eq!(absolute(Path::new("a.md"), Some(Path::new("rel"))), None);

@@ -1139,7 +1139,7 @@ fn auto_memory_off(root: Option<&Path>, config: &Path, env: &Env, approved: bool
             && let Some(v) = data.get("autoMemoryEnabled")
         {
             // In an approved repo, `false` in the committed settings.json is what
-            // `/anthology:setup` writes to switch Claude Code's own auto memory off in favour of
+            // `/anthology:setup` writes to switch Claude Code's own auto memory off in favor of
             // this memory; it is not an opt-out of Anthology memory. In any other repo it is the
             // team's opt-out, as before. A user's, the local or the environment's opt-out always is.
             if approved && committed && matches!(v, Value::Bool(false)) {

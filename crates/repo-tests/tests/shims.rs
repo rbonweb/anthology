@@ -1,7 +1,7 @@
 //! The shell shims (BS1; design §8, §9, §13.4): `hooks/{lib,bootstrap,guard,session-start}.sh`
 //! and `bin/{anthology,anthology-mem}` under `port/staging/plugins/`.
 //!
-//! Every behaviour case runs under each shell present here (dash, BusyBox sh, `bash --posix`,
+//! Every behavior case runs under each shell present here (dash, BusyBox sh, `bash --posix`,
 //! macOS `/bin/sh`) in its own sandbox, and asserts outcomes only: the exit code (0 or 2 for the
 //! guard), the stderr or stdout line, and the files left behind. `ANTHOLOGY_SHIMS_REQUIRE` makes a
 //! missing shell or tool a failure (ci/jobs/shims-distros.sh sets it per image); the real

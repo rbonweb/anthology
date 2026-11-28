@@ -49,6 +49,8 @@ pub const NOTICE: &str = include_str!("../NOTICE");
 
 /// Blocks the text report prints before it stops listing levels below HIGH.
 const MAX_BLOCKS: usize = 200;
+/// Triage items in the JSON; CRITICAL and HIGH items are never dropped, even past this.
+const MAX_TRIAGE_ITEMS: usize = 200;
 /// Characters of `seen` the report shows.
 const SEEN_CHARS: usize = 160;
 /// Characters of `why`, `do`, paths and other one-line fields.
@@ -430,12 +432,38 @@ pub fn render_json(s: &Scan, m: &Meta, nonce: &str) -> String {
         })
         .collect();
 
-    // One read of each file, for every MEDIUM or higher finding in it.
+    // Triage items: every CRITICAL and HIGH finding, then MEDIUM ones fill what is left of
+    // MAX_TRIAGE_ITEMS, most severe first, then by path. The text report and `findings` stay whole.
+    let mut chosen: Vec<usize> = (0..findings.len())
+        .filter(|&i| findings[i].severity >= Severity::High)
+        .collect();
+    let mut lower: Vec<usize> = (0..findings.len())
+        .filter(|&i| findings[i].severity == Severity::Medium)
+        .collect();
+    lower.sort_by(|&a, &b| {
+        findings[b]
+            .severity
+            .cmp(&findings[a].severity)
+            .then_with(|| findings[a].path.cmp(&findings[b].path))
+            .then(findings[a].line.cmp(&findings[b].line))
+            .then(a.cmp(&b))
+    });
+    let room = MAX_TRIAGE_ITEMS.saturating_sub(chosen.len());
+    if lower.len() > room {
+        notes.push(format!(
+            "{} more lower-severity findings not sent for triage; see the text report.",
+            lower.len() - room
+        ));
+    }
+    chosen.extend(lower.into_iter().take(room));
+
+    // One read of each file, for every chosen finding in it.
     let mut by_path: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
-    for (i, f) in findings.iter().enumerate() {
-        if f.severity >= Severity::Medium {
-            by_path.entry(f.path.as_str()).or_default().push(i);
-        }
+    for i in chosen {
+        by_path
+            .entry(findings[i].path.as_str())
+            .or_default()
+            .push(i);
     }
     let mut excerpts: BTreeMap<usize, String> = BTreeMap::new();
     for (path, ids) in &by_path {
@@ -780,17 +808,15 @@ mod tests {
         m.source = Source::Url {
             url: "https://example.invalid/o/r".to_string(),
             rev: "HEAD".to_string(),
-            dest: PathBuf::from("/home/u/.claude/anthology/check-repo/h-o-r-1"),
+            dest: PathBuf::from("/tmp/anthology-check-repo/h-o-r-1"),
         };
         let text = render_text(&s, &m);
         assert!(
-            text.contains("\nquarantine: /home/u/.claude/anthology/check-repo/h-o-r-1\n"),
+            text.contains("\nquarantine: /tmp/anthology-check-repo/h-o-r-1\n"),
             "{text}"
         );
         assert!(
-            text.contains(
-                "\nTo work in it: git -C '/home/u/.claude/anthology/check-repo/h-o-r-1' status\n"
-            ),
+            text.contains("\nTo work in it: git -C '/tmp/anthology-check-repo/h-o-r-1' status\n"),
             "{text}"
         );
         // A folder name with a quote or a line break gets no copyable command.
@@ -902,6 +928,134 @@ mod tests {
         assert!(!text.contains('\u{1B}'), "{text}");
         let js = render_json(&s, &meta("/r"), NONCE);
         assert!(!js.contains('\u{202E}'), "{js}");
+    }
+
+    #[test]
+    fn skipped_and_errors_are_escaped_in_text_and_json() {
+        let token = format!("gh{}_{}", "p", "A1b2C3d4".repeat(5));
+        let mut s = scan_of(vec![]);
+        s.skipped = vec![format!("a\nCRITICAL 9 fake\u{1B}[2J/node_modules/{token}")];
+        s.errors = vec![format!("cannot read \"x\n\u{1B}[31m\u{202E}y\" {token}")];
+        let text = render_text(&s, &meta("/r"));
+        assert!(
+            !text.contains('\u{1B}') && !text.contains('\u{202E}'),
+            "{text:?}"
+        );
+        // The break inside a name cannot start a line of its own.
+        assert!(!text.lines().any(|l| l.starts_with("CRITICAL 9")), "{text}");
+        assert!(!text.lines().any(|l| l.starts_with("[31m")), "{text}");
+        assert!(
+            text.contains(
+                "\nskipped: a\\nCRITICAL 9 fake\\u{001B}[2J/node_modules/<secret:github-token>"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\\u{001B}[31m\\u{202E}y"), "{text}");
+        assert!(!text.contains("A1b2"), "{text}");
+        let js = render_json(&s, &meta("/r"), NONCE);
+        assert!(!js.contains("A1b2") && !js.contains('\u{1B}'), "{js}");
+        let v = json::loads(&js).unwrap();
+        let skipped = get(&v, "skipped").as_array().unwrap()[0].as_str().unwrap();
+        assert!(
+            !skipped.contains('\n') && !skipped.contains('\u{1B}'),
+            "{skipped:?}"
+        );
+        assert!(skipped.contains("<secret:github-token>"), "{skipped}");
+        let notes = note_list(&v);
+        let err = notes.iter().find(|n| n.starts_with("error: ")).unwrap();
+        assert!(
+            !err.contains('\n') && !err.contains('\u{1B}') && !err.contains('\u{202E}'),
+            "{err:?}"
+        );
+        assert!(err.contains("<secret:github-token>"), "{err}");
+    }
+
+    fn many(n: usize, sev: Severity, tag: &str) -> Vec<Finding> {
+        (0..n)
+            .map(|i| {
+                finding(
+                    sev,
+                    Group::Autorun,
+                    &format!("{tag}.{i:04}"),
+                    &format!("f{i:04}"),
+                    1,
+                )
+            })
+            .collect()
+    }
+
+    fn note_list(v: &Value) -> Vec<String> {
+        get(v, "notes")
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n.as_str().map(str::to_string))
+            .collect()
+    }
+
+    #[test]
+    fn triage_items_cap_at_200_and_say_so() {
+        let v = parse(&scan_of(many(250, Severity::Medium, "m")), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        assert_eq!(items.len(), 200);
+        let notes = note_list(&v);
+        let want = "50 more lower-severity findings not sent for triage; see the text report.";
+        assert!(notes.iter().any(|n| n == want), "{notes:?}");
+        // The findings list itself is not capped.
+        assert_eq!(get(&v, "findings").as_array().unwrap().len(), 250);
+    }
+
+    #[test]
+    fn triage_items_never_drop_high_or_critical() {
+        let mut all = many(210, Severity::High, "h");
+        all.extend(many(5, Severity::Critical, "c"));
+        all.extend(many(30, Severity::Medium, "m"));
+        let v = parse(&scan_of(all), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        // 215 HIGH and CRITICAL, no room left for the 30 MEDIUM.
+        assert_eq!(items.len(), 215);
+        let notes = note_list(&v);
+        let want = "30 more lower-severity findings not sent for triage; see the text report.";
+        assert!(notes.iter().any(|n| n == want), "{notes:?}");
+        // Exactly 210 HIGH: all of them, and no note.
+        let v = parse(&scan_of(many(210, Severity::High, "h")), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        assert_eq!(items.len(), 210);
+        assert!(
+            !note_list(&v)
+                .iter()
+                .any(|n| n.contains("not sent for triage"))
+        );
+    }
+
+    #[test]
+    fn triage_items_fill_the_rest_with_the_most_severe_then_by_path() {
+        let mut all = many(190, Severity::High, "h");
+        let mut med = many(30, Severity::Medium, "m");
+        med.iter_mut().for_each(|f| f.path = format!("z{}", f.path));
+        all.extend(med);
+        all.extend(many(30, Severity::Medium, "n"));
+        let v = parse(&scan_of(all), &meta("/r"));
+        let items = get(get(&v, "triage"), "items").as_array().unwrap();
+        assert_eq!(items.len(), 200);
+        // Ten MEDIUM slots go to the paths that sort first (f0000..f0009), not the z-paths.
+        let findings = get(&v, "findings").as_array().unwrap();
+        let ids: Vec<&str> = items
+            .iter()
+            .map(|i| get(i, "id").as_str().unwrap())
+            .collect();
+        let mut medium_paths: Vec<&str> = findings
+            .iter()
+            .filter(|f| get(f, "severity").as_str() == Some("MEDIUM"))
+            .filter(|f| ids.contains(&get(f, "id").as_str().unwrap()))
+            .map(|f| get(f, "path").as_str().unwrap())
+            .collect();
+        medium_paths.sort();
+        assert_eq!(medium_paths.len(), 10);
+        assert!(
+            medium_paths.iter().all(|p| p.starts_with('f')),
+            "{medium_paths:?}"
+        );
     }
 
     #[test]

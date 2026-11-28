@@ -16,7 +16,7 @@ use anthology_testkit::mem::{FAKE_REPO_KEY, MemCase};
 
 /// `MemCase.fake_repo`: Python patched `repo_root`, `repo_key`, `_main_root`,
 /// `settings_tracked` and `ensure_ignored`. Here git itself is fake: every folder is inside the
-/// work tree `root`, whose `origin` normalises to `key`; nothing is tracked and
+/// work tree `root`, whose `origin` normalizes to `key`; nothing is tracked and
 /// `.claude/settings.local.json` is already ignored (so `ensure_ignored` is a no-op).
 pub struct FakeGit {
     pub root: PathBuf,

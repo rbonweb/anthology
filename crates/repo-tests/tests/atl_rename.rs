@@ -6,7 +6,7 @@
 //! changelog, the past changelog, ADRs and plan, the port records, the dated 2026-11-20 designs,
 //! the dated agent and repo memory notes)
 //! and the shell and guard test data and goldens, which keep rtk rows on purpose (the guard still
-//! recognises the old name). The allowed lines are the upstream names (`rtk-ai/rtk`,
+//! recognizes the old name). The allowed lines are the upstream names (`rtk-ai/rtk`,
 //! `rtk-ai.app`, `rbonweb/rtk`, `RTK AI Labs`, `RTK Pro`), the five release tags of the old
 //! name, "fork of rtk", the Python test ids `test_rtk_*`, and any line that says `legacy`: every
 //! `rtk` that stays in code carries the word on the same line. The few names the port records
