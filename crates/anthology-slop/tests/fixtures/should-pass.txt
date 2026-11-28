@@ -1,0 +1,47 @@
+To elevate privileges, the installer calls sudo once.
+%%
+The mill rolls seamless steel pipe in three diameters.
+%%
+Use a seamless texture so the floor tiles repeat without a visible edge.
+%%
+The museum restored a medieval tapestry from the abbey.
+%%
+The groundbreaking ceremony starts at nine.
+%%
+It's not installed by default; it's added by setup.
+%%
+Tests, builds and end-to-end suites run in containers that mount only the worktree.
+%%
+The `seamless` crate and the `delve` command are names, not prose.
+%%
+The rule flags "I hope this helps" when it appears outside quotes.
+%%
+> Let me know if you have any questions.
+%%
+See https://example.com/seamless-sync/elevate for the upstream notes.
+%%
+```text
+I hope this helps. It's not a bug, it's a feature.
+```
+%%
+<!-- slop-ignore-start -->
+Unlock the full potential of your workflow.
+<!-- slop-ignore-end -->
+%%
+| Rule | Example |
+|---|---|
+| a | — |
+| b | — |
+| c | — |
+%%
+Feel free to open an issue when the guard blocks a command you need.
+%%
+In summary, the guard blocks installs, launches and profile access.
+%%
+Of course the hook still runs when the binary is missing; it allows the edit.
+%%
+Certainly the binary is faster than the shell version.
+%%
+The deploy runs build, test, and release jobs; each job has its own log.
+%%
+The header gradient goes from #3b82f6 to #0ea5e9.

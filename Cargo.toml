@@ -8,7 +8,7 @@ members = ["crates/*"]
 exclude = ["atl", "fuzz"]
 
 [workspace.package]
-version = "0.2.9"
+version = "0.2.10"
 edition = "2024"
 rust-version = "1.100"
 license = "Apache-2.0"
@@ -26,6 +26,7 @@ anthology-memory = { path = "crates/anthology-memory" }
 anthology-runtime = { path = "crates/anthology-runtime" }
 anthology-testkit = { path = "crates/anthology-testkit" }
 anthology-dev = { path = "crates/anthology-dev" }
+anthology-slop = { path = "crates/anthology-slop" }
 
 # Design §11.2.
 regex = "=1.13.2"
