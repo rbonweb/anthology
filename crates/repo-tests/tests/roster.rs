@@ -1173,10 +1173,7 @@ mod roster_test {
                     "list what you could not render",
                 ],
             ),
-            (
-                "product-planner",
-                &["real users' jobs", "navigation map"],
-            ),
+            ("product-planner", &["real users' jobs", "navigation map"]),
         ];
         for (name, needles) in pins {
             let (_, body) = agent(name).unwrap();
