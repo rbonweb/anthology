@@ -2,9 +2,11 @@
 //!
 //! Per-agent startup budget: how many bytes each agent reads before it starts work, which is
 //! its body, plus every `${CLAUDE_PLUGIN_ROOT}/knowledge/.../SKILL.md` listed under its
-//! `## Startup` heading, plus every preloaded `skills:` SKILL.md of anthology-superpowers. This
-//! module is the single home of that calculation (MT1's test_roster port and DV3's upstream
-//! watch call it). Exit codes (GC-5): 0; 1 over or unset; 2 unknown agent (or usage).
+//! `## Startup` heading, plus every preloaded `skills:` SKILL.md of anthology-superpowers. A
+//! Startup line whose last path is followed by "`, only " is conditional: conditional paths add
+//! only the largest one, since a brief needs at most one of them. This module is the single home
+//! of that calculation (MT1's test_roster port and DV3's upstream watch call it). Exit codes
+//! (GC-5): 0; 1 over or unset; 2 unknown agent (or usage).
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -33,12 +35,23 @@ pub const BUDGET: [(&str, u64); 11] = [
     ("debugger", 22293),         // measured 19275 (karpathy-guidelines), +126 atl rule
     ("reviewer", 17815),         // measured 14497 (karpathy-guidelines), +1143 Shell
     ("scout", 7284),             // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl
-    ("docs-writer", 31686),      // measured 27283, +184 wait, map and memory rules, +126 atl
-    ("ui-designer", 128097),     // measured 111388
-    ("ui-reviewer", 65986),      // measured 57379
-    ("product-planner", 102779), // measured 89373
-    ("marketer", 54384),         // measured 47290
+    ("docs-writer", 75475), // measured 27283, +184 wait, map and memory rules, +126 atl; +humanizer rewrite pass (owner, 2026-11-28)
+    ("ui-designer", 148488), // measured 111388; +avoid-ai-design rubric (owner, 2026-11-28)
+    ("ui-reviewer", 65986), // measured 57379
+    ("product-planner", 145072), // measured 89373; +humanizer rewrite pass (owner, 2026-11-28)
+    ("marketer", 96668),    // measured 47290; +humanizer rewrite pass (owner, 2026-11-28)
 ];
+
+/// What follows the closing backtick of the last path on a conditional Startup line.
+pub const CONDITIONAL_MARK: &str = "`, only ";
+
+/// One knowledge path of a Startup section, relative to the anthology plugin, and whether its
+/// line is conditional.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StartupFile {
+    pub path: String,
+    pub conditional: bool,
+}
 
 static STARTUP_PATH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"\$\{CLAUDE_PLUGIN_ROOT\}/(knowledge/[A-Za-z0-9_./-]+/SKILL\.md)")
@@ -224,8 +237,23 @@ pub fn agent_names(root: &Root) -> Vec<String> {
     names
 }
 
-/// `_parts(root, name)`: (skills, body, startup files).
-fn parts(root: &Root, name: &str) -> Result<(Vec<String>, String, Vec<String>), Error> {
+/// The paths of one Startup line; the line is conditional when the text after its last path
+/// starts with [`CONDITIONAL_MARK`].
+fn line_entries(line: &str, out: &mut Vec<StartupFile>) {
+    let caps: Vec<_> = STARTUP_PATH.captures_iter(line).collect();
+    let Some(last) = caps.last() else {
+        return;
+    };
+    let end = last.get(1).expect("group 1").end();
+    let conditional = line[end..].starts_with(CONDITIONAL_MARK);
+    out.extend(caps.iter().map(|c| StartupFile {
+        path: c[1].to_string(),
+        conditional,
+    }));
+}
+
+/// `_parts(root, name)`: (skills, body, startup entries).
+fn parts(root: &Root, name: &str) -> Result<(Vec<String>, String, Vec<StartupFile>), Error> {
     let (shown, fs) = root.join(&format!("{ANTHOLOGY}/agents/{name}.md"));
     let text = read_text(&shown, &fs)?;
     let (skills, body) = split_agent_text(&shown, &text)?;
@@ -234,17 +262,38 @@ fn parts(root: &Root, name: &str) -> Result<(Vec<String>, String, Vec<String>), 
         .iter()
         .find(|(k, _)| k == "Startup")
         .map_or("", |(_, t)| t.as_str());
-    let files = STARTUP_PATH
-        .captures_iter(startup)
-        .map(|c| c[1].to_string())
-        .collect();
-    Ok((skills, body, files))
+    let mut entries = Vec::new();
+    for line in startup.split('\n') {
+        line_entries(line, &mut entries);
+    }
+    Ok((skills, body, entries))
 }
 
-/// `startup_files(root, name)`: the knowledge files of the Startup section, relative to the
-/// anthology plugin.
-pub fn startup_files(root: &Root, name: &str) -> Result<Vec<String>, Error> {
+fn paths(entries: &[StartupFile]) -> Vec<String> {
+    entries.iter().map(|e| e.path.clone()).collect()
+}
+
+/// `startup_entries(root, name)`: every knowledge file of the Startup section, in order,
+/// relative to the anthology plugin, each marked always or conditional.
+pub fn startup_entries(root: &Root, name: &str) -> Result<Vec<StartupFile>, Error> {
     Ok(parts(root, name)?.2)
+}
+
+/// `startup_files(root, name)`: the knowledge files of the Startup section (always and
+/// conditional), relative to the anthology plugin.
+pub fn startup_files(root: &Root, name: &str) -> Result<Vec<String>, Error> {
+    Ok(paths(&parts(root, name)?.2))
+}
+
+/// `always_files(root, name)`: the knowledge files of the Startup section that are read on
+/// every start, relative to the anthology plugin.
+pub fn always_files(root: &Root, name: &str) -> Result<Vec<String>, Error> {
+    let entries = parts(root, name)?.2;
+    Ok(entries
+        .into_iter()
+        .filter(|e| !e.conditional)
+        .map(|e| e.path)
+        .collect())
 }
 
 fn paths_of(skills: &[String], files: &[String]) -> Vec<String> {
@@ -256,23 +305,39 @@ fn paths_of(skills: &[String], files: &[String]) -> Vec<String> {
     paths
 }
 
-/// `startup_paths(root, name)`: every counted file, repo-relative (Startup files, then preloads).
+/// `startup_paths(root, name)`: every file the agent may read at startup, repo-relative
+/// (Startup files, always and conditional, then preloads).
 pub fn startup_paths(root: &Root, name: &str) -> Result<Vec<String>, Error> {
-    let (skills, _, files) = parts(root, name)?;
-    Ok(paths_of(&skills, &files))
+    let (skills, _, entries) = parts(root, name)?;
+    Ok(paths_of(&skills, &paths(&entries)))
 }
 
-/// `startup_bytes(root, name)`: body + every Startup file + every preloaded SKILL.md, in bytes.
+/// The size of `rel` (repo-relative), in bytes.
+fn file_len(root: &Root, rel: &str) -> Result<u64, Error> {
+    let (shown, fs) = root.join(rel);
+    Ok(std::fs::metadata(&fs)
+        .map_err(|e| os_error(e, &shown))?
+        .len())
+}
+
+/// `startup_bytes(root, name)`: body + every always Startup file + the largest conditional
+/// Startup file (none: 0) + every preloaded SKILL.md, in bytes.
 pub fn startup_bytes(root: &Root, name: &str) -> Result<u64, Error> {
-    let (skills, body, files) = parts(root, name)?;
+    let (skills, body, entries) = parts(root, name)?;
     let mut total = body.len() as u64;
-    for rel in paths_of(&skills, &files) {
-        let (shown, fs) = root.join(&rel);
-        total += std::fs::metadata(&fs)
-            .map_err(|e| os_error(e, &shown))?
-            .len();
+    let mut largest = 0;
+    for entry in &entries {
+        let len = file_len(root, &format!("{ANTHOLOGY}/{}", entry.path))?;
+        if entry.conditional {
+            largest = largest.max(len);
+        } else {
+            total += len;
+        }
     }
-    Ok(total)
+    for rel in paths_of(&skills, &[]) {
+        total += file_len(root, &rel)?;
+    }
+    Ok(total + largest)
 }
 
 /// `agents_reading(root, target)`: agents with a startup file or preload at or under `target`.

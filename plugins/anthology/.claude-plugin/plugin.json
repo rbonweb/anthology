@@ -1,6 +1,6 @@
 {
   "name": "anthology",
-  "version": "0.5.11",
+  "version": "0.6.0",
   "description": "Anthology: curated agents, knowledge and workflows for Claude Code.",
   "author": { "name": "rbonweb" },
   "license": "Apache-2.0",

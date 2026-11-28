@@ -64,6 +64,7 @@ type RosterRow = (
     &'static [&'static str],
     &'static [&'static str],
 );
+/// The always reads only: `website-clone` is a conditional line.
 const UI_KNOWLEDGE: [&str; 10] = [
     "frontend-design",
     "design-taste-frontend",
@@ -74,7 +75,7 @@ const UI_KNOWLEDGE: [&str; 10] = [
     "ds/design-systems",
     "ds/interaction-design",
     "ds/design-elevation",
-    "website-clone",
+    "avoid-ai-design",
 ];
 const EXPECTED_ROSTER: [RosterRow; 11] = [
     (
@@ -116,12 +117,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "opus",
         false,
         &[],
-        &[
-            "code-review-checklist",
-            "karpathy-guidelines",
-            "tech-debt",
-            "deploy-checklist",
-        ],
+        &["code-review-checklist", "karpathy-guidelines"],
     ),
     ("scout", "haiku", false, &[], &[]),
     (
@@ -129,7 +125,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "sonnet",
         true,
         &[],
-        &["documentation", "ds/ux-writing"],
+        &["documentation", "ds/ux-writing", "humanizer"],
     ),
     ("ui-designer", "sonnet", true, &[], &UI_KNOWLEDGE),
     (
@@ -142,6 +138,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
             "web-review",
             "ds/design-critique",
             "ds/accessibility-audit",
+            "avoid-ai-design",
         ],
     ),
     (
@@ -156,6 +153,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
             "product-brainstorming",
             "ds/ux-strategy",
             "ds/design-ops",
+            "humanizer",
         ],
     ),
     (
@@ -168,6 +166,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
             "campaign-plan",
             "content-creation",
             "email-sequence",
+            "humanizer",
         ],
     ),
 ];
@@ -715,6 +714,20 @@ mod helper_tests {
                 preloads: Vec::new(),
                 startup: Vec::new(),
             }
+        );
+    }
+
+    /// Rust-only: a conditional Startup line ("`, only ...") is not a read every start makes.
+    #[test]
+    fn test_conditional_startup_lines_are_not_required_reads() {
+        let text = "---\nname: x\nmodel: opus\n---\n\n## Startup\nRead:\n\
+                    - `${CLAUDE_PLUGIN_ROOT}/knowledge/caveman/SKILL.md`\n\
+                    - `${CLAUDE_PLUGIN_ROOT}/knowledge/always/SKILL.md`\n\
+                    - `${CLAUDE_PLUGIN_ROOT}/knowledge/sometimes/SKILL.md`, only when x.\n\n\
+                    ## Role\nx\n";
+        assert_eq!(
+            parse_agent(text).unwrap().startup,
+            to_strings(&["caveman", "always"])
         );
     }
 

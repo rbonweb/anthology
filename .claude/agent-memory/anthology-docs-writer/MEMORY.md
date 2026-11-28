@@ -3,6 +3,7 @@
 - [Fetch origin build first](feedback-worktree-base-can-be-stale.md) — The agent worktree can branch from an old build commit; fetch and fast-forward before editing
 ## project
 - [dashboard-copy is hand-written knowledge](project-dashboard-copy-first-party.md) — plugins/anthology/knowledge/dashboard-copy is first-party: edit by hand, keep under 12000 bytes, own wording, kee…
+- [Writing docs that pass the slop corpus](project-slop-gate-docs-page-gotchas.md) — How to show specimens and waiver syntax in docs/slop-gate.md without tripping the slop rules
 - [Release prep: lock commands and the map budget](project-release-prep-lock-and-map-budget.md) — How to bump the workspace locks with only our crates changing, and that the project map budget is not…
 - [Agent prompt and guide edit gotchas](project-agent-prompt-edit-gotchas.md) — Roster bans the word credit; body cap 60 lines; the CHANGELOG is the root file; guide sat at exactly 3800 characters
 - [Agents share one byte-identical Shell section](project-agent-shell-section.md) — plugins/anthology/agents/*.md carry the same ## Shell section after ## Do; roster.rs pins it; edit all 11 together

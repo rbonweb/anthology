@@ -35,11 +35,11 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 | `debugger` | sonnet | yes, in a worktree | Reproducible bugs | karpathy-guidelines; preloaded: systematic-debugging |
 | `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist, karpathy-guidelines; tech-debt and deploy-checklist only when they apply |
 | `scout` | haiku | no | Finding code, running tests, summarizing output | none |
-| `docs-writer` | sonnet | yes, in a worktree | Documentation | documentation, ux-writing |
-| `ui-designer` | sonnet | yes, in a worktree | Building UI, cloning a site's look | frontend-design, design-taste-frontend, ui-taste, landing-page, web-design-system, design-handoff, design-systems, interaction-design, design-elevation; website-clone only for a clone |
-| `ui-reviewer` | opus | no | Reviewing the rendered UI in BrowserOS Neo | web-design-guidelines, web-review, design-critique, accessibility-audit |
-| `product-planner` | opus | docs only | Specs, sprint plans, roadmaps, product brainstorming | write-spec, sprint-planning, roadmap-update, product-brainstorming, ux-strategy, design-ops |
-| `marketer` | sonnet | docs only | SEO, campaigns, content, email sequences | seo-audit, campaign-plan, content-creation, email-sequence |
+| `docs-writer` | sonnet | yes, in a worktree | Documentation | documentation, ux-writing, humanizer |
+| `ui-designer` | sonnet | yes, in a worktree | Building UI, cloning a site's look | frontend-design, design-taste-frontend, ui-taste, landing-page, web-design-system, design-handoff, design-systems, interaction-design, design-elevation, avoid-ai-design; website-clone only for a clone |
+| `ui-reviewer` | opus | no | Reviewing the rendered UI in BrowserOS Neo | web-design-guidelines, web-review, design-critique, accessibility-audit, avoid-ai-design |
+| `product-planner` | opus | docs only | Specs, sprint plans, roadmaps, product brainstorming | write-spec, sprint-planning, roadmap-update, product-brainstorming, ux-strategy, design-ops, humanizer |
+| `marketer` | sonnet | docs only | SEO, campaigns, content, email sequences | seo-audit, campaign-plan, content-creation, email-sequence, humanizer |
 
 - **Knowledge belongs to agents.** Every skill we ship is read by at least one agent, and the main session never sees it. The only skills the main session has are `anthology-superpowers`, the three user commands and `anthology:large-builds`, the rulebook for long multi-agent builds. Each agent reads its own knowledge files before it starts anything else.
 - **Builders and critics are different models.** For UI work, `ui-designer` (Sonnet) builds and `ui-reviewer` (Opus) checks.

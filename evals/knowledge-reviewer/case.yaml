@@ -50,31 +50,7 @@ graders:
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/karpathy-guidelines/SKILL\.md'}
     after: {tool: Glob, input_match: '\*\.md'}
-  - name: read-tech-debt
-    type: tool_used
-    tool: Read
-    input_match: 'knowledge/tech-debt/SKILL\.md'
-  - name: order-tech-debt
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
-    after: {tool: Glob, input_match: '\*\.md'}
   - name: inorder-code-review-checklist-karpathy-guidelines
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/code-review-checklist/SKILL\.md'}
     after: {tool: Read, input_match: 'knowledge/karpathy-guidelines/SKILL\.md'}
-  - name: inorder-karpathy-guidelines-tech-debt
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/karpathy-guidelines/SKILL\.md'}
-    after: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
-  - name: read-deploy-checklist
-    type: tool_used
-    tool: Read
-    input_match: 'knowledge/deploy-checklist/SKILL\.md'
-  - name: order-deploy-checklist
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/deploy-checklist/SKILL\.md'}
-    after: {tool: Glob, input_match: '\*\.md'}
-  - name: inorder-tech-debt-deploy-checklist
-    type: tool_order
-    before: {tool: Read, input_match: 'knowledge/tech-debt/SKILL\.md'}
-    after: {tool: Read, input_match: 'knowledge/deploy-checklist/SKILL\.md'}

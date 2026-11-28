@@ -1,0 +1,1 @@
+- Add: docs-writer, marketer and product-planner run a humanizer rewrite pass; ui-designer and ui-reviewer use the avoid-ai-design P0/P1 rubric.
