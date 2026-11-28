@@ -1,6 +1,6 @@
 # Guardrails
 
-This page covers what the guard blocks, its known limits, the shell commands that run without a prompt, the commit attribution rule and the browser rule. [SECURITY.md](../SECURITY.md) has the full threat model.
+This page covers what the guard blocks, its known limits, the shell commands that run without a prompt, the commit attribution rule, the commit privacy check and the browser rule. [SECURITY.md](../SECURITY.md) has the full threat model.
 
 ## What the guard blocks
 
@@ -61,6 +61,35 @@ Claude Code's own instructions tell the model to add that trailer, so the hook a
 - Setup does not touch your user-wide settings for this. To do the same in every repo, put that object in `~/.claude/settings.json` by hand.
 - `/anthology:setup remove` takes out only what setup added.
 - The hook stays as the backstop, and its block message names this setting.
+
+## Commits never carry your private details
+
+A second `PreToolUse` hook on Bash (`hooks/commit-privacy.sh`) checks every `git commit` before it runs. A command that does not mention both `git` and `commit` costs nothing: the script looks at the hook input with the shell's own `case` and starts no process. For a commit it asks the `anthology` binary (`anthology privacy hook`) to read what the commit adds:
+
+- the staged changes;
+- the unstaged changes of tracked files, when the command uses `-a` or `--all`, or names paths;
+- the message, from `-m`, `--message` and `-F file`, and a message written as a heredoc (`-m "$(cat <<'EOF' … EOF)"`, `-F - <<'EOF'`) or a here-string.
+
+It follows `git -C dir commit` and `cd dir && git commit`, so it reads the repo the commit goes to. A `--dry-run` is skipped.
+
+**It blocks only your own details**, never every email address or IP address:
+
+| Kind | What counts |
+|---|---|
+| home path | your `$HOME`, and your user name in `/Users/<name>`, `/home/<name>`, `\Users\<name>` and the dashed form of a project folder name (`-Users-<name>-`). The names are the last folder of `$HOME`, `$USER` and `$LOGNAME`; generic ones (`root`, `admin`, `runner`, `node`, `ubuntu` and a few more) and names under three characters are left out |
+| user email | your `git config user.email`, and any address whose part before the `@` is one of your names. No-reply, example and forge addresses (`git@github.com`) never count |
+| machine name | this machine's host name, and any host that ends in `.ts.net` |
+| banned name | each name in your banned-names list, as a whole word in any case |
+
+The block message names a kind and a place (`notes.md:12`, or `commit message:3`), up to three places per kind, and never the value. It tells the agent to replace a home path with a repo-relative path and a name with a neutral one or the project's own.
+
+**The banned-names list** lives in your personal memory, in `~/.claude/anthology/personal-memory/` (under `CLAUDE_CONFIG_DIR` when that is set). `user-banned-names.md` applies to every repo; `user-banned-names--<repo>.md` applies to one repo, where `<repo>` is the folder name of the repo's main checkout, also when the commit is made in a worktree. Write one `- name` per line; the note's frontmatter is skipped and a name under three characters is ignored.
+
+**The allow file.** A value you want public, such as an address in a license file, goes on its own line in `.claude/privacy-allow.txt` at the repo's top folder. Empty lines and lines that start with `#` are ignored. A finding is dropped when an allowed line holds the matched text (any case); for a home path the matched text is the whole path, so one allowed path does not allow the others. The agent does not add lines itself: the block message asks it to ask you.
+
+**Switch and failure.** Set `ANTHOLOGY_COMMIT_PRIVACY=0` in the environment to turn the check off. It fails open: a missing or old binary, a folder that is no repo, a git call that fails or takes more than four seconds, a command the shell parser cannot read to the end and any error let the commit through with no output. Only the binary's exit code 10 blocks.
+
+What it does not read: a message file that the same command creates, text a shell variable or another command's output fills in, an amended commit's earlier content, and commits made outside Claude Code.
 
 ## BrowserOS Neo is the only browser
 

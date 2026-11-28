@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod approve;
+pub mod commit_scan;
 pub mod index;
 pub mod notes;
 pub mod portable;

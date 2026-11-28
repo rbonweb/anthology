@@ -16,6 +16,7 @@
 
 // An inline `shims` module, so its files live in tests/shims/ (no `#[path]`).
 mod shims {
+    mod commit_privacy;
     mod common;
     mod downloads;
     mod entry;
