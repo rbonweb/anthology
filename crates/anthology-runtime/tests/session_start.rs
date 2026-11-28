@@ -2866,7 +2866,8 @@ mod guide_test {
     #[test]
     fn test_size_and_shape() {
         let text = guide();
-        assert!(text.chars().count() <= 3800);
+        // 3800 raised to 3950 for the fan-out rule, owner 2026-11-28 (the guide is 3923).
+        assert!(text.chars().count() <= 3950);
         assert!(!text.starts_with("---"));
         for n in 1..9 {
             let head = format!("## {n}. ");

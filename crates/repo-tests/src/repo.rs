@@ -119,7 +119,7 @@ pub fn stripped_knowledge() -> Vec<(String, &'static str, String)> {
 pub const UNCHANGED_KNOWLEDGE: [&str; 3] =
     ["frontend-design", "web-design-guidelines", "design-skills"];
 
-/// `test_knowledge.EXPECTED_KNOWLEDGE`: the stripped 22, the unchanged 3 and three more.
+/// `test_knowledge.EXPECTED_KNOWLEDGE`: the stripped 22, the unchanged 3 and five more.
 pub fn expected_knowledge() -> BTreeSet<String> {
     let mut set: BTreeSet<String> = stripped_knowledge()
         .into_iter()
@@ -132,6 +132,7 @@ pub fn expected_knowledge() -> BTreeSet<String> {
             "caveman",
             "design-taste-frontend",
             "karpathy-guidelines",
+            "website-clone",
         ]
         .map(String::from),
     );
@@ -239,6 +240,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/design-systems",
                 "ds/interaction-design",
                 "ds/design-elevation",
+                "website-clone",
             ],
         ),
         spec(
@@ -312,8 +314,8 @@ mod tests {
     fn the_roster_data_matches_tests_repo_py() {
         assert_eq!(expected_roster().len(), 11);
         assert_eq!(stripped_knowledge().len(), 22);
-        assert_eq!(expected_knowledge().len(), 29);
-        assert_eq!(roster_agent("ui-designer").knowledge.len(), 9);
+        assert_eq!(expected_knowledge().len(), 30);
+        assert_eq!(roster_agent("ui-designer").knowledge.len(), 10);
         assert!(knowledge_path("ds/x").ends_with("design-skills/skills/x/SKILL.md"));
     }
 

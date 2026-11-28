@@ -36,7 +36,7 @@ Agents are called `anthology:<name>`. A routing guide, delivered to the main ses
 | `reviewer` | opus | no | Code review, tech debt, deploy readiness | code-review-checklist, karpathy-guidelines; tech-debt and deploy-checklist only when they apply |
 | `scout` | haiku | no | Finding code, running tests, summarizing output | none |
 | `docs-writer` | sonnet | yes, in a worktree | Documentation | documentation, ux-writing |
-| `ui-designer` | sonnet | yes, in a worktree | Building UI | frontend-design, design-taste-frontend, ui-taste, landing-page, web-design-system, design-handoff, design-systems, interaction-design, design-elevation |
+| `ui-designer` | sonnet | yes, in a worktree | Building UI, cloning a site's look | frontend-design, design-taste-frontend, ui-taste, landing-page, web-design-system, design-handoff, design-systems, interaction-design, design-elevation; website-clone only for a clone |
 | `ui-reviewer` | opus | no | Reviewing the rendered UI in BrowserOS Neo | web-design-guidelines, web-review, design-critique, accessibility-audit |
 | `product-planner` | opus | docs only | Specs, sprint plans, roadmaps, product brainstorming | write-spec, sprint-planning, roadmap-update, product-brainstorming, ux-strategy, design-ops |
 | `marketer` | sonnet | docs only | SEO, campaigns, content, email sequences | seo-audit, campaign-plan, content-creation, email-sequence |
@@ -83,7 +83,7 @@ The line "before planning, read `.claude/memory/reference-project-map.md`; missi
 
 ## Working rules the routing guide sets
 
-- **Worktrees.** With worktrees, writers use Claude Code's built-in isolation, never `git worktree add`. Writers commit before they finish, and the main session reviews and merges. Parallel writers get separate files.
+- **Worktrees.** With worktrees, writers use Claude Code's built-in isolation, never `git worktree add`. Writers commit before they finish, and the main session reviews and merges. Parallel writers get separate files. Several similar parts (pages, themes, endpoints) fan out: one agent builds the shared base and commits, then one agent per part works in parallel on separate files, then one review. To clone a site, one `ui-designer` captures the pages and builds the shared base, then one `ui-designer` per page builds in parallel, then `ui-reviewer` checks. The clone keeps the original's structure and look and always replaces its brand, images, text and form actions.
 - **Docker.** If the repo has tests, builds or end-to-end suites, they run in containers that mount only the current worktree. Agents do no host-level installs (`brew`, `npm -g`, global `pip`, browser downloads). Project-level installs such as `npm install` are fine. If Docker is unavailable, the agent stops and tells you.
 - **Blocked agents.** A subagent cannot ask you a question. It stops and reports it, and the main session answers or asks you, then resumes it.
 - **Coding and long builds.** Code follows the Karpathy guidelines (think first, simplest fit, surgical diffs, verify). The implementer, debugger and reviewer read them at startup. For long or multi-agent builds, status reports and decisions made while you are away, the main session loads `anthology:large-builds`: plain feature-based status reports (done, running, blocked, an honest estimate), and each decision recorded as `Ruling: what — why — cost if wrong`, while still stopping for irreversible, security-sensitive or outward-facing actions.

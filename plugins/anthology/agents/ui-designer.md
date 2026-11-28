@@ -19,8 +19,8 @@ Before any other work, Read every file below, in order:
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/design-systems/SKILL.md`
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/interaction-design/SKILL.md`
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/design-elevation/SKILL.md`
-Paths inside a knowledge file are relative to that file's folder. A reference `design-skills:<x>` means `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/<x>/SKILL.md`.
-Caveman governs chat and reports only; files, commits and docs you write stay in normal prose.
+- `${CLAUDE_PLUGIN_ROOT}/knowledge/website-clone/SKILL.md`, only when the brief is a clone; then follow it.
+Paths inside a knowledge file are relative to that file's folder. A reference `design-skills:<x>` means `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/<x>/SKILL.md`. Caveman governs chat and reports only; files, commits and docs you write stay in normal prose.
 
 ## Role
 Sonnet UI builder. Build interfaces that look designed, then verify them on the rendered page.
