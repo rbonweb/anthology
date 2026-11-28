@@ -3954,25 +3954,52 @@ call post.bat</PreBuildEvent>
 
     // Hostile files: work stays linear and the stack stays small.
 
-    fn within(seconds: u64, what: &str, started: std::time::Instant) {
-        let took = started.elapsed();
-        assert!(took.as_secs() < seconds, "{what} took {took:?}");
+    // These tests compare two runs of the same machine at the same moment (a 10x larger input,
+    // or a huge name against a tiny one), never wall time against a fixed bound, so a busy CI
+    // host slows both sides alike. A quadratic bug shows as about 100x on 10x the input; the bound
+    // is 40x, with a 20 ms floor so a very fast small run cannot make the bound too tight.
+
+    fn time_of(mut f: impl FnMut()) -> std::time::Duration {
+        let started = std::time::Instant::now();
+        f();
+        started.elapsed()
+    }
+
+    /// The best of three runs: a one-off stall on a shared host does not count.
+    fn best_of_three(mut f: impl FnMut()) -> std::time::Duration {
+        (0..3).map(|_| time_of(&mut f)).min().expect("three runs")
+    }
+
+    fn assert_comparable(what: &str, base: std::time::Duration, big: std::time::Duration) {
+        let bound = base.max(std::time::Duration::from_millis(20)) * 40;
+        assert!(big < bound, "{what}: {big:?} against a base of {base:?}");
+    }
+
+    /// `work(n)` on 10x the input costs no more than about 40x `work(n)`.
+    fn assert_linear(what: &str, small: usize, mut work: impl FnMut(usize)) {
+        let base = best_of_three(|| work(small));
+        let big = time_of(|| work(small * 10));
+        assert_comparable(what, base, big);
     }
 
     #[test]
     fn a_long_chain_of_dependent_tasks_does_not_overflow_the_stack() {
-        let mut tasks = vec![
-            r#"{"label":"t0","dependsOn":"t1","runOptions":{"runOn":"folderOpen"}}"#.to_string(),
-        ];
-        for i in 1..100_000 {
-            tasks.push(format!(r#"{{"label":"t{i}","dependsOn":"t{}"}}"#, i + 1));
-        }
-        tasks.push(r#"{"label":"t100000","command":"make"}"#.to_string());
-        let text = format!(r#"{{"tasks":[{}]}}"#, tasks.join(","));
-        let started = std::time::Instant::now();
-        let (_, out) = run(".vscode/tasks.json", &text);
-        within(5, "a dependsOn chain", started);
+        let chain = |length: usize| {
+            let mut tasks = vec![
+                r#"{"label":"t0","dependsOn":"t1","runOptions":{"runOn":"folderOpen"}}"#
+                    .to_string(),
+            ];
+            for i in 1..length {
+                tasks.push(format!(r#"{{"label":"t{i}","dependsOn":"t{}"}}"#, i + 1));
+            }
+            tasks.push(format!(r#"{{"label":"t{length}","command":"make"}}"#));
+            format!(r#"{{"tasks":[{}]}}"#, tasks.join(","))
+        };
+        let (_, out) = run(".vscode/tasks.json", &chain(100_000));
         assert!(out.iter().all(|f| f.rule != "autorun.unparsed"));
+        assert_linear("a dependsOn chain", 10_000, |n| {
+            let _ = run(".vscode/tasks.json", &chain(n));
+        });
     }
 
     #[test]
@@ -3988,39 +4015,48 @@ call post.bat</PreBuildEvent>
 
     #[test]
     fn a_file_of_continued_lines_is_read_in_linear_time() {
-        let text = "a \\\n".repeat(200_000);
-        let started = std::time::Instant::now();
-        let (s, _) = run("Makefile", &text);
-        within(15, "200,000 continued lines", started);
+        let (s, _) = run("Makefile", &"a \\\n".repeat(200_000));
         assert!(s.is_empty());
+        assert_linear("continued lines", 20_000, |n| {
+            let _ = run("Makefile", &"a \\\n".repeat(n));
+        });
     }
 
     #[test]
     fn a_huge_section_name_is_not_copied_for_every_entry() {
-        let name = "s".repeat(1 << 20);
+        // Copying the name per entry would cost 100,000 x 1 MiB; the same entries under a
+        // one-byte name are the baseline.
         let entries = "a = b\n".repeat(100_000);
         for (path, header) in [
-            (".git/config", name.clone()),
-            (".gitmodules", format!("submodule {name}")),
+            (".git/config", String::new()),
+            (".gitmodules", "submodule ".to_string()),
         ] {
-            let text = format!("[{header}]\n{entries}");
-            let started = std::time::Instant::now();
-            let _ = run(path, &text);
-            within(15, path, started);
+            let text_for = |name: &str| format!("[{header}{name}]\n{entries}");
+            let (small, big) = (text_for("s"), text_for(&"s".repeat(1 << 20)));
+            let base = best_of_three(|| {
+                let _ = run(path, &small);
+            });
+            let huge = time_of(|| {
+                let _ = run(path, &big);
+            });
+            assert_comparable(path, base, huge);
         }
     }
 
     #[test]
     fn many_msbuild_commands_get_their_lines_in_one_pass() {
-        let text = format!(
-            "<Project>{}</Project>",
-            "<Exec Command=\"a\" />\n".repeat(100_000)
-        );
-        let started = std::time::Instant::now();
-        let (s, _) = run("App.csproj", &text);
-        within(15, "100,000 Exec elements", started);
+        let project = |n: usize| {
+            format!(
+                "<Project>{}</Project>",
+                "<Exec Command=\"a\" />\n".repeat(n)
+            )
+        };
+        let (s, _) = run("App.csproj", &project(100_000));
         assert_eq!(s.len(), 100_000);
         assert_eq!((s[0].line, s[99_999].line), (1, 100_000));
+        assert_linear("Exec elements", 10_000, |n| {
+            let _ = run("App.csproj", &project(n));
+        });
     }
 
     #[test]

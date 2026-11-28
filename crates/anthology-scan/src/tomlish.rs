@@ -221,12 +221,28 @@ mod tests {
 
     #[test]
     fn a_huge_table_header_is_not_copied_for_every_entry() {
-        let header = "t".repeat(1 << 20);
-        let text = format!("[{header}]\n{}", "a = 1\n".repeat(100_000));
+        // Compared with the same entries under a one-byte header, on the same host at the same
+        // moment, so a busy machine slows both sides alike. Copying the 1 MiB name per entry
+        // would cost thousands of times the baseline; the bound is 40x with a 20 ms floor.
+        let body = "a = 1\n".repeat(100_000);
+        let small = format!("[t]\n{body}");
+        let text = format!("[{}]\n{body}", "t".repeat(1 << 20));
+        let best_small = (0..3)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                let _ = entries(&small);
+                started.elapsed()
+            })
+            .min()
+            .expect("three runs");
         let started = std::time::Instant::now();
         let found = entries(&text);
         let took = started.elapsed();
-        assert!(took.as_secs() < 15, "100,000 entries took {took:?}");
+        let bound = best_small.max(std::time::Duration::from_millis(20)) * 40;
+        assert!(
+            took < bound,
+            "huge header: {took:?} against a base of {best_small:?}"
+        );
         assert_eq!(found.len(), 100_000);
         assert_eq!(found[99_999].line, 100_001);
         assert_eq!(found[0].table.len(), 1 << 20);
