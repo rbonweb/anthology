@@ -28,11 +28,11 @@ pub const SUPERPOWERS: &str = "plugins/anthology-superpowers";
 /// landed, times 1.15, rounded up. Growth fails the roster test on purpose.
 pub const BUDGET: [(&str, u64); 11] = [
     ("researcher", 89267),       // measured 77623
-    ("architect", 23738),        // measured 20532, +126 atl rule
-    ("implementer", 26561),      // measured 23096 (karpathy-guidelines)
-    ("debugger", 22293),         // measured 19275 (karpathy-guidelines), +126 atl rule
-    ("reviewer", 17815),         // measured 14497 (karpathy-guidelines), +1143 Shell
-    ("scout", 7284),             // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl
+    ("architect", 24131), // measured 20532, +126 atl rule, +393 credential path rule (owner, 2026-11-28)
+    ("implementer", 26561), // measured 23096 (karpathy-guidelines)
+    ("debugger", 22686), // measured 19275 (karpathy-guidelines), +126 atl rule, +393 credential path rule (owner, 2026-11-28)
+    ("reviewer", 17815), // measured 14497 (karpathy-guidelines), +1143 Shell
+    ("scout", 7677), // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl, +393 credential path rule (owner, 2026-11-28)
     ("docs-writer", 75475), // measured 27283, +184 wait, map and memory rules, +126 atl; +humanizer rewrite pass (owner, 2026-11-28)
     ("ui-designer", 148488), // measured 111388; +avoid-ai-design rubric (owner, 2026-11-28)
     ("ui-reviewer", 65986), // measured 57379
