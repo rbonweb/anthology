@@ -31,7 +31,7 @@ pub const OPENED_WARNING: &str = "This folder is already open in Claude Code. It
 /// Printed in every report.
 pub const NO_PROOF: &str = "No findings is not proof of safety.";
 
-/// The licence notice `anthology check-repo --notice` prints.
+/// The license notice `anthology check-repo --notice` prints.
 pub const NOTICE: &str = include_str!("../NOTICE");
 
 /// `Do not open` (any CRITICAL), `Review before opening` (any HIGH) or `No known-bad signals
