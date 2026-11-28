@@ -33,6 +33,8 @@ It checks your machine, then shows every change and applies them only after you 
 
 When it finishes, restart the session so the new permissions and the ATL hook take effect. Nothing is written to `~/.claude/CLAUDE.md`.
 
+After it finishes, setup asks whether to run a malicious-code check on this repo. It says first that Claude Code is already open in the repo, so the repo's hooks, env settings and MCP servers may have run. The check still reads install scripts, editor tasks and hidden code that have not run yet. For a repo you did not write, the safest check runs before you open Claude Code in it, with `/anthology:check-repo <path>` from a session in another folder. If you say yes, setup runs the check with `--opened`. See [Check a repo before you open it](check-repo.md).
+
 ## What happens at session start
 
 After setup, some things happen on their own at session start. Anthology delivers the routing guide, runs the guardrails self-test (see [Guardrails](guardrails.md)), reconciles the ATL binary with `atl.lock`, and in approved repos keeps memory working (see [Memory](memory.md)).
@@ -45,6 +47,7 @@ It also tells you when something needs attention:
 - When a release changes the `settings.json` entries that setup makes and one of them is missing, it prints "anthology settings changed in this release — run /anthology:setup to review" and changes nothing itself. If you deleted one of those entries on purpose (for example `Bash(atl *)`), the line returns at each session start after every such release, until you run setup again.
 - When the official `superpowers` plugin is enabled next to Anthology's own `anthology-superpowers`, it prints one line at each session start (not on resume, clear or compact) that names both and gives the command that disables the official one, for example `claude plugin disable superpowers@claude-plugins-official -s user`. Both would otherwise load their instructions. It names the official plugin and not `anthology-superpowers` because `anthology` lists `anthology-superpowers` as a dependency, and Claude Code refuses to disable a plugin that an enabled one requires. A plugin manifest has no way to mark a dependency optional.
 - If the personal-memory folder is a symlink or not a folder, it prints a line saying personal memory was not loaded and nothing was moved or copied.
+- When the repo holds files that run code when Claude Code or an editor opens it (hooks, env or helper commands in `.claude/settings.json` or `.claude/settings.local.json`, `.mcp.json` servers, a VS Code task that runs on folder open, `.envrc`), it prints one line naming them, once for each repo, and points to `/anthology:check-repo`. It is not printed on resume, clear or compact (see [If the repo is already open](check-repo.md#if-the-repo-is-already-open)).
 
 When another program drives the session, Anthology stays quiet instead (see [Host mode](agents.md#host-mode)).
 

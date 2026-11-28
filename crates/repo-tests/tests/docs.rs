@@ -49,10 +49,11 @@ const PUBLIC_DOCS: [&str; 4] = [
 ];
 
 /// The pages the README links under Documentation: the detail the README leaves out.
-const DOC_PAGES: [&str; 8] = [
+const DOC_PAGES: [&str; 9] = [
     "docs/agents.md",
     "docs/atl.md",
     "docs/binary.md",
+    "docs/check-repo.md",
     "docs/guardrails.md",
     "docs/memory.md",
     "docs/mods.md",

@@ -28,7 +28,7 @@ check built UI|anthology:ui-reviewer
 spec, sprint, roadmap|anthology:product-planner
 marketing, copy, SEO|anthology:marketer
 blog posts|anthology:blog-writer
-security scan|`claude-security` plugin
+security scan|`claude-security`; a clone: `/anthology:check-repo`
 
 UI or canvas design: ui-designer builds, then ui-reviewer checks before merge.
 Project's own agents and skills (`.claude/{agents,skills}`) win over Anthology's for the jobs they cover.
@@ -37,7 +37,7 @@ Project's own agents and skills (`.claude/{agents,skills}`) win over Anthology's
 Answer or ask the user; resume.
 
 ## 4. Worktrees
-- With worktrees: built-in isolation only; never `git worktree add`. `worktree.baseRef: "head"`: writers branch from HEAD.
+- With worktrees: built-in isolation only; never `git worktree add`. `worktree.baseRef: "head"`.
 - Writers commit before finishing. Parallel writers get disjoint files.
 - Similar parts (pages, themes, endpoints, clones): one agent builds and commits the shared base, then one agent per part in parallel, then one review.
 - Commits, PRs and code comments carry only the git config author: never add Co-Authored-By or "Generated with" lines, never mention Claude or AI.
@@ -49,7 +49,7 @@ Answer or ask the user; resume.
 
 ## 6. Web
 - WebFetch/WebSearch for reading; real-browser work uses BrowserOS Neo (MCP), the only browser.
-- Never agent-browser, host Playwright/Puppeteer, chrome-devtools MCP or Claude in Chrome. Never launch Chrome. BrowserOS Neo unavailable: stop and ask. Never install a browser.
+- Never agent-browser, host Playwright/Puppeteer, chrome-devtools or Claude in Chrome. Never launch Chrome. BrowserOS Neo unavailable: stop and ask. Never install a browser.
 
 ## 7. ATL
 - Condensed output is complete; `cat`, `grep -o/-c`, `jq -r`, `curl -o/-w` stay exact. Never type `atl` (added for you), except `atl bypass <cmd>` when a result is unusable.
