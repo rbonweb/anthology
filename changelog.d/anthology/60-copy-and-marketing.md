@@ -1,5 +1,0 @@
-- Add: blog-writer agent: trend research (Hacker News and Reddit public endpoints, WebSearch), brief, outline, draft and a 90/100 score gate before hand-off.
-- Add: marketer reads one knowledge set per deliverable: page copy, email, social, ads, launch and PR, CRO and A/B tests, tracking plans, SEO and AI search, content and campaign plans.
-- Add: reviewer checks marketing deliverables with brand-review and copy-editing.
-- Add: ui-designer and docs-writer read ux-microcopy and Anthology's own dashboard-copy for product and dashboard strings.
-- Change: a Startup line ending in "only when …" is read only for that job; the startup budget counts its largest such file.
