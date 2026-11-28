@@ -1,0 +1,25 @@
+[package]
+name = "anthology-scan"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "check-repo: the malicious-code scan of a repo tree (reads files only, no env reads)"
+
+[lints]
+workspace = true
+
+[dependencies]
+anthology-pycompat.workspace = true
+# rules and report: `privacy::secret_match_starts` masks secrets in what a finding shows.
+anthology-memory.workspace = true
+regex.workspace = true
+# yara: the literal prefilter and the regex parser behind it.
+aho-corasick.workspace = true
+regex-syntax.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# yara: `prefilter_gives_the_same_hits_as_brute_force`.
+proptest.workspace = true
