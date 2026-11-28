@@ -162,6 +162,61 @@ fn every_skill_command_runs_the_anthology_wrapper() {
     }
 }
 
+/// The check-repo skill is model-invocable, runs only the plugin's wrapper, prints the binary's
+/// report as it is, and keeps the LLM triage advisory: it can never lower a finding.
+#[test]
+fn check_repo_skill_runs_the_wrapper_and_never_lowers_high() {
+    let (meta, body) = skill("check-repo");
+    assert_eq!(meta["name"].as_str(), Some("check-repo"));
+    assert!(
+        meta["description"]
+            .as_str()
+            .is_some_and(|d| d.starts_with("Check a repo or git URL for malicious code")),
+        "description"
+    );
+    assert_ne!(
+        meta["disable-model-invocation"].as_bool(),
+        Some(true),
+        "the model may invoke it"
+    );
+    let want = format!("{ANTHOLOGY} check-repo ");
+    let cmds = commands(&body);
+    assert!(!cmds.is_empty(), "no command");
+    for c in &cmds {
+        assert!(c.starts_with(&want), "{c}");
+    }
+    assert!(body.contains("--json"), "--json");
+    assert!(body.contains("--opened"), "--opened");
+    assert!(body.contains("cannot lower a finding"), "advisory notes");
+    assert!(
+        body.contains("Never open the target's files"),
+        "no reading of the target"
+    );
+    assert!(!body.to_lowercase().contains("python"), "python");
+}
+
+/// Setup step 7 comes after the result report (step 6), carries the warning text, and hands
+/// the check to the skill with `--opened`. It has no fenced command of its own.
+#[test]
+fn setup_offers_the_check_after_it_finishes() {
+    let (_, body) = skill("setup");
+    let step6 = body.find("\n6. Report the result").expect("step 6");
+    let step7 = body.find("\n7. Ask whether to run a malicious-code check of this repo now.");
+    let step7 = step7.expect("step 7");
+    assert!(step6 < step7, "step 7 comes after step 6");
+    assert!(
+        step7 < body.find("\n## Remove").expect("remove section"),
+        "step 7 is in the Setup section"
+    );
+    let line = body[step7..].lines().nth(1).expect("step 7 line");
+    for needle in [
+        "Say first: \"Claude Code is already open in this repo, so its hooks, env settings and MCP servers may have run. The check still reads install scripts, editor tasks and hidden code, which have not run yet. For a repo you did not write, the safest check runs before opening Claude Code in it: /anthology:check-repo <path> from a session in another folder.\"",
+        "If yes, invoke the skill `anthology:check-repo` with `--opened '<abs repo path>'` (the same path as `--cwd`, or the current repo).",
+    ] {
+        assert!(line.contains(needle), "step 7: {needle}");
+    }
+}
+
 /// GC-14: the setup skill says what to do when a Bash call is blocked with "(setup)": run the
 /// installer the block names (the one command the guard lets through while the binary is missing).
 #[test]
