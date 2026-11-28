@@ -27,7 +27,7 @@
 //! trailing newlines, oversized) and its four wrappers (present, missing, not executable); the
 //! guardrails (a sibling, none, registry entries with scopes and projects, a directory
 //! marketplace whose live folder lacks the guard, disabled and enabled flags in all three
-//! settings files) and every guard behaviour; settings.json (missing, the rule, a stale rule, a
+//! settings files) and every guard behavior; settings.json (missing, the rule, a stale rule, a
 //! string allow, unparseable, a BOM, deep unterminated nesting, a subagent model); state.json
 //! (missing, not JSON, `setup_done`, every `settings_ops_version` form, `data_dir` of every JSON
 //! type, `agent_memory_warned`); `CLAUDE_PLUGIN_DATA` and the subagent variable; a repo with
@@ -108,8 +108,8 @@ impl Surface for SessionStart {
 
 // --- the guard twin -----------------------------------------------------------------------
 
-/// `(exit code, stderr line)` of guard behaviour `b` (the oracle's `GUARDS`).
-fn guard_behaviour(b: &str, reason: &str) -> (i32, Option<String>) {
+/// `(exit code, stderr line)` of guard behavior `b` (the oracle's `GUARDS`).
+fn guard_behavior(b: &str, reason: &str) -> (i32, Option<String>) {
     let line = |s: &str| Some(s.to_string());
     match b {
         "g1" => (
@@ -152,7 +152,7 @@ fn write_file(path: &Path, bytes: &[u8]) {
 
 /// The Rust half of an `sguard` entry (the oracle writes `scripts/guard.py` too).
 fn write_guard(base: &Path, b: &str, reason: &str) {
-    let (code, line) = guard_behaviour(b, reason);
+    let (code, line) = guard_behavior(b, reason);
     let mut sh = String::from("#!/bin/sh\ncat >/dev/null\n");
     if let Some(l) = line {
         sh.push_str(&format!("printf '%s\\n' '{l}' >&2\n"));

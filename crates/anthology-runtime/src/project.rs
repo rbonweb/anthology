@@ -2,7 +2,7 @@
 //!
 //! - `<repo>/.claude/anthology.json`: the repo's own switches ([`switch`], [`state`]). A key
 //!   that is missing, not a JSON boolean, or in a file that does not parse leaves the default.
-//!   A switch is honoured only in a repo approved in `/anthology:setup` ([`Switch`]): a repo you
+//!   A switch is honored only in a repo approved in `/anthology:setup` ([`Switch`]): a repo you
 //!   cloned can ship the file, and cannot use it to switch Anthology's rules off.
 //! - The repo's own agents and skills ([`section`]): `<repo>/.claude/agents/*.md` and
 //!   `<repo>/.claude/skills/*/SKILL.md`, an agent table or list in `<repo>/CLAUDE.md`, then the
@@ -124,7 +124,7 @@ pub fn switch(repo: &Path, key: &str) -> Option<bool> {
 pub enum Switch {
     /// The file does not ask to turn it off (or says nothing readable).
     On,
-    /// The file asks, and the repo is approved in setup: it is honoured.
+    /// The file asks, and the repo is approved in setup: it is honored.
     Off,
     /// The file asks, but the repo is not approved: a repo you cloned does not get to
     /// switch Anthology's rules off, so it is ignored.

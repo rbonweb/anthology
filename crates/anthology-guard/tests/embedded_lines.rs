@@ -21,7 +21,7 @@ fn payload(command: &str) -> Vec<u8> {
 fn the_embedded_lines_are_the_lines_without_the_plugin_text() {
     assert_eq!(
         LIMIT_LINE_EMBEDDED,
-        "Blocked by anthology-guardrails (internal): the guard could not finish analysing this \
+        "Blocked by anthology-guardrails (internal): the guard could not finish analyzing this \
          input (time or pattern limit); it was blocked to be safe. Rephrase the command\n"
     );
     assert_eq!(

@@ -504,7 +504,7 @@ fn an_atl_change_beside_an_anthology_crate_runs_both() {
 
 #[test]
 fn only_an_atl_change_runs_atl_on_macos() {
-    // atl's own tests meet macOS-only path behaviour (/private/var symlinks) that Linux cannot
+    // atl's own tests meet macOS-only path behavior (/private/var symlinks) that Linux cannot
     // show, but a change to the shell crate atl builds is not an atl change.
     assert!(scope_after(|d| touch(d, "atl/src/main.rs")).flag("atl_macos"));
     for file in [

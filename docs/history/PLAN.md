@@ -31,7 +31,7 @@ A Claude Code plugin marketplace that gives every project:
 5. A **routing guide** that tells the main session when to delegate, to whom, and under which rules. A session-start hook delivers it, so it always matches the installed version (§7).
 6. **Token-saving command output (rtk)**, always on: a Claude-only build of the owner's rtk fork rewrites Bash commands (`git status` → `rtk git status`), so the main session and every agent get condensed output (§12).
 7. **Memory that lives in the repo**: plain Markdown notes committed with the project, so they survive a re-clone, a folder move and a team merge. A local SQLite graph and search index is built from them. Personal notes stay outside the repo, and export/import moves everything between machines (§13).
-8. **Built to be maintained**: versioned releases that reach installed users, CI, behaviour evals, reproducible vendoring, an upstream watcher, and clean update and uninstall paths (§14).
+8. **Built to be maintained**: versioned releases that reach installed users, CI, behavior evals, reproducible vendoring, an upstream watcher, and clean update and uninstall paths (§14).
 
 It is published as an open-source repo, `rbonweb/anthology`. **Installing the one `anthology` plugin brings everything else with it** (guardrails, anthology-superpowers). Users who install it follow its rules. There are no options to configure. **Supported platforms: macOS and Linux.**
 
@@ -81,7 +81,7 @@ anthology/
 ├── scripts/sync-rtk.sh, scripts/rtk-trim.sh
 ├── .github/workflows/                     ci.yml · evals.yml · upstream-watch.yml · rtk-release.yml
 ├── .github/dependabot.yml
-├── evals/                                 behaviour eval cases (claude plugin eval; repo root so all 3 plugins load — U9)
+├── evals/                                 behavior eval cases (claude plugin eval; repo root so all 3 plugins load — U9)
 ├── tests/                                 stdlib unittest (+ pinned test deps), run in pinned Docker images
 ├── PLAN.md · README.md · CHANGELOG.md · SECURITY.md · CONTRIBUTING.md · DECISIONS.md · LICENSE (Apache-2.0)
 ```
@@ -104,7 +104,7 @@ anthology/
 | Sonnet | Builder | Implementing a clear plan, multi-file edits, tests, scoped refactors, reproducible bugs, docs, UI builds | Deciding *what* to build |
 | Haiku | Scout / runner | Finding code, summarizing output, running tests and reporting, renames, boilerplate | Anything needing judgment |
 
-The main session runs on Opus and orchestrates: it plans, decides, briefs agents, checks results and merges, and never produces the work. Anything that makes or changes something (code, files, docs, designs, canvas or MCP tools, browser work) goes to the matching agent. The main session works inline only on reads, lookups, answering the user, and a fix of at most a few lines in one file that the user asked for. The main session talks to the user in normal prose; the terse house style applies to agents. Model aliases (`opus`, `sonnet`, `haiku`) follow new models automatically, and the behaviour evals (§14) catch regressions when they change.
+The main session runs on Opus and orchestrates: it plans, decides, briefs agents, checks results and merges, and never produces the work. Anything that makes or changes something (code, files, docs, designs, canvas or MCP tools, browser work) goes to the matching agent. The main session works inline only on reads, lookups, answering the user, and a fix of at most a few lines in one file that the user asked for. The main session talks to the user in normal prose; the terse house style applies to agents. Model aliases (`opus`, `sonnet`, `haiku`) follow new models automatically, and the behavior evals (§14) catch regressions when they change.
 
 ### 5. Agent roster (`plugins/anthology/agents/`)
 
@@ -198,7 +198,7 @@ The **port map is machine-readable** (`vendor/patches/design-taste-frontend.port
 - updates automatically with the plugin;
 - disappears on uninstall;
 - never loads into subagents (no cost or conflicting "delegate" rules for agents);
-- can be covered by the behaviour evals.
+- can be covered by the behavior evals.
 
 The total hook output, meaning the guide plus the personal memory index plus any repo-memory cover, stays under the hook-output size limit. A test enforces a budget below that limit (the exact limit is checked as U8).
 
@@ -251,7 +251,7 @@ Automated E2E suites that a project already has (e.g. Playwright tests) still ru
 
 There are **two layers**:
 
-**Layer 1: native deny rules.** `/anthology:setup` adds `permissions.deny` `Read(...)` rules for the Chrome/Chromium profile roots (macOS and Linux) to `~/.claude/settings.json`, shown as a diff first. These cover the built-in file tools and the Bash file commands Claude Code recognises. A hook can't override them. `/anthology:setup remove` takes them out.
+**Layer 1: native deny rules.** `/anthology:setup` adds `permissions.deny` `Read(...)` rules for the Chrome/Chromium profile roots (macOS and Linux) to `~/.claude/settings.json`, shown as a diff first. These cover the built-in file tools and the Bash file commands Claude Code recognizes. A hook can't override them. `/anthology:setup remove` takes them out.
 
 **Layer 2: a `PreToolUse` hook** (matcher `*`, exec form, Python 3 stdlib) runs `guard.py`. It blocks with exit code 2 and a message naming the alternative.
 
@@ -443,7 +443,7 @@ The owner's machine-specific details are kept in private notes, not in this publ
 - gitleaks;
 - the memory-diff listing.
 
-**Behaviour evals** (repo-root `evals/`, `claude plugin eval` with all three plugins loaded; `evals.yml` runs weekly, on demand, and when the upstream watcher sees a new Claude Code release), with a cost ceiling. The cases cover:
+**Behavior evals** (repo-root `evals/`, `claude plugin eval` with all three plugins loaded; `evals.yml` runs weekly, on demand, and when the upstream watcher sees a new Claude Code release), with a cost ceiling. The cases cover:
 - routing (the main session delegates to the right `anthology:*` agent);
 - knowledge-read order (each agent Reads its Startup files before any other tool);
 - G1/G4/G6 blocks;
@@ -499,7 +499,7 @@ Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this
 3. **Faster CI containers.** The test images reinstall packages on every run. Bake them into pinned images, so runs don't depend on the network inside containers (on one build machine it ran about 50x slower than the host).
 4. **Write-then-run in one command line.** The guard notices a command that writes a script and runs it in the same line only when the script is run as `sh FILE` or `source FILE`. It misses `chmod +x x && ./x`, `bash < x`, `. ./x`, `BASH_ENV=x bash …` and files written with `tee`. Extend the check to every way a shell can run a file the line just wrote, then list what is still out of reach (a file written by an earlier tool call) in the design's known limits.
 5. **Guard gap in the v0.1.0 binary (DT-4): a hidden program word inside `$((…))`.** The Rust guard blocks a command whose program word comes from a substitution (`` `echo X` args ``, `$(echo X) args`) as too complex (G0). Since that check (SH-FW final F-8) landed, it has allowed the same command when it sits inside a `$(…)` or a backtick within an arithmetic expansion, for example `` echo $(( $(`echo agent-browser` open x) )) `` or `echo $(( $($(echo open) -a "Google Chrome") ))`. It also allowed a command substitution whose text starts with `((` (a subshell or an arithmetic command first), which the lexer took for arithmetic: `$(((true)); echo agent-browser) open x` (review C-1). Bash runs those programs. The lexer dropped the program-word check for every command lexed from a `$((…))`, including the commands of a substitution inside it, when only the arithmetic text's own words run no program, and it told arithmetic from a command substitution by the text instead of by how the `$((` closes. The fix (DT-4, PR #133, `crates/anthology-shell/src/lexer.rs` and `lexer/scan.rs`) will be on `rust` once #133 merges, and it needs a v0.1.1 binary. The shipped Python guard (`guard_rules.py`) allows the same commands, because it has no such check (F-8 is Rust-only). So it is a gap in the Rust guard's own stricter rule, not a regression against the Python guard. The security checklist for v0.1.1:
-   - every probe in `crates/anthology-guard/tests/arith_holders.rs` is G0, and so is its neighbour outside `$((…))`;
+   - every probe in `crates/anthology-guard/tests/arith_holders.rs` is G0, and so is its neighbor outside `$((…))`;
    - a `$(((…)…)` that bash reads as a `$(` keeps its program-word check, at top level and inside `$((…))`;
    - an arithmetic expansion's own substitution words (`$(( $(date +%s) - 1 ))`) are still allowed;
    - the difftest at 10,000 cases has 0 unexplained diffs for shell.analyze, guard.check and guard.hook.
@@ -515,7 +515,7 @@ Work deliberately left out of v0.1.0. It starts as soon as v0.1.0 ships, in this
 - A git repo at `~/Desktop/anthology` that is a Claude Code marketplace with 3 plugins, plus `vendor/` (pins and patches) and `rtk/` (a git subtree with history).
 - Generated content (`knowledge/`, `plugins/anthology-superpowers/`) is always reproducible from `vendor/`.
 - Logic is Python 3 stdlib scripts plus the rtk binary.
-- Structure is enforced by unit tests; behaviour by `claude plugin eval`.
+- Structure is enforced by unit tests; behavior by `claude plugin eval`.
 
 **Tech stack:**
 - Claude Code plugins/marketplace format and `claude plugin eval`.
@@ -1099,7 +1099,7 @@ The roster agents don't exist until Task 6 is built and Task 16 installs them, s
   - Each issue has a diff summary and the `vendor.py sync` / `sync-rtk.sh` command to run.
   - A new Claude Code release also triggers `evals.yml`.
   - Test the comparison logic with fixtures.
-- [ ] **Step 5:** Run `$TEST` → PASS; CI green. Commit with `ci: release tooling, version-bump gate, behaviour evals, upstream watcher`.
+- [ ] **Step 5:** Run `$TEST` → PASS; CI green. Commit with `ci: release tooling, version-bump gate, behavior evals, upstream watcher`.
 
 #### Task 15: Docs
 

@@ -684,7 +684,7 @@ mod tests {
 
     #[test]
     fn jsx_comment_waivers_are_kept() {
-        let doc = "const a = <div className=\"x\" />; {/* slop-ok: ui.purple-gradient brand colour from the style guide */}\n\
+        let doc = "const a = <div className=\"x\" />; {/* slop-ok: ui.purple-gradient brand color from the style guide */}\n\
             // slop-ok: text.ai-vocab named by the user\n\
             /* slop-ok: ui.glow-orb short */\n\
             /* slop-ignore-start quoted */\n\
@@ -698,7 +698,7 @@ mod tests {
                 waiver(
                     1,
                     Some("ui.purple-gradient"),
-                    "brand colour from the style guide",
+                    "brand color from the style guide",
                     true
                 ),
                 waiver(2, Some("text.ai-vocab"), "named by the user", true),

@@ -1,7 +1,7 @@
 //! MS1's own tests: the frontmatter parser (`memory_index.parse_text`), the user-note rule, and
 //! the repo helpers that have no Python test of their own (`legacy_dirs`, `note_sources`,
 //! `_unsafe_dir`, `_main_root`). The `notes.parse` difftest compares the parser with the Python
-//! on generated input; these pin the behaviour it was checked against.
+//! on generated input; these pin the behavior it was checked against.
 
 use std::fs;
 use std::os::unix::fs::symlink;
@@ -74,7 +74,7 @@ fn no_frontmatter_is_listed_by_stem() {
 }
 
 #[test]
-fn bom_and_crlf_are_normalised() {
+fn bom_and_crlf_are_normalized() {
     let info = parse("\u{feff}---\r\nname: n\r\n---\r\n\r\nbody\r\n");
     assert_eq!(info.name, "n");
     assert_eq!(info.body, "body\n");

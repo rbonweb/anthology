@@ -89,7 +89,7 @@ impl Git for FakeGit {
                 out(0, format!("{root}/.git\n"))
             }
             ["remote"] => out(0, "origin\n".into()),
-            // `repo_key` normalises `https://<key>` back to `<key>` (lowercased, as the keys
+            // `repo_key` normalizes `https://<key>` back to `<key>` (lowercased, as the keys
             // the generator uses already are).
             ["remote", "get-url", "origin"] => out(0, format!("https://{}\n", self.key)),
             ["ls-files", ..] => out(if self.tracked { 0 } else { 1 }, String::new()),

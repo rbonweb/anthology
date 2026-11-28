@@ -108,7 +108,7 @@ function promptKey(tool: string, agent: string | undefined, input: unknown): str
 
 type Tone = 'ok' | 'failed' | 'dim'
 type PaneRow = {
-  /** A leading status word, coloured by `tone`; padded so a column lines up in a monospaced face. */
+  /** A leading status word, colored by `tone`; padded so a column lines up in a monospaced face. */
   lead?: { text: string; tone: Tone }
   /** A dim figure: a start time or a duration. */
   meta?: string

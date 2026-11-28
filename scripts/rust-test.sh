@@ -256,7 +256,7 @@ home=$(getent passwd "$uid" | cut -d: -f6)
 lint="cargo fmt --all --check && rustfmt --edition 2024 --check fuzz/fuzz_targets/*.rs \
 && cargo clippy --workspace --all-targets --locked -- -D warnings \
 && cargo clippy --workspace --all-targets --locked --all-features -- -D warnings"
-# Plain first, so the shipped behaviour (the real watchdog) is tested; then the test features.
+# Plain first, so the shipped behavior (the real watchdog) is tested; then the test features.
 tests="cargo test $RUST_TEST_SCOPE --locked \"\$@\" && cargo test $RUST_TEST_SCOPE --locked --all-features \"\$@\""
 case $mode in
     lint) set -- sh -c "$lint" ;;

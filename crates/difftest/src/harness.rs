@@ -82,7 +82,7 @@ pub struct Report {
     pub blessable: Vec<(usize, Value)>,
 }
 
-/// The judgement of one case.
+/// The judgment of one case.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Verdict {
     Same,

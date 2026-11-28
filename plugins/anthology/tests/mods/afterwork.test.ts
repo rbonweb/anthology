@@ -749,7 +749,7 @@ const TELL_3 = 'src/Hero.tsx:12: ui.purple-gradient: "linear-gradient(135deg, #6
 const TELL_4 = 'README.md:1: text.chat-residue: "I hope this helps!"'
 const WAIVER_1 = 'docs/b.md:4: slop-ok text.ai-vocab: the product is called Seamless Sync'
 const WAIVER_2 = 'docs/c.md:1: slop-ignore region'
-const WAIVER_3 = 'src/Hero.tsx:2: slop-ok ui.purple-gradient: brand colour from the style guide'
+const WAIVER_3 = 'src/Hero.tsx:2: slop-ok ui.purple-gradient: brand color from the style guide'
 const WAIVER_4 = 'docs/d.md:7: slop-ignore region'
 
 /** What `slop check` prints: one line each, with the exit code the contract gives (1 holds a finding). */

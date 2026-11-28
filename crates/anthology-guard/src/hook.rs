@@ -40,7 +40,7 @@ pub const PANIC_LINE: &str = "Blocked by anthology-guardrails (internal): the gu
 
 /// GC-14, guard binary, limit or watchdog (with its newline).
 pub const LIMIT_LINE: &str = "Blocked by anthology-guardrails (internal): the guard could not finish \
-     analysing this input (time or pattern limit); it was blocked to be safe. Rephrase the command; if \
+     analyzing this input (time or pattern limit); it was blocked to be safe. Rephrase the command; if \
      this keeps happening, disable anthology-guardrails with /plugin\n";
 
 /// [`PANIC_LINE`] for a host that has no `/plugin` command (`embedded`, [`crate::host::embedded`]): no
@@ -51,7 +51,7 @@ pub const PANIC_LINE_EMBEDDED: &str = "Blocked by anthology-guardrails (internal
 /// [`LIMIT_LINE`] for a host that has no `/plugin` command (`embedded`, [`crate::host::embedded`]): no
 /// `/plugin` text, and the same block.
 pub const LIMIT_LINE_EMBEDDED: &str = "Blocked by anthology-guardrails (internal): the guard could not finish \
-     analysing this input (time or pattern limit); it was blocked to be safe. Rephrase the command\n";
+     analyzing this input (time or pattern limit); it was blocked to be safe. Rephrase the command\n";
 
 /// The hook's watchdog (GC-13: 8 s; the `test-watchdog` feature makes it short so a test can see it).
 pub const WATCHDOG: Duration = if cfg!(feature = "test-watchdog") {
@@ -552,7 +552,7 @@ mod tests {
         assert_eq!(
             LIMIT_LINE,
             format!(
-                "Blocked by anthology-guardrails (internal): the guard could not finish analysing \
+                "Blocked by anthology-guardrails (internal): the guard could not finish analyzing \
                  this input (time or pattern limit); it was blocked to be safe. Rephrase the \
                  command{tail}\n"
             )
