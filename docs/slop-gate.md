@@ -67,10 +67,13 @@ A **block** rule refuses on one hit. A **density** rule counts hits across the n
 | `ui.five-star-row` | HTML, JSX | block | Five stars in a row (`IM5`): `★★★★★`, five `<Star />` icons, or an array of five mapped to stars. |
 | `ui.generator-signature` | HTML, JSX | block | A site generator left in (`F1`): `lovable-tagger`, `gpt-engineer`, `v0.dev`, `bolt.new`, or `<meta name="generator" content="v0">`. |
 
-The two density rules skip text that is structure or a plain verb phrase, since people write it too:
+The two density rules leave out structure and plain verb phrases, since people write those too:
 
-- **Dashes that do not count.** A dash in an ATX heading (`## Step 1 — Install`) or a table row. A dash after the label of a list item: a bold, linked or underscore term, with an optional `: value` and an optional task-list box (`- **Name** — what it does`). A dash after a leading date or version (`- 2026-11-20 — Fixed the lock check.`, `## [1.2.3] — 2026-11-28`). A dash inside `[...]`.
-- **Lists of three that do not count.** A list never crosses a line break, a list item or a sentence end. It is dropped when the word after it starts an object (`the`, `a`, `an`, `your`, `their`, `its`, `this`, `our`, `his`, `her`, `my`, `it`, `them`), because then the last two words are a verb phrase, as in `stop and return the question`. Items that are linked or bold labels do not count either.
+- **Headings and tables.** No dash on an ATX heading line (`## Step 1 — Install`) or on a line that starts with `|` counts.
+- **List labels.** In a list item whose label is bold, linked bold, underscore bold, a code span or a task-list box, optionally followed by `: short value`, the dash after the label and the next dash on that line do not count (`- **Name** — what it does`). A third dash counts.
+- **Changelog lines.** One dash after a leading date or version does not count (`- 2026-11-20 — Fixed the lock check.`, `## [1.2.3] — 2026-11-28`).
+- **Brackets.** A dash inside `[...]` on the same line does not count.
+- **Lists of three.** A list never crosses a line break. It is dropped when the word after it starts an object (`the`, `a`, `your`, `it`, and similar), because then the last two words are a verb phrase, as in `stop and return the question`.
 
 The codes in parentheses are entries in the avoid-ai-design catalogue, which the `ui-reviewer` agent also scores against. `anthology slop rules` prints the same list with each rule's kind, its files and a one-line summary.
 
