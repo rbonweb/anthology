@@ -81,6 +81,9 @@ pub fn tool_argv(tool: &str, target: &Path, scratch: &Path) -> Vec<OsString> {
                 os("source"),
                 os("-r"),
                 os("--offline"),
+                // A `.gitignore` in the repo would otherwise hide a lockfile (and its MAL
+                // match) from the scan.
+                os("--no-ignore"),
                 config,
                 os("--format"),
                 os("json"),
@@ -167,7 +170,11 @@ fn tool_env(
     scratch: &Path,
 ) -> Vec<(OsString, OsString)> {
     let mut env = Vec::new();
-    if let Some(path) = path {
+    // Absolute entries only: a relative one would run a program from the working folder.
+    if let Some(path) = path
+        .map(|p| crate::fetch::absolute_path_entries(&p))
+        .filter(|p| !p.is_empty())
+    {
         env.push((OsString::from("PATH"), path));
     }
     env.push((
@@ -255,7 +262,12 @@ fn run_one(
                 return failed(format!("{name} wrote no report"));
             };
             match report(&text) {
-                Some(doc) => ran(gitleaks_findings(&doc, target)),
+                Some(doc) => {
+                    let mut found = gitleaks_findings(&doc, target);
+                    let reported = found.len();
+                    found.extend(gitleaks_ignore_finding(target));
+                    (ToolStatus::Ran(reported), found)
+                }
                 None => failed(format!("{name} wrote a report that is not JSON")),
             }
         }
@@ -400,6 +412,24 @@ fn gitleaks_findings(doc: &Value, target: &Path) -> Vec<Finding> {
             count: f.count,
         })
         .collect()
+}
+
+/// gitleaks always reads `<target>/.gitleaksignore` and drops the findings it lists: with
+/// `--config` too, and no flag turns it off (checked with gitleaks 8.30.1). So the file cannot be
+/// kept from steering this tool, and the report says so.
+fn gitleaks_ignore_finding(target: &Path) -> Option<Finding> {
+    std::fs::symlink_metadata(target.join(".gitleaksignore")).ok()?;
+    Some(Finding {
+        severity: Severity::Low,
+        group: Group::Tool,
+        rule: "secrets.gitleaks-ignore".to_string(),
+        path: ".gitleaksignore".to_string(),
+        line: 0,
+        why: "gitleaks reads this file from the scanned folder and drops the findings it lists; no option turns that off, so a planted secret may be hidden from the secrets check".to_string(),
+        seen: ".gitleaksignore".to_string(),
+        action: "Read the entries of the file. For a repo you do not trust, treat the secrets check as incomplete.".to_string(),
+        count: 1,
+    })
 }
 
 /// zizmor: one finding per (check, workflow file); High is MEDIUM, Medium is LOW, anything
@@ -777,6 +807,9 @@ mod tests {
                 "source",
                 "-r",
                 "--offline",
+                // Without it a `.gitignore` in the repo hides a lockfile from the scan (checked
+                // with osv-scanner 2.7.1).
+                "--no-ignore",
                 "--config=/t/scratch/osv-scanner.toml",
                 "--format",
                 "json",
@@ -902,6 +935,54 @@ mod tests {
             pairs(tool_env(Some("/usr/bin".into()), None, None, scratch)),
             want(&[("PATH", "/usr/bin"), ("HOME", "/t/scratch")])
         );
+    }
+
+    #[test]
+    fn tool_env_passes_only_absolute_path_entries() {
+        let scratch = Path::new("/t/scratch");
+        let path_of = |raw: &str| -> Option<String> {
+            tool_env(Some(raw.into()), None, None, scratch)
+                .into_iter()
+                .find(|(k, _)| k == "PATH")
+                .map(|(_, v)| v.to_string_lossy().into_owned())
+        };
+        // An empty entry, `.` and a relative folder would run a program from the working folder.
+        assert_eq!(path_of(":.:rel/bin:/usr/bin:../x:/bin:"), Some("/usr/bin:/bin".into()));
+        // Nothing absolute: no PATH at all, as when it is unset.
+        assert_eq!(path_of(".:bin"), None);
+    }
+
+    #[test]
+    fn a_gitleaksignore_in_the_target_is_reported_because_gitleaks_always_obeys_it() {
+        // Checked with gitleaks 8.30.1: `<target>/.gitleaksignore` drops the findings it lists
+        // under `--config` too, and `--gitleaks-ignore-path` does not turn it off.
+        let rig = rig();
+        std::fs::write(rig.target.join(".gitleaksignore"), "/t/a.txt:github-pat:1\n").unwrap();
+        let fake = quiet();
+        let (runs, findings) = run_tools(&rig.target, &rig.scratch, &fake);
+        assert_eq!(findings.len(), 1, "{findings:#?}");
+        let f = &findings[0];
+        assert_eq!(f.rule, "secrets.gitleaks-ignore");
+        assert_eq!((f.severity, f.group), (Severity::Low, Group::Tool));
+        assert_eq!((f.path.as_str(), f.line, f.count), (".gitleaksignore", 0, 1));
+        assert!(f.why.contains("drops the findings it lists"), "{}", f.why);
+        assert!(!f.action.is_empty());
+        // The tool's own count stays the count of what gitleaks reported.
+        assert_eq!(status_of(&runs, "gitleaks"), ToolStatus::Ran(0));
+        // Without the file there is nothing to report.
+        let clean = self::rig();
+        let (_, none) = run_tools(&clean.target, &clean.scratch, &quiet());
+        assert!(none.is_empty(), "{none:#?}");
+    }
+
+    #[test]
+    fn no_gitleaksignore_note_when_gitleaks_did_not_run() {
+        let rig = rig();
+        std::fs::write(rig.target.join(".gitleaksignore"), "x\n").unwrap();
+        let only_zizmor = Fake::new(&["zizmor"], |_| out(0, "[]", ""));
+        let (runs, findings) = run_tools(&rig.target, &rig.scratch, &only_zizmor);
+        assert!(findings.is_empty(), "{findings:#?}");
+        assert!(matches!(status_of(&runs, "gitleaks"), ToolStatus::Missing(_)));
     }
 
     #[test]

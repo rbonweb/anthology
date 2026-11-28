@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 use crate::tools::Runner;
 
 /// The oldest git with `GIT_CONFIG_GLOBAL`, which keeps the user's git config out of the fetch.
-const MIN_GIT: (u32, u32) = (2, 32);
+const GLOBAL_CONFIG_GIT: (u32, u32, u32) = (2, 32, 0);
+/// Older git has CVE-2022-23521 and CVE-2022-41903 (memory errors on a crafted `.gitattributes`)
+/// unless the distribution backported the fixes, so an older one is noted, never refused.
+const SAFE_GIT: (u32, u32, u32) = (2, 39, 1);
 const MAX_URL: usize = 2048;
 const MAX_REV: usize = 200;
 /// The longest piece (host, owner or repo) of a quarantine folder name.
@@ -257,6 +260,33 @@ pub fn fetch(
     r: &dyn Runner,
     timeout: Duration,
 ) -> Result<Vec<(String, u32)>, String> {
+    fetch_with_notes(p, r, timeout).map(|done| done.modes)
+}
+
+/// What a fetch hands back: git's file modes, and the notes the report carries (an old git).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Fetched {
+    pub modes: Vec<(String, u32)>,
+    pub notes: Vec<String>,
+}
+
+/// The empty folder `git init --template` reads for the quarantine at `dest`: a hidden sibling,
+/// `<parent>/.<name>.template`. `fetch` makes it and removes it; a caller that has to clean up
+/// after an interrupt removes it too.
+pub fn template_path(dest: &Path) -> Option<PathBuf> {
+    let (parent, name) = (dest.parent()?, dest.file_name()?);
+    let mut template_name = OsString::from(".");
+    template_name.push(name);
+    template_name.push(".template");
+    Some(parent.join(template_name))
+}
+
+/// `fetch`, with the notes. An old git is a note, never a refusal.
+pub fn fetch_with_notes(
+    p: &FetchPlan,
+    r: &dyn Runner,
+    timeout: Duration,
+) -> Result<Fetched, String> {
     let deadline = Instant::now() + timeout;
     validate_url(&p.url)?;
     if let Some(rev) = &p.rev {
@@ -272,22 +302,15 @@ pub fn fetch(
         ));
     }
     let git = r.find("git").ok_or_else(|| {
-        format!(
-            "git was not found on PATH; fetching a URL needs git {}.{} or newer",
-            MIN_GIT.0, MIN_GIT.1
-        )
+        "git was not found on PATH; fetching a URL needs git (2.39.1 or newer is best)".to_string()
     })?;
-    let (Some(parent), Some(name)) = (dest.parent(), dest.file_name()) else {
+    let (Some(parent), Some(template)) = (dest.parent(), template_path(&dest)) else {
         return Err(format!("{} is not a usable folder name", dest.display()));
     };
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     // An empty folder next to the quarantine: `git init --template` copies nothing from it, so
     // no hook or config of a system template reaches the new repo.
-    let mut template_name = OsString::from(".");
-    template_name.push(name);
-    template_name.push(".template");
-    let template = parent.join(template_name);
     std::fs::create_dir(&template)
         .map_err(|e| format!("cannot create {}: {e}", template.display()))?;
     if let Err(e) = make_private_dir(&dest) {
@@ -317,8 +340,8 @@ fn run_steps(
     cwd: &Path,
     deadline: Instant,
     total: Duration,
-) -> Result<Vec<(String, u32)>, String> {
-    let path = std::env::var_os("PATH").unwrap_or_else(|| OsString::from("/usr/bin:/bin"));
+) -> Result<Fetched, String> {
+    let path = child_path(std::env::var_os("PATH"));
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| template.to_path_buf());
@@ -326,6 +349,7 @@ fn run_steps(
     let env = git_env(&path, &home, ssh.as_deref());
 
     let mut listing = Vec::new();
+    let mut notes = Vec::new();
     for (i, args) in git_steps(plan, template).iter().enumerate() {
         let name = STEP_NAMES[i];
         let left = deadline
@@ -346,39 +370,86 @@ fn run_steps(
             ));
         }
         match i {
-            0 => {
-                let text = String::from_utf8_lossy(&stdout);
-                match parse_version(&text) {
-                    Some(v) if v >= MIN_GIT => {}
-                    Some((major, minor)) => {
-                        return Err(format!(
-                            "git {major}.{minor} is too old: fetching a URL needs git {}.{} or newer",
-                            MIN_GIT.0, MIN_GIT.1
-                        ));
-                    }
-                    None => {
-                        return Err(format!(
-                            "cannot read the git version from {}",
-                            shown(text.trim())
-                        ));
-                    }
-                }
-            }
+            0 => notes.extend(version_note(&String::from_utf8_lossy(&stdout))),
+            // The repo `git init` just made gets the protections before anything is fetched
+            // into it, and stays safe for the `git -C <dest> status` the report suggests.
+            1 => harden_config(&plan.dest)?,
             5 => listing = stdout,
             _ => {}
         }
     }
-    parse_ls_files(&listing)
+    Ok(Fetched {
+        modes: parse_ls_files(&listing)?,
+        notes,
+    })
+}
+
+/// The protections appended to the quarantine's own `.git/config`: no symlinks written to disk,
+/// no hooks and no fsmonitor command run by a later git call in the folder.
+const QUARANTINE_CONFIG: &str = "[core]\n\tsymlinks = false\n\thooksPath = /dev/null\n\tfsmonitor = false\n";
+
+/// Appends `QUARANTINE_CONFIG` to `<dest>/.git/config`, which `git init` has just made.
+fn harden_config(dest: &Path) -> Result<(), String> {
+    use std::io::Write;
+    let config = dest.join(".git").join("config");
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&config)
+        .and_then(|mut f| f.write_all(QUARANTINE_CONFIG.as_bytes()))
+        .map_err(|e| format!("cannot protect the quarantine's {}: {e}", config.display()))
+}
+
+/// The note for what `git --version` printed, if the git is older than `SAFE_GIT` or its version
+/// cannot be read.
+fn version_note(out: &str) -> Option<String> {
+    let floor = format!("{}.{}.{}", SAFE_GIT.0, SAFE_GIT.1, SAFE_GIT.2);
+    let Some(v) = parse_version(out) else {
+        return Some(format!(
+            "cannot read the git version from {}, so it was not checked against {floor}",
+            shown(out.trim())
+        ));
+    };
+    if v >= SAFE_GIT {
+        return None;
+    }
+    let mut note = format!(
+        "git {}.{}.{} is older than {floor}, which fixes CVE-2022-23521 and CVE-2022-41903 (memory errors on a crafted .gitattributes); your distribution may have backported them, otherwise update git",
+        v.0, v.1, v.2
+    );
+    if v < GLOBAL_CONFIG_GIT {
+        note.push_str(
+            "; it also ignores GIT_CONFIG_GLOBAL, so your own git config applied to this fetch",
+        );
+    }
+    Some(note)
+}
+
+/// `PATH` for a child: the absolute entries only (a relative one, such as an empty entry or `.`,
+/// would let a program in the working folder run), or the system folders when none is left.
+fn child_path(raw: Option<OsString>) -> OsString {
+    raw.map(|p| absolute_path_entries(&p))
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| OsString::from("/usr/bin:/bin"))
+}
+
+/// The absolute entries of the `PATH` text `path`, in order, joined again.
+pub fn absolute_path_entries(path: &OsStr) -> OsString {
+    let kept: Vec<PathBuf> = std::env::split_paths(path)
+        .filter(|p| p.is_absolute())
+        .collect();
+    std::env::join_paths(kept).unwrap_or_default()
 }
 
 /// Reads the git version out of `git --version` output: `git version 2.39.5 (Apple Git-154)`.
-fn parse_version(out: &str) -> Option<(u32, u32)> {
+/// A missing patch level reads as 0.
+fn parse_version(out: &str) -> Option<(u32, u32, u32)> {
     let v = out.trim().strip_prefix("git version ")?;
     let digits = v.split(|c: char| !c.is_ascii_digit() && c != '.').next()?;
     let mut parts = digits.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
-    Some((major, minor))
+    let patch = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    Some((major, minor, patch))
 }
 
 /// The `(path, mode)` pairs of `git ls-files -s -z`: records `<mode> <hash> <stage>\t<path>`
@@ -536,12 +607,27 @@ mod tests {
         Ok((code, stdout.as_bytes().to_vec(), stderr.as_bytes().to_vec()))
     }
 
+    /// What `git init` leaves: the repo's own `.git/config`, which `fetch` then appends to.
+    fn fake_init(c: &Call) {
+        let dest = PathBuf::from(c.args.last().expect("init names the folder"));
+        std::fs::create_dir_all(dest.join(".git")).unwrap();
+        std::fs::write(dest.join(".git").join("config"), "[core]\n\tbare = false\n").unwrap();
+    }
+
     /// A git that succeeds at every step.
     fn git_ok(c: &Call) -> Reply {
+        git_version(c, "git version 2.43.0\n")
+    }
+
+    /// `git_ok`, with `version` as what `git --version` prints.
+    fn git_version(c: &Call, version: &str) -> Reply {
         let w = c.words();
         let has = |s: &str| w.iter().any(|a| a == s);
-        if has("--version") {
-            out(0, "git version 2.43.0\n", "")
+        if has("init") {
+            fake_init(c);
+            out(0, "", "")
+        } else if has("--version") {
+            out(0, version, "")
         } else if has("ls-files") {
             out(
                 0,
@@ -781,15 +867,95 @@ mod tests {
 
     #[test]
     fn git_version_text_forms() {
-        assert_eq!(parse_version("git version 2.43.0\n"), Some((2, 43)));
+        assert_eq!(parse_version("git version 2.43.0\n"), Some((2, 43, 0)));
         assert_eq!(
             parse_version("git version 2.39.5 (Apple Git-154)\n"),
-            Some((2, 39))
+            Some((2, 39, 5))
         );
-        assert_eq!(parse_version("git version 2.45.1.windows.1"), Some((2, 45)));
-        assert_eq!(parse_version("git version 10.0.1"), Some((10, 0)));
+        assert_eq!(
+            parse_version("git version 2.45.1.windows.1"),
+            Some((2, 45, 1))
+        );
+        assert_eq!(parse_version("git version 10.0.1"), Some((10, 0, 1)));
+        // No patch level reads as 0.
+        assert_eq!(parse_version("git version 2.39"), Some((2, 39, 0)));
         assert_eq!(parse_version("not git"), None);
         assert_eq!(parse_version(""), None);
+    }
+
+    #[test]
+    fn child_path_keeps_only_absolute_entries() {
+        let raw = OsString::from(":.:rel/bin:/usr/bin:../x:/bin:");
+        assert_eq!(child_path(Some(raw)), OsString::from("/usr/bin:/bin"));
+        // Nothing absolute left, or no PATH at all: the plain system folders.
+        assert_eq!(
+            child_path(Some(OsString::from(".:bin"))),
+            OsString::from("/usr/bin:/bin")
+        );
+        assert_eq!(child_path(None), OsString::from("/usr/bin:/bin"));
+        assert_eq!(
+            absolute_path_entries(OsStr::new("a:/b:c")),
+            OsString::from("/b")
+        );
+        assert_eq!(absolute_path_entries(OsStr::new("")), OsString::new());
+    }
+
+    #[test]
+    fn template_path_is_a_hidden_sibling() {
+        assert_eq!(
+            template_path(Path::new("/q/dest")),
+            Some(PathBuf::from("/q/.dest.template"))
+        );
+        assert_eq!(template_path(Path::new("/")), None);
+    }
+
+    #[test]
+    fn the_quarantine_config_is_hardened_before_git_fetches_or_checks_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let r = Fake::new(&["git"], move |c| {
+            let w = c.words();
+            if w.iter().any(|a| a == "fetch" || a == "checkout") {
+                let at = w.iter().position(|a| a == "-C").unwrap();
+                let cfg = std::fs::read_to_string(Path::new(&w[at + 1]).join(".git/config"));
+                log.lock().unwrap().push(cfg.unwrap());
+            }
+            git_ok(c)
+        });
+        fetch(&plan(&dest), &r, Duration::from_secs(120)).unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2, "fetch and checkout both ran");
+        for cfg in seen.iter() {
+            // git init's own lines stay; the three protections are added to [core].
+            assert!(cfg.starts_with("[core]\n\tbare = false\n"), "{cfg}");
+            for want in [
+                "symlinks = false",
+                "hooksPath = /dev/null",
+                "fsmonitor = false",
+            ] {
+                assert!(cfg.contains(want), "{want} missing in {cfg}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_init_that_leaves_no_config_is_an_error_and_removes_dest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let r = Fake::new(&["git"], |c| {
+            if c.words().iter().any(|a| a == "init") {
+                out(0, "", "")
+            } else {
+                git_ok(c)
+            }
+        });
+        let err = fetch(&plan(&dest), &r, Duration::from_secs(120)).unwrap_err();
+        assert!(err.contains(".git"), "{err}");
+        assert!(!dest.exists());
+        assert_eq!(entries(tmp.path()), 0);
+        assert_eq!(r.calls().len(), 2, "nothing runs after the failed hardening");
     }
 
     #[test]
@@ -922,16 +1088,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn old_git_is_an_error() {
+    /// What `fetch_with_notes` says for `git --version` printing `version`.
+    fn notes_for(version: &'static str) -> Vec<String> {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("dest");
-        let r = Fake::new(&["git"], |_| out(0, "git version 2.31.1\n", ""));
-        let err = fetch(&plan(&dest), &r, Duration::from_secs(120)).unwrap_err();
-        assert!(err.contains("2.32"), "{err}");
-        assert!(err.contains("2.31"), "{err}");
-        assert!(!dest.exists());
-        assert_eq!(r.calls().len(), 1, "nothing runs after the version check");
+        let r = Fake::new(&["git"], move |c| git_version(c, version));
+        let done = fetch_with_notes(&plan(&dest), &r, Duration::from_secs(120))
+            .unwrap_or_else(|e| panic!("{version:?} must not be refused: {e}"));
+        assert_eq!(r.calls().len(), 6, "every step ran for {version:?}");
+        assert!(dest.is_dir());
+        done.notes
+    }
+
+    #[test]
+    fn old_git_is_noted_and_never_refused() {
+        // Below 2.39.1: the two CVEs; below 2.32 also no GIT_CONFIG_GLOBAL.
+        let old = notes_for("git version 2.39.0\n");
+        assert_eq!(old.len(), 1, "{old:?}");
+        assert!(old[0].contains("2.39.0"), "{old:?}");
+        assert!(old[0].contains("2.39.1"), "{old:?}");
+        assert!(old[0].contains("CVE-2022-23521"), "{old:?}");
+        assert!(!old[0].contains("GIT_CONFIG_GLOBAL"), "{old:?}");
+        let older = notes_for("git version 2.31.1\n");
+        assert_eq!(older.len(), 1, "{older:?}");
+        assert!(older[0].contains("2.31.1"), "{older:?}");
+        assert!(older[0].contains("GIT_CONFIG_GLOBAL"), "{older:?}");
+        let ancient = notes_for("git version 1.8.3.1\n");
+        assert!(ancient[0].contains("GIT_CONFIG_GLOBAL"), "{ancient:?}");
+        // Distribution builds name their own suffix; the number still counts.
+        assert_eq!(notes_for("git version 2.38.5 (Apple Git-153)\n").len(), 1);
+    }
+
+    #[test]
+    fn a_current_git_has_no_note() {
+        for v in [
+            "git version 2.39.1\n",
+            "git version 2.39.5 (Apple Git-154)\n",
+            "git version 2.43.0\n",
+            "git version 3.0.0\n",
+        ] {
+            assert!(notes_for(v).is_empty(), "{v}");
+        }
+    }
+
+    #[test]
+    fn an_unreadable_git_version_is_noted_not_refused() {
+        let notes = notes_for("something else entirely\n");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("2.39.1"), "{notes:?}");
+        // The text is quoted and cut, never pasted raw.
+        let notes = notes_for("git version \u{202e}9\n");
+        assert!(!notes[0].contains('\u{202e}'), "{notes:?}");
+    }
+
+    #[test]
+    fn fetch_drops_the_notes_and_keeps_the_modes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let r = Fake::new(&["git"], |c| git_version(c, "git version 2.30.0\n"));
+        let modes = fetch(&plan(&dest), &r, Duration::from_secs(120)).unwrap();
+        assert_eq!(modes.len(), 4);
     }
 
     #[test]
