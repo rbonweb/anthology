@@ -56,8 +56,8 @@ pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
     if let (FileKind::Code(lang), Some(text)) = (f.kind, f.text)
         && is_script(lang)
     {
-        blob(f, text, out);
-        decode_exec(f, text, out);
+        blob(f, text, true, out);
+        decode_exec(f, text, true, out);
     }
 }
 
@@ -190,8 +190,31 @@ fn is_base64(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'+' || c == b'/'
 }
 
-fn blob(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
-    if in_generated_folder(f.path) || f.path.ends_with(".min.js") {
+/// A path the blob and decode-exec rules treat as generated or third-party code.
+fn is_generated(path: &str) -> bool {
+    in_generated_folder(path) || path.ends_with(".min.js")
+}
+
+/// For a file an auto-run command reaches (install script, build step, editor task): the findings
+/// the generated-folder cap held back. Generated and third-party code is where blobs and decoders
+/// are normal, so `check` skips a blob there and rates decode-exec MEDIUM; code that runs on
+/// install is not shielded by its folder. The orchestrator calls this for each reached file under
+/// such a path and merges the result with the per-file findings (one per rule and path, the higher
+/// severity kept). A file the cap did not touch adds nothing.
+pub(crate) fn raise_reached(f: &FileCtx, out: &mut Vec<Finding>) {
+    if f.kind == FileKind::Doc || !is_generated(f.path) {
+        return;
+    }
+    if let (FileKind::Code(lang), Some(text)) = (f.kind, f.text)
+        && is_script(lang)
+    {
+        blob(f, text, false, out);
+        decode_exec(f, text, false, out);
+    }
+}
+
+fn blob(f: &FileCtx, text: &str, capped: bool, out: &mut Vec<Finding>) {
+    if capped && is_generated(f.path) {
         return;
     }
     let b = text.as_bytes();
@@ -258,7 +281,7 @@ fn lines_of(text: &str, offsets: &[usize]) -> Vec<usize> {
         .collect()
 }
 
-fn decode_exec(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
+fn decode_exec(f: &FileCtx, text: &str, capped: bool, out: &mut Vec<Finding>) {
     let decoder_at: Vec<usize> = decoders().find_iter(text).map(|m| m.start()).collect();
     if decoder_at.is_empty() {
         return;
@@ -284,7 +307,7 @@ fn decode_exec(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
     let action =
         "Decode the data by hand in a sandbox you control and read it before you run this script.";
     if hits.first.is_some() {
-        let severity = if in_generated_folder(f.path) {
+        let severity = if capped && in_generated_folder(f.path) {
             Severity::Medium
         } else {
             Severity::High
@@ -656,6 +679,83 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    /// What the orchestrator does with a reached file: the findings of `check`, then those of
+    /// `raise_reached`, one per rule and path with the higher severity kept.
+    fn with_reach(path: &str, lang: Lang, text: &str) -> Vec<Finding> {
+        let f = FileCtx {
+            path,
+            bytes: text.as_bytes(),
+            text: Some(text),
+            kind: FileKind::Code(lang),
+            truncated: false,
+        };
+        let mut all = Vec::new();
+        check(&f, &mut all);
+        raise_reached(&f, &mut all);
+        let mut merged: Vec<Finding> = Vec::new();
+        for x in all {
+            match merged.iter_mut().find(|m| m.rule == x.rule) {
+                Some(m) if x.severity > m.severity => *m = x,
+                Some(_) => {}
+                None => merged.push(x),
+            }
+        }
+        merged
+    }
+
+    #[test]
+    fn a_reached_file_in_a_build_folder_loses_the_generated_folder_cap() {
+        let js = "const s = atob('x');\neval(s);\n";
+        for path in ["dist/a.js", "build/a.js", "vendor/lib/a.js", "pkg/a.min.js"] {
+            let v = with_reach(path, Lang::Js, js);
+            assert_eq!(
+                one(&v, "payload.decode-exec").severity,
+                Severity::High,
+                "{path}"
+            );
+        }
+        // The blob the folder exempts is reported, MEDIUM like any other.
+        let blob = format!("const p = \"{}\";\n", b64(2000));
+        for path in ["dist/a.js", "vendor/a.js", "a.min.js"] {
+            assert!(
+                code(path, Lang::Js, &blob).is_empty(),
+                "{path}: not reached"
+            );
+            let v = with_reach(path, Lang::Js, &blob);
+            assert_eq!(one(&v, "payload.blob").severity, Severity::Medium, "{path}");
+        }
+    }
+
+    #[test]
+    fn raise_reached_adds_nothing_for_a_file_no_cap_held_back() {
+        let js = "const s = atob('x');\neval(s);\n";
+        let f = FileCtx {
+            path: "src/a.js",
+            bytes: js.as_bytes(),
+            text: Some(js),
+            kind: FileKind::Code(Lang::Js),
+            truncated: false,
+        };
+        let mut out = Vec::new();
+        raise_reached(&f, &mut out);
+        assert!(out.is_empty());
+        // A language that is not a script, and a doc, have no such findings either.
+        for (path, kind) in [
+            ("dist/a.rs", FileKind::Code(Lang::Rs)),
+            ("dist/a.md", FileKind::Doc),
+        ] {
+            let f = FileCtx {
+                path,
+                bytes: js.as_bytes(),
+                text: Some(js),
+                kind,
+                truncated: false,
+            };
+            raise_reached(&f, &mut out);
+        }
+        assert!(out.is_empty());
     }
 
     #[test]
