@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | 0 | the match | the byte before is not `[A-Za-z0-9+/]` and the byte after is not `[A-Za-z0-9+/=]` |
 //! | 1 | the match | the tail after `_` is at least 30 characters |
-//! | 2 | the match and the `[A-Za-z0-9_]` run after it | that run is at least 20 characters |
+//! | 2 | the match and the `[A-Za-z0-9_]` run after it | that run is at least 30 characters and holds a digit |
 //! | 3 | the match | it holds a digit and an ASCII capital |
 //! | 4 | the match and the `[A-Za-z0-9-]` run after it | that run is at least 10 characters and holds a digit |
 //! | 5 | the lines between BEGIN and END, as one marker line | see [`key_block`] |
@@ -247,7 +247,8 @@ fn hit(e: &Engine, rule: usize, line: &str, s: usize, t: usize) -> Option<(usize
         1 => (t - s - 4 >= 30).then_some((s, t)),
         2 => {
             let end = t + run(&bytes[t..], b'_');
-            (end - t >= 20).then_some((s, end))
+            // A long variable name starts the same way: a token holds a digit.
+            (end - t >= 30 && bytes[t..end].iter().any(u8::is_ascii_digit)).then_some((s, end))
         }
         3 => {
             let text = &line[s..t];
