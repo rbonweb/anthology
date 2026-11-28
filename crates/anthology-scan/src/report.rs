@@ -808,17 +808,15 @@ mod tests {
         m.source = Source::Url {
             url: "https://example.invalid/o/r".to_string(),
             rev: "HEAD".to_string(),
-            dest: PathBuf::from("/home/u/.claude/anthology/check-repo/h-o-r-1"),
+            dest: PathBuf::from("/tmp/anthology-check-repo/h-o-r-1"),
         };
         let text = render_text(&s, &m);
         assert!(
-            text.contains("\nquarantine: /home/u/.claude/anthology/check-repo/h-o-r-1\n"),
+            text.contains("\nquarantine: /tmp/anthology-check-repo/h-o-r-1\n"),
             "{text}"
         );
         assert!(
-            text.contains(
-                "\nTo work in it: git -C '/home/u/.claude/anthology/check-repo/h-o-r-1' status\n"
-            ),
+            text.contains("\nTo work in it: git -C '/tmp/anthology-check-repo/h-o-r-1' status\n"),
             "{text}"
         );
         // A folder name with a quote or a line break gets no copyable command.
