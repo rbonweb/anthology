@@ -25,16 +25,21 @@ const SAMPLES: &[&str] = &[
     "flask",
     "gradle-wrapper",
     "husky",
+    "makefile-golangci",
     "mcp-pinned",
     "minified-bundle",
     "path-git-lfs",
     "path-husky",
+    "path-husky-v4",
     "path-pre-commit",
     "path-sccache",
     "ripgrep",
     "sharp",
     "unicode-text",
+    "vite-ngrok-host",
     "vscode-devcontainer",
+    "vscode-prettier-config-path",
+    "vscode-program-keys",
     "vscode-tasks",
 ];
 
@@ -69,7 +74,12 @@ fn scan_sample(name: &str) -> Scan {
     } else {
         source
     };
-    let tree = DiskTree::open(&root, &WalkOpts::default(), None)
+    scan_at(name, &root)
+}
+
+/// Scans the folder `root` in path mode and checks that the scan was complete and clean of errors.
+fn scan_at(name: &str, root: &Path) -> Scan {
+    let tree = DiskTree::open(root, &WalkOpts::default(), None)
         .unwrap_or_else(|e| panic!("cannot open {}: {e}", root.display()));
     let found = scan(&tree);
     assert!(found.errors.is_empty(), "{name}: {:?}", found.errors);
@@ -230,6 +240,102 @@ fn emoji_flags_and_right_to_left_text_hide_nothing() {
         "hidden-text false hit: {:?}",
         hidden.iter().map(|f| line(f)).collect::<Vec<_>>()
     );
+}
+
+// ---- Samples for the false alarms the second review found (fix wave FW8f) ----
+
+#[test]
+fn husky_v4_hook_files_are_low() {
+    check("path-husky-v4", &[("autorun.git-hooks", Severity::Low)]);
+}
+
+#[test]
+fn a_vite_config_that_allows_an_ngrok_host_is_not_a_leak() {
+    // The same file assigns `process.env` from `loadEnv`, which is not a copy of it.
+    check("vite-ngrok-host", &[]);
+}
+
+#[test]
+fn editor_keys_for_a_config_file_or_a_stub_folder_are_not_programs() {
+    check("vscode-prettier-config-path", &[]);
+    check("vscode-program-keys", &[]);
+}
+
+#[test]
+fn a_golangci_install_line_in_a_makefile_is_high_not_critical() {
+    // Download-and-run in a Build step is HIGH. It is not CRITICAL: a Makefile that fetches its
+    // linter is common, and the lead's ruling keeps CRITICAL for Open and Install triggers and for
+    // decode-and-run.
+    let s = scan_sample("makefile-golangci");
+    for f in &s.findings {
+        println!("[makefile-golangci] {}", line(f));
+    }
+    let worst = s.findings.iter().map(|f| f.severity).max();
+    assert_eq!(worst, Some(Severity::High), "the worst finding");
+    let build = s
+        .findings
+        .iter()
+        .find(|f| f.rule == "autorun.build-script")
+        .expect("autorun.build-script");
+    assert_eq!(build.severity, Severity::High, "{}", line(build));
+    assert_eq!(report::exit_code(&s), 1);
+}
+
+/// A folder named `name` inside a fresh repo, built for a test of path mode.
+fn python_checkout(folder: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a temp folder");
+    let root = dir.path();
+    let env = root.join(folder);
+    fs::create_dir_all(env.join("bin")).expect("bin");
+    fs::create_dir_all(env.join("lib/python3.12/site-packages")).expect("site-packages");
+    fs::write(root.join("app.py"), "print(\"hello\")\n").expect("app.py");
+    fs::write(
+        env.join("pyvenv.cfg"),
+        "home = /usr/bin\ninclude-system-site-packages = false\n",
+    )
+    .expect("pyvenv.cfg");
+    // What setuptools writes into every virtual environment.
+    fs::write(
+        env.join("lib/python3.12/site-packages/distutils-precedence.pth"),
+        "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim(); \n",
+    )
+    .expect("a .pth file");
+    std::os::unix::fs::symlink("/usr/bin/python3", env.join("bin/python")).expect("a link");
+    dir
+}
+
+#[test]
+fn a_virtual_environment_with_an_absolute_interpreter_link_is_skipped_in_path_mode() {
+    for folder in [".venv", "venv", ".tox", ".nox", ".direnv"] {
+        let dir = python_checkout(folder);
+        let name = format!("python-checkout/{folder}");
+        let s = scan_at(&name, dir.path());
+        assert_no_false_alarm(&name, &s);
+        let skipped = format!("{folder}/");
+        assert!(
+            s.skipped.iter().any(|p| *p == skipped),
+            "{name}: skipped {:?}",
+            s.skipped
+        );
+    }
+}
+
+#[test]
+fn a_makefile_in_latin_1_is_medium_and_still_read() {
+    let dir = tempfile::tempdir().expect("a temp folder");
+    fs::write(
+        dir.path().join("Makefile"),
+        b"# Fran\xe7ois wrote this rule\nall:\n\tcc -o app app.c\n",
+    )
+    .expect("a Makefile");
+    let s = scan_at("latin-1-makefile", dir.path());
+    assert_no_false_alarm("latin-1-makefile", &s);
+    let hit = s
+        .findings
+        .iter()
+        .find(|f| f.rule == "files.not-utf8")
+        .unwrap_or_else(|| panic!("no files.not-utf8; findings: {:?}", s.findings));
+    assert_eq!(hit.severity, Severity::Medium, "{}", line(hit));
 }
 
 #[test]
