@@ -38,8 +38,11 @@
 - [Vendoring marketing knowledge: pin handling and extra patch spots](project-vendoring-marketing-knowledge.md) — vendor sync re-resolves a branch ref; marketingskills v2.14.29 holds more tool links …
 - 42 more — use `anthology-mem search`
 - 41 more — use `anthology-mem search`
+- [anthology-mem save --repo and reindex: where the code is](project-mem-repo-save-and-reindex.md) — Repo notes reuse check_note_text and write_note in save.rs; --slug is optional (slug_from_name); h…
+- 41 more — use `anthology-mem search`
 - 42 more — use `anthology-mem search`
 - 46 more — use `anthology-mem search`
+- 49 more — use `anthology-mem search`
 ## reference
 - [Formatting Rust when only the remote host builds](reference-format-rust-with-remote-build-only.md) — How to apply rustfmt output when cargo runs only on the build host and lint fails on fmt
 - [Slop gate: repo-wide before/after scan in the container](reference-slop-repo-wide-scan-recipe.md) — How to count gate hits per rule over every tracked file, with a baseline binary from a clean arc…

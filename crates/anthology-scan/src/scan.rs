@@ -45,7 +45,7 @@ pub(crate) const REAL: Hooks = Hooks {
     surfaces: surfaces_all,
     npm_scripts: autorun::npm_scripts,
     yara: yara_hits,
-    raise_twins: raise_twins_pending,
+    raise_twins: hidden::raise_homoglyph_twins,
     is_instruction: agent::is_instruction,
     classify: shape::classify,
     files_run: shape::files_run,
@@ -70,11 +70,6 @@ fn surfaces_all(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
 fn yara_hits(f: &FileCtx) -> Vec<YaraHit> {
     yara::guarddog().eval(f)
 }
-
-/// Stands in for `hidden::raise_homoglyph_twins` (Task 4, PR #346) until that merges. Then `REAL`
-/// points at it and this function goes.
-fn raise_twins_pending(_paths: &[&str], _findings: &mut [Finding]) {}
-
 pub(crate) fn run(tree: &DiskTree) -> Scan {
     run_with(tree, &REAL)
 }
@@ -1306,6 +1301,27 @@ mod tests {
     }
 
     #[test]
+    fn the_real_scan_gives_a_look_alike_name_and_its_twin_a_high() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The `е` in the second name is Cyrillic U+0435.
+        write(tmp.path(), "gradle/gradle-wrapper.jar", b"x");
+        write(tmp.path(), "gradle/gradl\u{0435}-wrapper.jar", b"x");
+        write(tmp.path(), "lone/gradl\u{0435}-wrapper.jar", b"x");
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), None).unwrap();
+        let s = crate::scan(&tree);
+        let rule = "hidden.homoglyph-name";
+        assert_eq!(
+            by_rule(&s, rule, "gradle/gradl\u{0435}-wrapper.jar").severity,
+            Severity::High
+        );
+        assert_eq!(
+            by_rule(&s, rule, "lone/gradl\u{0435}-wrapper.jar").severity,
+            Severity::Medium,
+            "no twin in its folder"
+        );
+    }
+
+    #[test]
     fn one_finding_per_rule_per_file() {
         let tmp = tempfile::tempdir().unwrap();
         write(tmp.path(), "a.js", b"x");
@@ -1327,6 +1343,79 @@ mod tests {
         assert_eq!((a.count, a.severity, a.line), (4, Severity::Medium, 2));
         assert_eq!(by_rule(&s, "x.rule", "b.js").count, 1);
         assert_eq!(by_rule(&s, "y.rule", "a.js").count, 1);
+    }
+
+    #[test]
+    fn many_hits_of_one_rule_merge_into_the_first_line_with_the_summed_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".mcp.json", b"{}");
+        let h = Hooks {
+            check: |f, out| {
+                // One finding per hit, in file order, as `agent.rs` emits them.
+                for line in [3, 7, 9] {
+                    out.push(finding(
+                        "agent.mcp-stdio",
+                        f.path,
+                        Severity::Medium,
+                        line,
+                        1,
+                    ));
+                }
+                out.push(finding("agent.mcp-stdio", f.path, Severity::Low, 12, 2));
+            },
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        assert_eq!(s.findings.len(), 1);
+        let f = &s.findings[0];
+        assert_eq!((f.line, f.count, f.severity), (3, 5, Severity::Medium));
+    }
+
+    #[test]
+    fn a_settings_command_reaches_files_from_the_folder_above_dot_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".claude/settings.json", b"{}");
+        write(tmp.path(), "scripts/x.js", b"x");
+        write(tmp.path(), ".claude/scripts/x.js", b"x");
+        let h = Hooks {
+            check: |f, out| {
+                if f.path == "scripts/x.js" {
+                    out.push(finding("stub.flagged", f.path, Severity::High, 1, 1));
+                }
+            },
+            surfaces: |f, _| {
+                if f.path != ".claude/settings.json" {
+                    return Vec::new();
+                }
+                // `dir` is the folder above `.claude`: the root, as an empty string.
+                vec![Surface {
+                    path: f.path.to_string(),
+                    line: 4,
+                    trigger: Trigger::Open,
+                    command: "node scripts/x.js".to_string(),
+                    rule: "agent.claude-hook",
+                    floor: Severity::Info,
+                    dir: String::new(),
+                }]
+            },
+            files_run: |c| c.split_whitespace().skip(1).map(str::to_string).collect(),
+            severity: |_, _, reached| {
+                if reached >= Some(Severity::High) {
+                    Severity::Critical
+                } else {
+                    Severity::Medium
+                }
+            },
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        let f = by_rule(&s, "agent.claude-hook", ".claude/settings.json");
+        assert_eq!(
+            f.severity,
+            Severity::Critical,
+            "scripts/x.js is at the root"
+        );
+        assert_eq!(f.group, Group::Agent);
     }
 
     #[test]

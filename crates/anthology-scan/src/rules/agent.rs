@@ -15,7 +15,7 @@ use anthology_pycompat::json::Value;
 use regex::Regex;
 
 use crate::shape::{self, Shape};
-use crate::{FileCtx, Finding, Group, Severity, Surface, Trigger, jsonc, tomlish};
+use crate::{FileCtx, Finding, Group, Severity, Surface, Trigger, files, jsonc, tomlish};
 
 /// Settings keys whose value is a command that Claude Code runs to get a credential.
 const CREDENTIAL_HELPERS: &[&str] = &[
@@ -76,16 +76,6 @@ pub(super) fn name_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// The 1-based line of byte offset `at` in `text`.
-pub(super) fn line_at(text: &str, at: usize) -> usize {
-    let end = at.min(text.len());
-    text.as_bytes()[..end]
-        .iter()
-        .filter(|&&b| b == b'\n')
-        .count()
-        + 1
-}
-
 /// `s` cut to at most 300 characters, so one minified line cannot flood a report.
 pub(super) fn clip(s: &str) -> String {
     s.chars().take(300).collect()
@@ -115,7 +105,7 @@ impl Sink<'_> {
     fn json_line(&self, value: &str, key: &str) -> usize {
         for needle in [json_quote(value), format!("\"{key}\"")] {
             if let Some(at) = self.text.find(&needle) {
-                return line_at(self.text, at);
+                return files::line_of(self.text, at);
             }
         }
         0
