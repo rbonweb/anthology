@@ -46,6 +46,11 @@ fuzz/*	fuzz pkg:repo-tests
 fuzz/fuzz_targets/*	job:rust-lint
 ci/jobs/fuzz.sh	fuzz pkg:repo-tests
 ci/jobs/fuzz-build.sh	fuzz pkg:repo-tests
+# the check-repo network corpus: its own workflow runs it (check-repo-corpus.yml), so a change to
+# these files only needs the repository checks, which read them
+ci/jobs/check-repo-corpus.sh	pkg:repo-tests
+ci/check-repo-corpus.tsv	pkg:repo-tests
+.github/workflows/check-repo-corpus.yml	pkg:repo-tests
 # --- plugins: the repository checks read every file; some files also feed a golden
 plugins/*	pkg:repo-tests job:plugin-validate job:cli-syntax job:version-bump
 plugins/anthology/*	job:mods job:shims-distros

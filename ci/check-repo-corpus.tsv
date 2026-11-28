@@ -1,0 +1,22 @@
+# The network corpus of `anthology check-repo` (ci/jobs/check-repo-corpus.sh): real, well-known
+# repositories that must scan with no HIGH or CRITICAL finding, in under 5 seconds each ("no
+# false alarms", plan Global Constraints). One row per repository: the clone URL, a tab, and the
+# commit it is pinned to (a full 40-character SHA, from `git ls-remote <url> HEAD` on the day it
+# was added). Blank lines and lines that start with # are ignored.
+#
+# A pin keeps the run repeatable: a new upstream commit cannot turn the job red by itself. To move
+# a pin, take the new SHA from `git ls-remote <url> HEAD`, run the job (workflow_dispatch), and look
+# at what it prints for every MEDIUM finding. A real HIGH or CRITICAL finding on one of these is a
+# false alarm in a rule: fix the rule, never the row.
+https://github.com/microsoft/vscode.git	adf84acb33e978b8c78cb4c9d2f7343766b1d315
+https://github.com/facebook/react.git	edae846a9a17442c00429f2b15375afbfa0376c9
+https://github.com/BurntSushi/ripgrep.git	3e85c6c148fdce38a99ceeb9d2780dc7b03b4a4f
+https://github.com/psf/requests.git	3c7baaa05ab4aa49cc819ce3a819d260de19c157
+https://github.com/pallets/flask.git	49943b5a94413a530761350f04e896f76e8d620e
+https://github.com/spring-projects/spring-petclinic.git	3aae6ccdd35535054dc972439a461243d41655e2
+https://github.com/evanw/esbuild.git	f6058f8364fe7ab91ca57a83e02577ed74c9cae4
+https://github.com/lovell/sharp.git	338f5a0a9d150697f17116ef36325f1346713c90
+https://github.com/typicode/husky.git	3f0023dc10d7003d70f2e31aa56300eab80e76d6
+https://github.com/anthropics/claude-code.git	92f0be47475bc11c6bee9ed02610383044b05bfe
+https://github.com/devcontainers/cli.git	0d38c68a2132655de219062ec7859fbef94ff255
+https://github.com/modelcontextprotocol/servers.git	b502fd9fc711de7285977396db3b8a732d1c9f64

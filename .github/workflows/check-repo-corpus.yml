@@ -1,0 +1,35 @@
+name: check-repo-corpus
+
+# `anthology check-repo` against real, pinned repositories (ci/check-repo-corpus.tsv): no HIGH or
+# CRITICAL finding and under 5 seconds each. It needs the network (a shallow fetch per repository),
+# so it is its own workflow and not a job of ci.yml: a pull request runs it only when it changes the
+# scanner or the corpus, and a weekly run catches a rule that a newer scanner or a moved pin breaks.
+# The scan is `--no-tools` and never runs anything of the repositories it reads (ci/jobs/check-repo-
+# corpus.sh). No pull_request_target and no push trigger: a fork never gets a token.
+on:
+  pull_request:
+    paths:
+      - "crates/anthology-scan/**"
+      - "ci/check-repo-corpus.tsv"
+      - "ci/jobs/check-repo-corpus.sh"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 3"   # weekly, Wednesday 06:17 UTC
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-repo-corpus-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Scan every repository of the corpus
+        run: ci/jobs/check-repo-corpus.sh

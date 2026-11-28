@@ -27,6 +27,8 @@ anthology-memory = { path = "../crates/anthology-memory" }
 # portable_import: `Env` and a scratch tree to check that no write leaves the allowed set.
 anthology-core = { path = "../crates/anthology-core" }
 tempfile = "=3.27.0"
+# check_repo: the scanner's JSON-with-comments reader, YARA-subset compiler and tree scan.
+anthology-scan = { path = "../crates/anthology-scan" }
 
 [[bin]]
 name = "json_loads"
@@ -80,6 +82,13 @@ bench = false
 [[bin]]
 name = "portable_import"
 path = "fuzz_targets/portable_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "check_repo"
+path = "fuzz_targets/check_repo.rs"
 test = false
 doc = false
 bench = false

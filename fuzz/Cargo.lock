@@ -34,6 +34,7 @@ dependencies = [
  "anthology-guard",
  "anthology-memory",
  "anthology-pycompat",
+ "anthology-scan",
  "anthology-settings",
  "anthology-shell",
  "libfuzzer-sys",
@@ -72,6 +73,17 @@ version = "0.2.11"
 dependencies = [
  "fancy-regex",
  "regex",
+]
+
+[[package]]
+name = "anthology-scan"
+version = "0.2.11"
+dependencies = [
+ "aho-corasick",
+ "anthology-memory",
+ "anthology-pycompat",
+ "regex",
+ "regex-syntax",
 ]
 
 [[package]]
