@@ -1,13 +1,17 @@
 // Automatic after-work check (post-release mods design §4). When a writing anthology agent
 // reports to the lead, string checks name what the report does not say, and the findings are
 // appended below the agent's own text, which is never rewritten or cut. No model call and no
-// spawned agent: the check reads the report, plus at most one `git status` (see dirtyFiles).
+// spawned agent: the check reads the report, plus at most one `git status` (see dirtyFiles) and
+// one `anthology slop check` with the `git rev-parse` it needs (see slopGaps).
 //
 // A block is raised only by a real gap, so that a block is worth reading:
 //   - no commit (a sha next to commit or HEAD wording, a lettered sha, or the word "committed");
 //   - no test evidence (a test word, with "not run" and "skipped" counted as none);
 //   - attribution lines in the report;
-//   - uncommitted files in the agent's own worktree (from git).
+//   - uncommitted files in the agent's own worktree (from git);
+//   - AI tells, and slop waivers or ignore regions, in the agent's changes (from `anthology slop
+//     check --since`, see slopGaps). This finds text a PreToolUse gate never saw, as files written
+//     through the shell.
 // Two items are reminders, never gaps. They ride in a block a gap raised and never raise one:
 //   - the project map, when the report names a new, removed or renamed piece and does not deal
 //     with the map (updated it, "map not needed", or "no map" / "map is missing" when the map
@@ -18,9 +22,10 @@
 // The commit and test gaps do not apply when every path the report edited is outside a git repo
 // (see editsOnlyOutsideRepo): a settings file in the home folder has nothing to commit or test.
 //
-// Off: ANTHOLOGY_AFTERWORK=0 turns this check off, ANTHOLOGY_MODS=0 turns every anthology mod off.
+// Off: ANTHOLOGY_AFTERWORK=0 turns this check off, ANTHOLOGY_MODS=0 turns every anthology mod off,
+// and ANTHOLOGY_SLOP_GATE=0 turns off its slop part (and the slop gate itself).
 import type { AgentReportInput, AgentReportResult, EngineInterface, ProcessRunResult } from 'claude-code'
-import { modsOff, onAbsolutePath } from './util.ts'
+import { modsOff, onAbsolutePath, runAnthology } from './util.ts'
 
 /** The agent types that write, as `agent.report` names them. Reviewer and scout only read. */
 const WRITERS: ReadonlySet<string> = new Set([
@@ -38,6 +43,10 @@ const MAX_GITS = 3
 
 /** The most folders mapIsThere looks in, from the agent's cwd upward. */
 const MAX_WALK = 32
+
+/** Reading the lead's HEAD, and the `anthology slop check` run (see slopGaps), each killed after this. */
+const REV_TIMEOUT_MS = 1500
+const SLOP_TIMEOUT_MS = 4000
 
 // Commit. A lettered sha stands alone; an all-digit one only beside commit, HEAD or sha wording.
 const SHA = /\b(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}\b/
@@ -140,11 +149,23 @@ async function real($: EngineInterface, path: string): Promise<string> {
 }
 
 /**
+ * The agent's own folder, by real path, or undefined when it is not known. The event carries no
+ * path, so the folder comes from `$.agent.list()` for the event's `agentId`, and only when it is not
+ * the session's own folder (by real path, against both the session's cwd and its root): there the
+ * files are the lead's, not the agent's. It may throw: each caller keeps its own text-only result.
+ */
+async function agentFolder($: EngineInterface, agentId: string): Promise<string | undefined> {
+  const agent = (await $.agent.list()).find(a => a.id === agentId)
+  if (!agent?.cwd) return undefined
+  const dir = await real($, agent.cwd)
+  const session = await Promise.all([$.session.cwd(), $.session.root()].map(async p => real($, await p)))
+  return session.includes(dir) ? undefined : dir
+}
+
+/**
  * What the agent's own worktree holds uncommitted, as a phrase, or undefined when there is nothing
- * or it is not known. The event carries no path, so the folder comes from `$.agent.list()` for the
- * event's `agentId`, and only when it is not the session's own folder (by real path, against both
- * the session's cwd and its root): there the files are the lead's, not the agent's. One
- * `git status`, no shell, killed after GIT_TIMEOUT_MS. The pathspecs are taken from the repo top,
+ * or it is not known. The folder is `agentFolder`'s. One `git status`, no shell, killed after
+ * GIT_TIMEOUT_MS. The pathspecs are taken from the repo top,
  * so a subfolder cwd sees the whole tree, and leave out `.claude/agent-memory`, which agents are
  * told to leave for the lead. Output cut at the cap reads as "many". Any failure (no agent in the
  * list, a timeout, a git error, a non-zero exit) is undefined, so the text-only check stands.
@@ -152,11 +173,8 @@ async function real($: EngineInterface, path: string): Promise<string> {
  */
 async function dirtyFiles($: EngineInterface, agentId: string): Promise<string | undefined> {
   try {
-    const agent = (await $.agent.list()).find(a => a.id === agentId)
-    if (!agent?.cwd) return undefined
-    const dir = await real($, agent.cwd)
-    const session = await Promise.all([$.session.cwd(), $.session.root()].map(async p => real($, await p)))
-    if (session.includes(dir)) return undefined
+    const dir = await agentFolder($, agentId)
+    if (dir === undefined) return undefined
     // The worktree is the agent's own, so git is looked up on the absolute PATH entries only: a
     // `.` or empty entry would run a `git` planted in it. The child gets that PATH too.
     // A git that cannot start (not executable, as `$.fs.stat` cannot tell) is passed over for the
@@ -184,6 +202,65 @@ async function dirtyFiles($: EngineInterface, agentId: string): Promise<string |
     return `${n} uncommitted change${n === 1 ? '' : 's'} in the agent's worktree (git status)`
   } catch {
     return undefined
+  }
+}
+
+// The lines of `anthology slop check` (the CLI contract): one per unwaived finding, then one per
+// waiver or ignore region in the new text. Anything else on stdout is not counted.
+const SLOP_FINDING = /^.+:\d+: [a-z]+\.[a-z0-9-]+: "/
+const SLOP_WAIVER = /^.+:\d+: slop-(?:ok [a-z]+\.[a-z0-9-]+:|ignore region)/
+const GIT_HEAD = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+
+/**
+ * Gaps from `anthology slop check --since <the lead's HEAD>` run in the agent's own worktree: at
+ * most two, one for AI tells the agent's changes hold and one for slop waivers and ignore regions it
+ * added. This is where text that reached a file by another route than Write, Edit or MultiEdit (a
+ * scaffolder, `sed`) is seen; the PreToolUse gate never sees it. The agent's changes are those
+ * since the merge-base of the lead's HEAD, which the binary works out. The sha must be a full hex
+ * object name, so it can never read as an option. Each gap names the first three lines, with
+ * control characters turned into spaces: the lines carry text from the agent's files.
+ * `[]` on any failure, so the rest of the check stands: the switch `ANTHOLOGY_SLOP_GATE=0`, no
+ * folder of the agent's own, no git, no HEAD, no installed binary (nothing is downloaded), a
+ * timeout, and any exit code but 0 (nothing unwaived) and 1 (some). Takes `$`, so it is a top-level
+ * function of this file.
+ */
+async function slopGaps($: EngineInterface, agentId: string): Promise<string[]> {
+  try {
+    if ((await $.env.get('ANTHOLOGY_SLOP_GATE')) === '0') return []
+    const dir = await agentFolder($, agentId)
+    if (dir === undefined) return []
+    const git = await onAbsolutePath($, 'git')
+    if (git.bins[0] === undefined) return []
+    const head = await $.process.run([git.bins[0], 'rev-parse', 'HEAD'], {
+      cwd: await $.session.cwd(),
+      timeoutMs: REV_TIMEOUT_MS,
+      env: { PATH: git.path },
+    })
+    const sha = head.stdout.trim()
+    if (head.exitCode !== 0 || !GIT_HEAD.test(sha)) return []
+    const run = await runAnthology($, ['slop', 'check', '--root', dir, '--since', sha], '', SLOP_TIMEOUT_MS)
+    if (run === undefined || (run.exitCode !== 0 && run.exitCode !== 1)) return []
+    const tells: string[] = []
+    const waivers: string[] = []
+    for (const raw of run.stdout.split('\n')) {
+      const line = raw.replace(/\p{Cc}/gu, ' ')
+      if (SLOP_WAIVER.test(line)) waivers.push(line)
+      else if (SLOP_FINDING.test(line)) tells.push(line)
+    }
+    const first = (lines: string[]) => lines.slice(0, 3).join('; ')
+    const gaps: string[] = []
+    if (tells.length > 0) {
+      const n = tells.length
+      gaps.push(`the agent's changes hold ${n} AI ${n === 1 ? 'tell' : 'tells'} (anthology slop check): ${first(tells)}; send it back to rewrite them`)
+    }
+    if (waivers.length > 0) {
+      const m = waivers.length
+      const what = m === 1 ? 'waiver or ignore region' : 'waivers or ignore regions'
+      gaps.push(`the agent added ${m} slop ${what}: ${first(waivers)}; confirm the user asked for that wording`)
+    }
+    return gaps
+  } catch {
+    return []
   }
 }
 
@@ -311,8 +388,9 @@ export async function afterworkReport($: EngineInterface, e: AgentReportInput, r
     result = check(r.text, e.subagentType, mapExists, true)
   }
   const { gaps, reminders } = result
-  const dirty = await dirtyFiles($, e.agentId)
+  const [dirty, slop] = await Promise.all([dirtyFiles($, e.agentId), slopGaps($, e.agentId)])
   if (dirty !== undefined) gaps.push(dirty)
+  gaps.push(...slop)
   if (gaps.length === 0) return r
   const block = [
     'After-work check (anthology; string checks on the report above, which is unchanged):',
