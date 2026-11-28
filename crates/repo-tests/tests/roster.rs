@@ -829,6 +829,8 @@ mod roster_test {
             "TaskStop each one and say none remain",
             "Durations come only from timestamps you read.",
             "never pastes settings JSON or permission-mode strings",
+            "Credentials you fetch or generate (browser, dashboard, CLI): save them as `KEY=value` lines in `~/.config/<project>/<service>.env`.",
+            "Make the folder mode 700 and the file 600. Never put them in the repo, a commit, a log or your output; your report names only the path and the keys.",
             "Type commands plainly; never type `atl` yourself (it is added for you), except `atl bypass <cmd>` when a result is unusable.",
         ] {
             assert!(shell.contains(needle), "Shell lacks {needle:?}");
