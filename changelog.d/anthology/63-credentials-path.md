@@ -1,1 +1,0 @@
-- Add: a rule for credentials an agent fetches or generates: save them as `KEY=value` lines in `~/.config/<project>/<service>.env` (folder mode 700, file 600), never in the repo, a commit, a log or the output. It is in every agent's Shell section and, in short form, in the routing guide.
