@@ -1012,6 +1012,11 @@ fn an_interrupt_mid_fetch_always_exits_with_the_signal_code() {
 
 #[test]
 fn a_killed_cli_leaves_no_child_and_no_quarantine() {
+    kill_during_the_fetch();
+}
+
+/// Kills the CLI the moment the program git runs has started: the watchdog must do the cleaning.
+fn kill_during_the_fetch() {
     // SIGKILL cannot be caught: the watchdog of each child does the cleaning.
     let sb = Sandbox::new();
     let (mut child, into, template) = hung_fetch(&sb);
@@ -1066,6 +1071,12 @@ fn an_interrupt_during_the_tools_removes_the_scratch_folder() {
 
 #[test]
 fn a_killed_cli_leaves_no_tool_and_no_scratch_folder() {
+    kill_during_the_tools();
+}
+
+/// Kills the CLI the moment a tool has started: that is the earliest moment the test can see, and
+/// so the one a watchdog that learned the group late would miss on a loaded host.
+fn kill_during_the_tools() {
     let sb = Sandbox::new();
     let target = tempfile::tempdir().expect("temp dir");
     folder_fixture(target.path());
@@ -1091,6 +1102,25 @@ fn a_killed_cli_leaves_no_tool_and_no_scratch_folder() {
         heartbeat_stopped(&sb.home().join("beat")),
         "the tool kept running"
     );
+}
+
+#[test]
+fn a_killed_cli_always_cleans_up_however_early_it_is_killed() {
+    // Several rounds at once, so the host is busy and the CLI is often descheduled right after it
+    // started a child: the cleaning must not depend on how fast the CLI got round to arming it.
+    let workers: Vec<_> = (0..4)
+        .map(|_| {
+            std::thread::spawn(|| {
+                for _ in 0..4 {
+                    kill_during_the_tools();
+                    kill_during_the_fetch();
+                }
+            })
+        })
+        .collect();
+    for w in workers {
+        w.join().expect("a round failed");
+    }
 }
 
 // ---- Relative PATH entries, the quarantine's own config, an old git ----

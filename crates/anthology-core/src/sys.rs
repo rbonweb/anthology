@@ -19,7 +19,7 @@ use std::fs::File;
 use std::io;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStringExt;
-use std::os::unix::io::IntoRawFd;
+use std::os::unix::io::{IntoRawFd, RawFd};
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -145,6 +145,50 @@ pub fn new_session(cmd: &mut Command) {
             } else {
                 Ok(())
             }
+        });
+    }
+}
+
+/// Makes the child of `cmd` write its own process id, as a decimal line (`1234\n`), to the open
+/// descriptor `fd` before it runs its program: `getpid(2)` and `write(2)` in the forked child,
+/// ahead of `exec`. Call it after `new_session`, so that the id is also the id of the child's group.
+///
+/// The point is that whoever reads the other end knows the child's group from the first moment the
+/// child exists, and not from the moment the parent got round to telling it: a parent that is
+/// killed in between leaves nobody who knows the group. `fd` is closed by the `exec` if it is
+/// close-on-exec (every descriptor of `std::io::pipe` is). A write that fails (nobody reads any
+/// more) stops the child before it runs its program: it either fails to start or dies of `SIGPIPE`.
+pub fn announce_group(cmd: &mut Command, fd: RawFd) {
+    // SAFETY: the closure runs in the forked child before `exec` and calls only `getpid` and
+    // `write`, which POSIX lists as async-signal-safe. It allocates nothing and takes no lock; the
+    // digits go into a buffer on the stack, which is longer than any pid and a newline.
+    unsafe {
+        cmd.pre_exec(move || {
+            let mut buf = [0u8; 16];
+            let mut at = buf.len() - 1;
+            buf[at] = b'\n';
+            let mut n = libc::getpid().unsigned_abs();
+            loop {
+                at -= 1;
+                buf[at] = b'0' + (n % 10) as u8;
+                n /= 10;
+                if n == 0 {
+                    break;
+                }
+            }
+            let mut line = &buf[at..];
+            while !line.is_empty() {
+                let wrote = libc::write(fd, line.as_ptr().cast::<libc::c_void>(), line.len());
+                if wrote < 0 {
+                    let e = io::Error::last_os_error();
+                    if e.raw_os_error() == Some(libc::EINTR) {
+                        continue;
+                    }
+                    return Err(e);
+                }
+                line = &line[wrote.unsigned_abs()..];
+            }
+            Ok(())
         });
     }
 }
@@ -460,6 +504,50 @@ mod tests {
         let mut byte = [0u8; 1];
         pipe.read_exact(&mut byte).expect("still installed");
         assert_eq!(i32::from(byte[0]), libc::SIGTERM);
+    }
+
+    #[test]
+    fn a_child_writes_its_own_pid_before_it_runs_its_program() {
+        use std::io::Read;
+        use std::os::fd::AsRawFd;
+        let (mut reader, writer) = std::io::pipe().expect("pipe");
+        // The line must be the pid of the child, which is the id of its group as well.
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        new_session(&mut cmd);
+        announce_group(&mut cmd, writer.as_raw_fd());
+        let mut child = cmd.spawn().expect("spawn sleep");
+        // The child's copy of the write end went with `exec` (close-on-exec), ours goes now: the
+        // pipe then holds the line and ends.
+        drop(writer);
+        let mut text = String::new();
+        reader.read_to_string(&mut text).expect("read the line");
+        assert_eq!(text, format!("{}\n", child.id()));
+        // SAFETY: getpgid only reads process state.
+        let pgid = unsafe { libc::getpgid(libc::pid_t::try_from(child.id()).expect("pid")) };
+        assert_eq!(u32::try_from(pgid).expect("pgid"), child.id());
+        kill_group(child.id());
+        child.wait().expect("wait");
+    }
+
+    #[test]
+    fn a_child_that_cannot_announce_never_runs_its_program() {
+        use std::os::fd::AsRawFd;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let marker = dir.path().join("ran");
+        let (reader, writer) = std::io::pipe().expect("pipe");
+        // Nobody reads: the write fails (EPIPE). Either the start fails with it, or the child dies
+        // of SIGPIPE; what must not happen is a program that runs and that nobody knows of.
+        drop(reader);
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg(": > \"$0\"").arg(&marker);
+        new_session(&mut cmd);
+        announce_group(&mut cmd, writer.as_raw_fd());
+        if let Ok(mut child) = cmd.spawn() {
+            let status = child.wait().expect("wait");
+            assert!(!status.success(), "{status:?}");
+        }
+        assert!(!marker.exists(), "the program ran");
     }
 
     #[test]
