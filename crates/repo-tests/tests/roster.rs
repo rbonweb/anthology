@@ -46,126 +46,60 @@ const SAVE_OPTIONS: [&str; 7] = [
     "--replace",
 ];
 
-/// A private port of `scripts/startup_budget.py` (DV2's anthology-dev port is not merged yet and
-/// this crate must not wait for it). The Python module is the oracle.
+/// Thin wrappers over `anthology_dev::startup_budget`, the single home of the startup-budget
+/// calculation and its `BUDGET` table, on this checkout.
 mod budget {
     use super::*;
+    use anthology_dev::startup_budget as sb;
+    use std::path::Path;
 
-    const SUPERPOWERS: &str = "plugins/anthology-superpowers";
+    fn root() -> sb::Root {
+        sb::Root::new(&repo::root(), Path::new("/"))
+    }
 
-    /// Startup budget in bytes (plan GC-13, verbatim): body + every Startup file + every
-    /// preloaded SKILL.md, per agent.
-    pub const BUDGET: [(&str, usize); 11] = [
-        ("researcher", 89267),
-        ("architect", 23738),
-        ("implementer", 26561),
-        ("debugger", 22293),
-        ("reviewer", 17815),     // GC-13 16672, plus the Shell section
-        ("scout", 7284),         // GC-13 5944, plus the Shell section
-        ("docs-writer", 75475),  // +humanizer rewrite pass (owner, 2026-11-28)
-        ("ui-designer", 148488), // +avoid-ai-design rubric (owner, 2026-11-28)
-        ("ui-reviewer", 65986),
-        ("product-planner", 145072), // +humanizer rewrite pass (owner, 2026-11-28)
-        ("marketer", 96668),         // +humanizer rewrite pass (owner, 2026-11-28)
-    ];
+    fn shown(e: sb::Error) -> String {
+        format!("{}: {}", e.ty, e.msg)
+    }
+
+    /// The agents of `sb::BUDGET`.
+    pub fn budgeted() -> BTreeSet<&'static str> {
+        sb::BUDGET.iter().map(|(n, _)| *n).collect()
+    }
 
     pub fn budget_of(name: &str) -> Option<usize> {
-        BUDGET.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
+        sb::BUDGET
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, b)| usize::try_from(*b).unwrap())
     }
 
     /// ceil(measured * 1.15), in integer arithmetic.
     pub fn suggested_budget(measured: usize) -> usize {
-        (measured * 115).div_ceil(100)
+        usize::try_from(sb::suggested_budget(measured as u64)).unwrap()
     }
 
     /// Ordered `## ` heading names, and name -> text (a repeated name keeps its last text).
-    /// `re.split(r"^## (.+)$", body, flags=re.MULTILINE)`; the names are `str.strip`ped.
     pub fn sections(body: &str) -> (Vec<String>, BTreeMap<String, String>) {
-        let heading = Regex::new(r"(?m)^## (.+)$").unwrap();
-        let found: Vec<_> = heading.captures_iter(body).collect();
-        let mut names = Vec::new();
-        let mut texts = BTreeMap::new();
-        for (i, cap) in found.iter().enumerate() {
-            let whole = cap.get(0).unwrap();
-            let end = found
-                .get(i + 1)
-                .map_or(body.len(), |next| next.get(0).unwrap().start());
-            let name = super::py_strip(&cap[1]).to_string();
-            texts.insert(name.clone(), body[whole.end()..end].to_string());
-            names.push(name);
-        }
-        (names, texts)
+        let (names, texts) = sb::sections(body);
+        (names, texts.into_iter().collect())
     }
 
-    /// (preloaded skill names, body) of an agent file; only the `skills:` list of the frontmatter
-    /// is read, line by line.
-    pub fn split_agent(rel: &str) -> Result<(Vec<String>, String), String> {
-        let path = repo::path(rel);
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{rel}: {e}"))?;
-        let rest = text
-            .strip_prefix("---\n")
-            .ok_or_else(|| format!("{rel}: missing frontmatter"))?;
-        let (head, body) = rest
-            .split_once("\n---")
-            .ok_or_else(|| format!("{rel}: unterminated frontmatter"))?;
-        let header = Regex::new(r"^skills:\s*$").unwrap();
-        let item = Regex::new(r"^\s+-\s+(\S+)\s*$").unwrap();
-        let mut skills = Vec::new();
-        let mut in_list = false;
-        for line in super::py_splitlines(head) {
-            if header.is_match(line) {
-                in_list = true;
-            } else if in_list {
-                match item.captures(line) {
-                    Some(m) => skills.push(m[1].to_string()),
-                    None => in_list = false,
-                }
-            }
-        }
-        Ok((skills, body.trim_start_matches('\n').to_string()))
-    }
-
-    fn parts(name: &str) -> Result<(Vec<String>, String, Vec<String>), String> {
-        let (skills, body) = split_agent(&format!("{PLUGIN}/agents/{name}.md"))?;
-        let startup = sections(&body)
-            .1
-            .get("Startup")
-            .cloned()
-            .unwrap_or_default();
-        let path =
-            Regex::new(r"\$\{CLAUDE_PLUGIN_ROOT\}/(knowledge/[A-Za-z0-9_./-]+/SKILL\.md)").unwrap();
-        let files = path
-            .captures_iter(&startup)
-            .map(|m| m[1].to_string())
-            .collect();
-        Ok((skills, body, files))
-    }
-
-    /// The knowledge files in the agent's Startup section, relative to the anthology plugin.
+    /// Every knowledge file in the agent's Startup section (always and conditional), relative to
+    /// the anthology plugin.
     pub fn startup_files(name: &str) -> Result<Vec<String>, String> {
-        Ok(parts(name)?.2)
+        sb::startup_files(&root(), name).map_err(shown)
     }
 
-    /// Every file counted for the agent, relative to the repo root (Startup files, then preloads).
-    pub fn startup_paths(name: &str) -> Result<Vec<String>, String> {
-        let (skills, _, files) = parts(name)?;
-        let mut paths: Vec<String> = files.iter().map(|f| format!("{PLUGIN}/{f}")).collect();
-        for skill in skills {
-            let bare = skill.split_once(':').map_or(skill.as_str(), |(_, s)| s);
-            paths.push(format!("{SUPERPOWERS}/skills/{bare}/SKILL.md"));
-        }
-        Ok(paths)
+    /// The knowledge files read on every start (the always lines), relative to the plugin.
+    pub fn always_files(name: &str) -> Result<Vec<String>, String> {
+        sb::always_files(&root(), name).map_err(shown)
     }
 
-    /// Body + every Startup file + every preloaded SKILL.md, in bytes.
+    /// Body + every always Startup file + the largest conditional one + every preload, in bytes.
     pub fn startup_bytes(name: &str) -> Result<usize, String> {
-        let (_, body, _) = parts(name)?;
-        let mut total = body.len();
-        for rel in startup_paths(name)? {
-            let meta = std::fs::metadata(repo::path(&rel)).map_err(|e| format!("{rel}: {e}"))?;
-            total += usize::try_from(meta.len()).unwrap();
-        }
-        Ok(total)
+        sb::startup_bytes(&root(), name)
+            .map(|n| usize::try_from(n).unwrap())
+            .map_err(shown)
     }
 }
 
@@ -487,15 +421,22 @@ mod roster_test {
         each_agent(
             |_| true,
             |spec, p| {
-                let mut want = vec![CAVEMAN.to_string()];
-                want.extend(spec.knowledge.iter().map(|r| {
+                let rel = |r: &&str| {
                     let full = repo::knowledge_path(r);
                     full.strip_prefix(&format!("{PLUGIN}/"))
                         .unwrap()
                         .to_string()
-                }));
+                };
+                let mut always = vec![CAVEMAN.to_string()];
+                always.extend(spec.knowledge.iter().map(rel));
+                let mut want = always.clone();
+                want.extend(spec.conditional.iter().map(rel));
                 match budget::startup_files(spec.name) {
                     Ok(got) => expect_eq(p, got, want.clone(), "startup files"),
+                    Err(e) => p.push(e),
+                }
+                match budget::always_files(spec.name) {
+                    Ok(got) => expect_eq(p, got, always, "always files"),
                     Err(e) => p.push(e),
                 }
                 for rel in &want {
@@ -523,6 +464,43 @@ mod roster_test {
                     "Caveman governs chat and reports only",
                 ] {
                     expect_in(p, needle, &startup, "Startup");
+                }
+            },
+        );
+    }
+
+    // A conditional Startup line names its files, then "only when/for/to ...". The startup
+    // budget counts only its largest file and the smoke and evals do not require it, so a
+    // malformed line (a capital "Only", a missing comma, two paths on an always line) would be
+    // counted or required wrongly. Always lines come first.
+    #[test]
+    fn test_startup_lines_follow_the_grammar() {
+        let path = r"`\$\{CLAUDE_PLUGIN_ROOT\}/knowledge/(design-skills/skills/)?[A-Za-z0-9_-]+/SKILL\.md`";
+        let always = Regex::new(&format!("^- {path}$")).unwrap();
+        let conditional = Regex::new(&format!(
+            "^- {path}((, | and ){path})*, only (when|for|to) [^`]+$"
+        ))
+        .unwrap();
+        each_agent(
+            |_| true,
+            |spec, p| {
+                let Some((_, _, startup)) = load_section(spec.name, "Startup", p) else {
+                    return;
+                };
+                let mut after_conditional = false;
+                for line in startup
+                    .lines()
+                    .filter(|l| l.starts_with("- `${CLAUDE_PLUGIN_ROOT}/knowledge/"))
+                {
+                    if always.is_match(line) {
+                        expect(p, !after_conditional, || {
+                            format!("always line after a conditional one: {line:?}")
+                        });
+                    } else if conditional.is_match(line) {
+                        after_conditional = true;
+                    } else {
+                        p.push(format!("malformed Startup line: {line:?}"));
+                    }
                 }
             },
         );
@@ -1220,10 +1198,9 @@ mod roster_test {
 
     #[test]
     fn test_startup_budget() {
-        let budgeted: BTreeSet<&str> = budget::BUDGET.iter().map(|(n, _)| *n).collect();
         let roster = repo::expected_roster();
         let names: BTreeSet<&str> = roster.iter().map(|a| a.name).collect();
-        assert_eq!(budgeted, names);
+        assert_eq!(budget::budgeted(), names);
         each_agent(
             |_| true,
             |spec, p| {
@@ -1235,7 +1212,7 @@ mod roster_test {
                 expect(p, measured <= limit, || {
                     format!(
                         "{}: measured {measured} bytes > budget {limit}. If the growth is intended, \
-                     raise BUDGET in this file (and in scripts/startup_budget.py while it exists) to ceil({measured} * 1.15) = {} and say why in the \
+                     raise BUDGET in crates/anthology-dev/src/startup_budget.rs to ceil({measured} * 1.15) = {} and say why in the \
                      commit.",
                         spec.name,
                         budget::suggested_budget(measured)

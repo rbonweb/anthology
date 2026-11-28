@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 use anthology_core::Env;
 use anthology_core::roster::ROSTER;
 use anthology_dev::startup_budget::{
-    self as sb, BUDGET, Root, agent_names, agents_reading, split_agent, startup_bytes,
-    startup_files, startup_paths, suggested_budget,
+    self as sb, BUDGET, Root, StartupFile, agent_names, agents_reading, always_files, split_agent,
+    startup_bytes, startup_entries, startup_files, startup_paths, suggested_budget,
 };
-use support::agents::{make_repo, write};
+use support::agents::{agent, make_repo, write};
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -173,6 +173,103 @@ mod startup_budget_test {
     fn test_suggested_budget_rounds_up() {
         assert_eq!(suggested_budget(100), 115);
         assert_eq!(suggested_budget(101), 117); // 116.15 -> 117
+    }
+}
+
+/// Not ledger targets: conditional Startup lines (a path list ending in "`, only ..."), which
+/// add only their largest file to the startup size.
+mod conditional_test {
+    use super::*;
+
+    /// One Startup path, in backticks.
+    fn path(k: &str) -> String {
+        format!("`${{CLAUDE_PLUGIN_ROOT}}/knowledge/{k}/SKILL.md`")
+    }
+
+    /// The fixture plus knowledge files alpha (10 bytes), beta (50), gamma (30), delta (40) and
+    /// an agent `cond` whose Startup section is `lines`.
+    fn with_agent(lines: &str) -> Fixture {
+        let f = fixture();
+        for (k, n) in [("alpha", 10), ("beta", 50), ("gamma", 30), ("delta", 40)] {
+            write(
+                &f.path,
+                &format!("plugins/anthology/knowledge/{k}/SKILL.md"),
+                &"k".repeat(n),
+            );
+        }
+        write(
+            &f.path,
+            "plugins/anthology/agents/cond.md",
+            &agent("cond", "", lines),
+        );
+        f
+    }
+
+    #[test]
+    fn test_conditional_lines_add_only_their_largest_file() {
+        let f = with_agent(&format!(
+            "- {}\n- {} and {}, only when x.\n- {}, only when y.",
+            path("alpha"),
+            path("beta"),
+            path("gamma"),
+            path("delta")
+        ));
+        assert_eq!(
+            startup_bytes(&f.root, "cond").expect("cond"),
+            body_bytes(&f, "cond") + 10 + 50
+        );
+        assert_eq!(
+            startup_files(&f.root, "cond").expect("cond"),
+            [
+                "knowledge/alpha/SKILL.md",
+                "knowledge/beta/SKILL.md",
+                "knowledge/gamma/SKILL.md",
+                "knowledge/delta/SKILL.md"
+            ]
+        );
+        assert_eq!(
+            always_files(&f.root, "cond").expect("cond"),
+            ["knowledge/alpha/SKILL.md"]
+        );
+    }
+
+    #[test]
+    fn test_text_after_the_path_that_is_not_only_still_counts() {
+        let f = with_agent(&format!(
+            "- {}, then follow it.\n- {}, Only when x.",
+            path("alpha"),
+            path("beta")
+        ));
+        assert_eq!(
+            startup_bytes(&f.root, "cond").expect("cond"),
+            body_bytes(&f, "cond") + 10 + 50
+        );
+        assert_eq!(
+            always_files(&f.root, "cond").expect("cond"),
+            ["knowledge/alpha/SKILL.md", "knowledge/beta/SKILL.md"]
+        );
+    }
+
+    #[test]
+    fn test_startup_entries_mark_each_path() {
+        let f = with_agent(&format!(
+            "- {}\n- {}, {}, only for a clone.",
+            path("alpha"),
+            path("beta"),
+            path("gamma")
+        ));
+        let entry = |p: &str, conditional| StartupFile {
+            path: p.to_string(),
+            conditional,
+        };
+        assert_eq!(
+            startup_entries(&f.root, "cond").expect("cond"),
+            [
+                entry("knowledge/alpha/SKILL.md", false),
+                entry("knowledge/beta/SKILL.md", true),
+                entry("knowledge/gamma/SKILL.md", true),
+            ]
+        );
     }
 }
 

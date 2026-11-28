@@ -151,19 +151,23 @@ pub struct AgentSpec {
     pub worktree: bool,
     /// anthology-superpowers skills in the agent's `skills`.
     pub preloads: Vec<&'static str>,
-    /// Refs for [`knowledge_path`], in Startup order after caveman.
+    /// Refs for [`knowledge_path`] read on every start (the always lines), in Startup order
+    /// after caveman.
     pub knowledge: Vec<&'static str>,
+    /// Refs on conditional Startup lines ("`, only ..."), in Startup order after `knowledge`.
+    pub conditional: Vec<&'static str>,
 }
 
 /// The 11-agent roster (Part 1 section 5), in the order of `EXPECTED_ROSTER`.
 pub fn expected_roster() -> Vec<AgentSpec> {
-    let spec = |name, model, edits, worktree, preloads, knowledge| AgentSpec {
+    let spec = |name, model, edits, worktree, preloads, knowledge, conditional| AgentSpec {
         name,
         model,
         edits,
         worktree,
         preloads,
         knowledge,
+        conditional,
     };
     vec![
         spec(
@@ -179,6 +183,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/ux-research",
                 "ds/journey-mapping",
             ],
+            vec![],
         ),
         spec(
             "architect",
@@ -187,6 +192,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             false,
             vec!["writing-plans"],
             vec!["system-design", "architecture", "testing-strategy"],
+            vec![],
         ),
         spec(
             "implementer",
@@ -195,6 +201,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             true,
             vec!["test-driven-development", "verification-before-completion"],
             vec!["karpathy-guidelines"],
+            vec![],
         ),
         spec(
             "debugger",
@@ -203,6 +210,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             true,
             vec!["systematic-debugging"],
             vec!["karpathy-guidelines"],
+            vec![],
         ),
         spec(
             "reviewer",
@@ -210,14 +218,10 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             "no",
             false,
             vec![],
-            vec![
-                "code-review-checklist",
-                "karpathy-guidelines",
-                "tech-debt",
-                "deploy-checklist",
-            ],
+            vec!["code-review-checklist", "karpathy-guidelines"],
+            vec!["tech-debt", "deploy-checklist"],
         ),
-        spec("scout", "haiku", "no", false, vec![], vec![]),
+        spec("scout", "haiku", "no", false, vec![], vec![], vec![]),
         spec(
             "docs-writer",
             "sonnet",
@@ -225,6 +229,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
             true,
             vec![],
             vec!["documentation", "ds/ux-writing", "humanizer"],
+            vec![],
         ),
         spec(
             "ui-designer",
@@ -243,8 +248,8 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/interaction-design",
                 "ds/design-elevation",
                 "avoid-ai-design",
-                "website-clone",
             ],
+            vec!["website-clone"],
         ),
         spec(
             "ui-reviewer",
@@ -259,6 +264,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/accessibility-audit",
                 "avoid-ai-design",
             ],
+            vec![],
         ),
         spec(
             "product-planner",
@@ -275,6 +281,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "ds/design-ops",
                 "humanizer",
             ],
+            vec![],
         ),
         spec(
             "marketer",
@@ -289,6 +296,7 @@ pub fn expected_roster() -> Vec<AgentSpec> {
                 "email-sequence",
                 "humanizer",
             ],
+            vec![],
         ),
     ]
 }
@@ -321,7 +329,8 @@ mod tests {
         assert_eq!(expected_roster().len(), 11);
         assert_eq!(stripped_knowledge().len(), 22);
         assert_eq!(expected_knowledge().len(), 32);
-        assert_eq!(roster_agent("ui-designer").knowledge.len(), 11);
+        assert_eq!(roster_agent("ui-designer").knowledge.len(), 10);
+        assert_eq!(roster_agent("ui-designer").conditional.len(), 1);
         assert!(knowledge_path("ds/x").ends_with("design-skills/skills/x/SKILL.md"));
     }
 
