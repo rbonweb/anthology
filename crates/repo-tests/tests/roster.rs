@@ -1084,6 +1084,54 @@ mod roster_test {
         }
     }
 
+    // The design-feedback rules (owner projects, 2026-11-28): each needle is one rule's key phrase.
+    #[test]
+    fn test_large_builds_skill_has_the_design_feedback_rules() {
+        let skill = std::fs::read_to_string(repo::path(&format!(
+            "{PLUGIN}/skills/large-builds/SKILL.md"
+        )))
+        .expect("the large-builds skill");
+        // The skill wraps its lines, so compare with single spaces.
+        let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let section = flat(
+            skill
+                .split("\n## Design and UI work\n")
+                .nth(1)
+                .expect("the Design and UI work section")
+                .split("\n## ")
+                .next()
+                .unwrap(),
+        );
+        let skill = flat(&skill);
+        for needle in [
+            "Before the first UI task",
+            "a Ruling per gap",
+            "never default",
+            "reference capture",
+            "banned-names list",
+            "ui-reviewer on the rendered newest build, before merge",
+            "names the build or URL",
+            "never skip it",
+            "by eye before running the batch",
+            "merged main or a deployed build",
+        ] {
+            assert!(section.contains(needle), "{needle}");
+        }
+        for needle in [
+            "from memory",
+            "names its evidence",
+            "`grep -c`",
+            "act only on asks",
+            "into one agent per unit",
+            "reassign a slice only after its owner commits",
+            "read every failed job",
+            "performance check",
+            "only after the dispatch call returns",
+        ] {
+            assert!(skill.contains(needle), "{needle}");
+        }
+    }
+
     #[test]
     fn test_docs_only_agents_limit_edits_to_markdown_in_the_main_clone() {
         each_agent(
