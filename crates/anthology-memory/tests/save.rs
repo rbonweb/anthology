@@ -63,6 +63,22 @@ impl Case {
         self.run(&argv)
     }
 
+    /// `save --repo` with no `--slug`, so the slug comes from `name`.
+    fn save_repo_unslugged(&self, name: &str) -> Output {
+        self.run(&[
+            "save",
+            "--repo",
+            "--type",
+            "project",
+            "--name",
+            name,
+            "--description",
+            "How the probe works",
+            "--body",
+            "Body.",
+        ])
+    }
+
     fn save_agent(&self) -> Output {
         self.run(&[
             "save",
@@ -322,6 +338,190 @@ fn save_repo_refuses_a_bad_slug() {
         assert!(p.stderr_text().contains("slug must be"), "{slug:?}");
         assert!(!c.repo.join(".claude").exists(), "{slug:?}");
     }
+}
+
+#[test]
+fn save_without_a_slug_derives_it_from_the_name() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    let p = c.save_repo_unslugged("Eval Probe: Notes & Tips!");
+    let note = ".claude/memory/project-eval-probe-notes-tips.md";
+    assert_eq!(
+        (p.code, p.stdout_text(), p.stderr_text()),
+        (
+            0,
+            format!("created {note} in {}\n", c.repo.display()),
+            String::new()
+        )
+    );
+    let n = notes::parse_note(&c.repo.join(note)).expect("note");
+    assert_eq!(n.name, "Eval Probe: Notes & Tips!");
+}
+
+#[test]
+fn save_without_a_slug_works_for_an_agent_note_too() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    let p = c.run(&[
+        "save",
+        "--agent",
+        "scout",
+        "--type",
+        "feedback",
+        "--name",
+        "Keep It Short",
+        "--description",
+        "Keep it short",
+        "--body",
+        "Short.",
+    ]);
+    assert_eq!(p.code, 0, "{}", p.stderr_text());
+    assert!(
+        c.repo
+            .join(".claude/agent-memory/anthology-scout/feedback-keep-it-short.md")
+            .is_file()
+    );
+}
+
+#[test]
+fn a_derived_slug_turns_runs_of_other_characters_into_one_dash() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    // Non-ASCII letters are "other characters"; the edges lose their dashes.
+    let p = c.save_repo_unslugged("  --Café  Résumé__2 (draft)--  ");
+    assert_eq!(p.code, 0, "{}", p.stderr_text());
+    assert!(
+        c.repo
+            .join(".claude/memory/project-caf-r-sum-2-draft.md")
+            .is_file(),
+        "{}",
+        p.stdout_text()
+    );
+}
+
+#[test]
+fn a_derived_slug_is_cut_at_60_characters_without_a_trailing_dash() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    // Twelve words of "word-" are 60 characters ending in a dash: the dash is trimmed.
+    let name = ["word"; 20].join(" ");
+    let p = c.save_repo_unslugged(&name);
+    assert_eq!(p.code, 0, "{}", p.stderr_text());
+    let cut = ["word"; 12].join("-");
+    assert_eq!(cut.len(), 59);
+    assert!(
+        c.repo
+            .join(format!(".claude/memory/project-{cut}.md"))
+            .is_file(),
+        "{}",
+        p.stdout_text()
+    );
+}
+
+#[test]
+fn a_name_with_nothing_to_derive_from_asks_for_a_slug() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    for name in ["日本語 !!!", "?!", "é"] {
+        let p = c.save_repo_unslugged(name);
+        assert_eq!(p.code, 1, "{name:?}");
+        assert_eq!(p.stdout_text(), "", "{name:?}");
+        assert_eq!(
+            p.stderr_text(),
+            "anthology-mem: cannot derive a slug from the name (it has no ASCII letters or \
+             digits); pass --slug\n",
+            "{name:?}"
+        );
+        assert!(!c.repo.join(".claude").exists(), "{name:?}");
+    }
+}
+
+#[test]
+fn an_explicit_slug_wins_over_the_name() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    let p = c.save_repo(&[("name", "Something else entirely")]);
+    assert_eq!(p.code, 0, "{}", p.stderr_text());
+    assert!(c.repo.join(REPO_NOTE).is_file());
+    assert!(
+        !c.repo
+            .join(".claude/memory/project-something-else-entirely.md")
+            .exists()
+    );
+}
+
+#[test]
+fn an_explicit_empty_slug_is_still_refused_not_derived() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    let p = c.save_repo(&[("slug", "")]);
+    assert_eq!(p.code, 1);
+    assert!(
+        p.stderr_text().contains("slug must be"),
+        "{}",
+        p.stderr_text()
+    );
+    assert!(!c.repo.join(".claude").exists());
+}
+
+#[test]
+fn a_name_holding_an_email_address_is_refused_without_a_slug_too() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    for name in ["Contact ops@acme-corp.io", "support@acme-corp.io"] {
+        let p = c.save_repo_unslugged(name);
+        assert_eq!(p.code, 1, "{name:?}");
+        assert!(p.stderr_text().contains("email"), "{}", p.stderr_text());
+        assert!(!p.stderr_text().contains("acme-corp"), "{name:?}");
+        assert!(!c.repo.join(".claude").exists(), "{name:?}");
+    }
+}
+
+#[test]
+fn save_help_says_what_is_required_and_that_the_slug_defaults_from_the_name() {
+    if !needs_git() {
+        return;
+    }
+    let c = Case::new();
+    let p = ok(c.run(&["save", "--help"]));
+    let text = p
+        .stdout_text()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    // In the usage line, an optional argument is bracketed and a required one is not.
+    assert!(text.contains("[--slug SLUG]"), "{text}");
+    for required in ["--type TYPE", "--name NAME", "--description DESCRIPTION"] {
+        assert!(text.contains(required), "{required}: {text}");
+        assert!(
+            !text.contains(&format!("[{required}]")),
+            "{required}: {text}"
+        );
+    }
+    assert!(
+        text.contains("Required: --type, --name, --description"),
+        "{text}"
+    );
+    assert!(
+        text.contains("--slug is optional: it defaults to the --name"),
+        "{text}"
+    );
 }
 
 #[test]
