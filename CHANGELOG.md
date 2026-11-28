@@ -10,6 +10,11 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.5.11] - 2026-11-28
+
+- Add: the `website-clone` knowledge, vendored from JCodesMore/ai-website-cloner-template (MIT) and adapted for Anthology. It copies a site's structure, layout, palette, fonts and feel into the project's own stack, starting from a tokens file, and always replaces the brand, images, text and form actions. Capture and comparison run in BrowserOS Neo, builds in Docker. `ui-designer` reads it only when the brief is a clone.
+- Add: the routing guide's fan-out rule for several similar parts (one agent builds the shared base and commits, then one agent per part in parallel on disjoint files, then one review), and its clone line (ui-designer builds the shared base, then one ui-designer per page, then ui-reviewer).
+
 ### [0.5.10] - 2026-11-27
 
 - Pin anthology-bin 0.2.9.

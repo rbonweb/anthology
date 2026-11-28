@@ -64,7 +64,7 @@ type RosterRow = (
     &'static [&'static str],
     &'static [&'static str],
 );
-const UI_KNOWLEDGE: [&str; 9] = [
+const UI_KNOWLEDGE: [&str; 10] = [
     "frontend-design",
     "design-taste-frontend",
     "ui-taste",
@@ -74,6 +74,7 @@ const UI_KNOWLEDGE: [&str; 9] = [
     "ds/design-systems",
     "ds/interaction-design",
     "ds/design-elevation",
+    "website-clone",
 ];
 const EXPECTED_ROSTER: [RosterRow; 11] = [
     (
