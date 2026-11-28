@@ -11,7 +11,6 @@
   "repository": "typicode/husky",
   "funding": "https://github.com/sponsors/typicode",
   "license": "MIT",
-  "author": "Typicode <typicode@gmail.com>",
   "bin": "lib/bin.js",
   "main": "lib/index.js",
   "files": [

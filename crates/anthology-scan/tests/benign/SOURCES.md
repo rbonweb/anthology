@@ -1,9 +1,14 @@
 # Where the benign samples come from
 
 Each folder here is scanned by `tests/benign.rs` as if it were a repo. The files are copied
-unchanged from public projects at the commit named below, one file (or two) per folder, with no
-other part of the project. Nothing here is built or run. The license text of each project is in
-`LICENSES/`.
+from public projects at the commit named below, one file (or two) per folder, with no other part
+of the project. Nothing here is built or run. The license text of each project is in `LICENSES/`.
+
+Four files are trimmed so they carry no personal contact data: `husky/package.json` and
+`flask/pyproject.toml` lose their author and maintainer lines, `sharp/package.json` is trimmed to
+its scripts and dependency fields (no author, contributors or integrity strings), and
+`esbuild/package.json` loses its binary hash table and most optional platform packages. Every
+field a rule reads (the scripts) is unchanged. The other files are copied as they are.
 
 | Folder | Project | Commit | License | File in the project | Why it is here |
 |---|---|---|---|---|---|

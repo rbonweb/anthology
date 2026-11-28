@@ -5,7 +5,6 @@ description = "A simple framework for building complex web applications."
 readme = "README.md"
 license = "BSD-3-Clause"
 license-files = ["LICENSE.txt"]
-maintainers = [{name = "Pallets", email = "contact@palletsprojects.com"}]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Web Environment",
