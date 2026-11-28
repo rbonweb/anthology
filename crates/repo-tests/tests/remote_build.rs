@@ -1049,7 +1049,10 @@ fn seed_caches(rig: &Rig) {
 fn image_key(image: &str) -> String {
     format!(
         "image-{}",
-        sh(r#"printf '%s' "$0" | cksum | cut -d' ' -f1"#, Path::new(image))
+        sh(
+            r#"printf '%s' "$0" | cksum | cut -d' ' -f1"#,
+            Path::new(image)
+        )
     )
 }
 
@@ -1103,7 +1106,11 @@ fn a_run_and_clean_ours_keep_the_image_and_the_caches_however_old() {
         assert_eq!(trimmed(&rig), Vec::<String>::new(), "{args:?}");
     }
     let volumes = rig.volumes();
-    for kept in ["anthology-cargo ", "anthology-sccache ", "anthology-rustup-abc "] {
+    for kept in [
+        "anthology-cargo ",
+        "anthology-sccache ",
+        "anthology-rustup-abc ",
+    ] {
         assert!(volumes.contains(kept), "{kept}was removed:\n{volumes}");
     }
     assert!(rig.images().contains(IMAGE), "{}", rig.images());
@@ -1200,7 +1207,12 @@ fn the_trim_takes_only_our_labelled_volumes_and_the_image_we_pulled() {
     // Everything of ours that was a candidate went, nothing else.
     assert_eq!(
         trimmed(&rig)[..4],
-        ["anthology-cargo", "image", "anthology-rustup-abc", "anthology-sccache"]
+        [
+            "anthology-cargo",
+            "image",
+            "anthology-rustup-abc",
+            "anthology-sccache"
+        ]
     );
     // An image that was on the host before us (no record that we pulled it) is never a candidate.
     let rig = rig!();
@@ -1212,7 +1224,11 @@ fn the_trim_takes_only_our_labelled_volumes_and_the_image_we_pulled() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", all_output(&out));
-    assert!(!trimmed(&rig).contains(&"image".to_owned()), "{:?}", trimmed(&rig));
+    assert!(
+        !trimmed(&rig).contains(&"image".to_owned()),
+        "{:?}",
+        trimmed(&rig)
+    );
     assert!(rig.images().contains(IMAGE), "{}", rig.images());
     assert!(!rig.log("docker.log").contains("rmi"));
 }
@@ -1269,7 +1285,10 @@ fn a_cache_volume_over_40_gb_is_removed_once_an_hour() {
     assert_eq!(trimmed(&rig), ["anthology-cargo"]);
     let size_reads = |rig: &Rig| {
         let docker = rig.log("docker.log");
-        docker.lines().filter(|l| l.contains("--entrypoint du")).count()
+        docker
+            .lines()
+            .filter(|l| l.contains("--entrypoint du"))
+            .count()
     };
     assert_eq!(size_reads(&rig), 3, "{}", rig.log("docker.log"));
     // A second run within the hour does not read the sizes again.

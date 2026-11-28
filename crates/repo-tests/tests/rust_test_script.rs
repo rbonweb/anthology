@@ -502,7 +502,11 @@ fn a_one_shot_run_keeps_its_target_volume_when_it_ends() {
         &[],
     ] {
         // Unset, empty and `1` all keep it: only `0` asks for it to go.
-        for env in [&[][..], &[("ANTHOLOGY_KEEP_TARGET", "")], &[("ANTHOLOGY_KEEP_TARGET", "1")]] {
+        for env in [
+            &[][..],
+            &[("ANTHOLOGY_KEEP_TARGET", "")],
+            &[("ANTHOLOGY_KEEP_TARGET", "1")],
+        ] {
             let s = session(args, env, false);
             assert_eq!(s.status, 0, "{args:?}: {}", s.stderr);
             assert_eq!(s.verbs(), ["run"], "{args:?} {env:?}");
