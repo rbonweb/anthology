@@ -1,0 +1,11 @@
+{
+  "name": "demo-app",
+  "version": "1.0.0",
+  "scripts": {
+    "prepare": "husky install",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "husky": "^8.0.3"
+  }
+}

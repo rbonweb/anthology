@@ -51,6 +51,86 @@ pub(super) fn excerpt(text: &str, at: usize, max: usize) -> String {
         .collect()
 }
 
+/// `text` from `before` lines above the line of offset `at` to `after` lines below it.
+pub(super) fn lines_around(text: &str, at: usize, before: usize, after: usize) -> &str {
+    let at = at.min(text.len());
+    let mut start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    for _ in 0..before {
+        if start == 0 {
+            break;
+        }
+        start = text[..start - 1].rfind('\n').map_or(0, |i| i + 1);
+    }
+    let mut end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    for _ in 0..after {
+        if end >= text.len() {
+            break;
+        }
+        end = text[end + 1..]
+            .find('\n')
+            .map_or(text.len(), |i| end + 1 + i);
+    }
+    &text[start..end]
+}
+
+/// A test, spec or fixture file: where a repo keeps strings that look like attacks on purpose.
+pub(super) fn is_test_path(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase();
+    let mut dirs: Vec<&str> = path.split('/').collect();
+    dirs.pop();
+    dirs.iter().any(|d| {
+        matches!(
+            d.to_ascii_lowercase().as_str(),
+            "test"
+                | "tests"
+                | "__tests__"
+                | "spec"
+                | "specs"
+                | "fixture"
+                | "fixtures"
+                | "__fixtures__"
+                | "testdata"
+                | "__mocks__"
+        )
+    }) || name.contains(".test.")
+        || name.contains(".spec.")
+        || name.contains("_test.")
+        || name.contains("_spec.")
+        || name.starts_with("test_")
+}
+
+/// Whether the text at `at` is in a comment: a comment line, or after a trailing `//` (not the one
+/// of a URL scheme) or, in a language with `#` comments, after a `#`.
+pub(super) fn in_comment(text: &str, at: usize, lang: Lang) -> bool {
+    let at = at.min(text.len());
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let prefix = &text[start..at];
+    let trimmed = prefix.trim_start();
+    if trimmed.starts_with("//")
+        || trimmed.starts_with("/*")
+        || trimmed.starts_with('*')
+        || trimmed.starts_with("<!--")
+    {
+        return true;
+    }
+    let hash = matches!(
+        lang,
+        Lang::Py | Lang::Sh | Lang::Ps | Lang::Rb | Lang::Pl | Lang::Php
+    );
+    if hash && trimmed.starts_with('#') {
+        return true;
+    }
+    let slashes = prefix
+        .match_indices("//")
+        .any(|(i, _)| i == 0 || prefix.as_bytes()[i - 1] != b':');
+    if slashes && !hash {
+        return true;
+    }
+    hash && prefix
+        .match_indices('#')
+        .any(|(i, _)| i > 0 && prefix.as_bytes()[i - 1] == b' ')
+}
+
 /// A pattern compiled once, on first use. The patterns are fixed in the source, so they compile.
 pub(super) fn cached(cell: &'static OnceLock<Regex>, pattern: &str) -> &'static Regex {
     cell.get_or_init(|| Regex::new(pattern).expect("a fixed pattern compiles"))
@@ -213,7 +293,9 @@ fn invisible_characters(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
     }
     let agent = f.kind == FileKind::Agent;
     let code = matches!(f.kind, FileKind::Code(_));
-    let bidi_level = if code || agent {
+    // A test string for a control-character display is not a Trojan Source: still reported, not
+    // blocking. An agent file is HIGH wherever it is.
+    let bidi_level = if agent || (code && !is_test_path(f.path)) {
         Severity::High
     } else {
         Severity::Medium
@@ -282,6 +364,29 @@ fn invisible_characters(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
     out.extend(found.into_iter().flatten());
 }
 
+/// Whether a run of blanks between `before` (the line up to the run) and `after` (the rest of the
+/// line) sits inside a quoted string: a quote is open at the run and the same quote closes after
+/// it. A recorded terminal string has such a run. An unclosed quote shelters nothing, so a stray
+/// quote or a regex literal cannot hide a push.
+fn inside_string(before: &str, after: &str) -> bool {
+    let mut open: Option<char> = None;
+    let mut escaped = false;
+    for c in before.chars() {
+        if let Some(q) = open {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == q {
+                open = None;
+            }
+        } else if matches!(c, '"' | '\'' | '`') {
+            open = Some(c);
+        }
+    }
+    open.is_some_and(|q| after.contains(q))
+}
+
 /// Code after a long run of blanks on a line that already has code: off screen in most editors.
 fn whitespace_push(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
     let b = text.as_bytes();
@@ -304,8 +409,12 @@ fn whitespace_push(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
                     .take_while(|c| !c.is_whitespace())
                     .count();
                 if ink && i - start >= PUSH_MIN_RUN && tail == PUSH_MIN_TAIL {
-                    first.get_or_insert((start, i));
-                    count += 1;
+                    let line_start = text[..start].rfind('\n').map_or(0, |n| n + 1);
+                    let line_end = text[i..].find('\n').map_or(text.len(), |n| i + n);
+                    if !inside_string(&text[line_start..start], &text[i..line_end]) {
+                        first.get_or_insert((start, i));
+                        count += 1;
+                    }
                 }
                 continue;
             }
@@ -517,6 +626,29 @@ mod tests {
     }
 
     #[test]
+    fn bidi_in_code_under_a_test_folder_is_medium_and_still_reported() {
+        // claude-code shape: a test string for a control-character display.
+        let t = "const s = \"\u{202E}abc\";\nexpect(show(s)).toBe('x');\n";
+        for path in [
+            "mods/diff/tests/register.test.ts",
+            "src/test/a.ts",
+            "pkg/__tests__/a.ts",
+            "spec/a.ts",
+            "src/fixtures/a.ts",
+            "src/a.spec.ts",
+        ] {
+            let v = run(path, FileKind::Code(Lang::Js), t);
+            let f = one(&v, "hidden.bidi");
+            assert_eq!((f.severity, f.count), (Severity::Medium, 1), "{path}");
+        }
+        // Outside a test folder it stays HIGH, and an agent file stays HIGH anywhere.
+        let v = run("src/latest/a.ts", FileKind::Code(Lang::Js), t);
+        assert_eq!(one(&v, "hidden.bidi").severity, Severity::High);
+        let v = run("tests/CLAUDE.md", FileKind::Agent, t);
+        assert_eq!(one(&v, "hidden.bidi").severity, Severity::High);
+    }
+
+    #[test]
     fn arabic_text_with_a_right_to_left_mark_is_clean() {
         assert!(run("a.md", FileKind::Doc, "مرحبا\u{200F} بالعالم\n").is_empty());
         assert!(code("// \u{200F}\u{200E}\n").is_empty());
@@ -624,6 +756,25 @@ mod tests {
 
     fn pushed(spaces: usize, tail: &str) -> String {
         format!("const a = 1;{}{tail}\n", " ".repeat(spaces))
+    }
+
+    #[test]
+    fn a_long_blank_run_inside_a_string_is_not_a_push() {
+        // vscode shape: a recorded terminal string with a 167-blank run.
+        let blanks = " ".repeat(167);
+        let t = format!(
+            "export const events = [\n  {{ data: \"\\u001b[m{blanks}\\r\\nSecond line here\" }},\n  {{ data: '{blanks}more text after' }},\n  {{ data: `{blanks}template tail here` }},\n];\n"
+        );
+        assert!(code(&t).is_empty(), "{:?}", code(&t));
+        // A quote that closes before the run does not shelter it.
+        let pushed = format!("const a = \"x\";{blanks}require('child_process');\n");
+        assert_eq!(
+            one(&code(&pushed), "hidden.whitespace-push").severity,
+            Severity::High
+        );
+        let py = format!("x = 'a' + 'b'{blanks}__import__('os').system('id')\n");
+        let v = run("a.py", FileKind::Code(Lang::Py), &py);
+        assert_eq!(one(&v, "hidden.whitespace-push").line, 1);
     }
 
     #[test]

@@ -8,6 +8,8 @@
 //! - [`close`]: `close(2)` with its error reported, as Python's `os.close` and file `close()`.
 //! - [`new_session`] and [`kill_group`]: a child in its own session, and `SIGKILL` for its whole
 //!   process group (`anthology check-repo` runs git and the scanners this way).
+//! - [`catch_termination`]: `SIGINT`, `SIGTERM` and `SIGHUP` reported on a pipe instead of ending
+//!   the process, so `check-repo` can stop its children and remove its folders first.
 //!
 //! `O_NOFOLLOW` and the other open flags need no `unsafe`: `fsx` passes the `libc` constants to
 //! `OpenOptionsExt::custom_flags`.
@@ -20,6 +22,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::io::IntoRawFd;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
+use std::sync::atomic::{AtomicI32, Ordering};
 
 unsafe extern "C" {
     /// POSIX `tzset(3)` (the `libc` crate does not declare it).
@@ -161,6 +164,92 @@ pub fn kill_group(pgid: u32) {
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
+/// The write end of the pipe `on_signal` reports on, or -1 before `catch_termination` ran.
+static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
+
+/// The handler of `catch_termination`: writes the signal number, as one byte, to the pipe. It
+/// calls only `write` (async-signal-safe) and leaves `errno` as it found it.
+extern "C" fn on_signal(sig: libc::c_int) {
+    let fd = SIGNAL_PIPE.load(Ordering::Relaxed);
+    if fd < 0 {
+        return;
+    }
+    let byte = sig as u8;
+    // SAFETY: `errno_slot` points at this thread's `errno`; `byte` is one readable byte and `fd`
+    // is the write end `catch_termination` leaked, which stays open for the life of the process.
+    unsafe {
+        let slot = errno_slot();
+        let saved = *slot;
+        libc::write(fd, (&raw const byte).cast::<libc::c_void>(), 1);
+        *slot = saved;
+    }
+}
+
+/// The address of the calling thread's `errno`.
+///
+/// # Safety
+/// Only meaningful on the thread that calls it.
+#[cfg(target_os = "linux")]
+unsafe fn errno_slot() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
+}
+
+/// The address of the calling thread's `errno`.
+///
+/// # Safety
+/// Only meaningful on the thread that calls it.
+#[cfg(not(target_os = "linux"))]
+unsafe fn errno_slot() -> *mut libc::c_int {
+    unsafe { libc::__error() }
+}
+
+/// Makes `SIGINT`, `SIGTERM` and `SIGHUP` stop ending the process: each one is written as one
+/// byte (its number) to the pipe this returns, which a thread of the caller reads to clean up and
+/// exit. Children are not affected: a caught signal goes back to its default over `exec`.
+///
+/// One pipe serves the whole process, so a second call is an `AlreadyExists` error.
+pub fn catch_termination() -> io::Result<std::io::PipeReader> {
+    let (reader, writer) = std::io::pipe()?;
+    let fd = std::os::fd::OwnedFd::from(writer).into_raw_fd();
+    // The handler must never block on a full pipe: a write that cannot happen is dropped.
+    // SAFETY: `fd` is the write end of the pipe made above and is owned here.
+    let nonblocking = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        flags != -1 && libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) != -1
+    };
+    if !nonblocking {
+        let e = io::Error::last_os_error();
+        // SAFETY: `fd` is owned here and not shared with anything yet.
+        unsafe { libc::close(fd) };
+        return Err(e);
+    }
+    if SIGNAL_PIPE
+        .compare_exchange(-1, fd, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        // SAFETY: as above.
+        unsafe { libc::close(fd) };
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "the termination signals are already caught",
+        ));
+    }
+    // SAFETY: `act` is fully set before the calls (zeroed, then a handler, a full mask and
+    // `SA_RESTART`), and `on_signal` has the signature `sigaction` expects.
+    unsafe {
+        let mut act: libc::sigaction = MaybeUninit::zeroed().assume_init();
+        act.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        libc::sigfillset(&mut act.sa_mask);
+        act.sa_flags = libc::SA_RESTART;
+        for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+            if libc::sigaction(sig, &act, std::ptr::null_mut()) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+    }
+    Ok(reader)
+}
+
 /// Closes `file` and returns `close(2)`'s error, which dropping a `File` ignores (a delayed
 /// `ENOSPC` or `EIO`, on NFS for example). `EINTR` counts as success: the descriptor is gone
 /// either way, and Python ignores it too (PEP 475).
@@ -277,6 +366,28 @@ mod tests {
         });
         let ended = rx.recv_timeout(std::time::Duration::from_secs(10));
         assert_eq!(ended, Ok(true), "the grandchild survived kill_group");
+    }
+
+    #[test]
+    fn catch_termination_turns_each_signal_into_a_byte_and_installs_once() {
+        use std::io::Read;
+        let mut pipe = catch_termination().expect("install the handlers");
+        for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            // SAFETY: `raise` sends the signal to this thread; the handler is installed.
+            assert_eq!(unsafe { libc::raise(sig) }, 0);
+            let mut byte = [0u8; 1];
+            pipe.read_exact(&mut byte)
+                .expect("the handler wrote the signal number");
+            assert_eq!(i32::from(byte[0]), sig);
+        }
+        // One pipe per process: a second install is refused, and the first keeps working.
+        let again = catch_termination().expect_err("second install");
+        assert_eq!(again.kind(), io::ErrorKind::AlreadyExists);
+        // SAFETY: as above.
+        assert_eq!(unsafe { libc::raise(libc::SIGTERM) }, 0);
+        let mut byte = [0u8; 1];
+        pipe.read_exact(&mut byte).expect("still installed");
+        assert_eq!(i32::from(byte[0]), libc::SIGTERM);
     }
 
     #[test]

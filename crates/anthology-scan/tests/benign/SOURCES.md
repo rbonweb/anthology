@@ -25,6 +25,17 @@ field a rule reads (the scripts) is unchanged. The other files are copied as the
 | `minified-bundle/` | https://github.com/zenorocha/clipboard.js | `899378dee9681dcf4cb3d702c23a3f3cd9f473d8` | MIT (`LICENSES/clipboard-js-MIT.txt`) | `dist/clipboard.min.js` | A minified bundle: long lines, no blanks to push code off screen |
 | `unicode-text/` | written for this test | none | CC0 | none | Emoji sequences, a flag, a keycap, Persian and Arabic text and a variation selector after a kanji: characters a hidden-text rule must leave alone |
 
+Path-mode samples. Git does not store a folder named `.git`, so each of these keeps its git folder
+as `dot-git/`; `tests/benign.rs` copies the sample to a temp folder and renames it to `.git` before
+the scan, the way a folder the user named looks on disk.
+
+| Folder | Project | Commit | License | What is real | What is written for this test |
+|---|---|---|---|---|---|
+| `path-husky/` | https://github.com/typicode/husky | `3c0e08d3ca4d01d04ebb92089e68c47e131ab6be` (tag `v8.0.3`) | MIT (`LICENSES/husky-MIT.txt`) | `.husky/pre-commit`, and `husky.sh` as `.husky/_/husky.sh` | `dot-git/config` (the `hooksPath = .husky` line that `husky install` writes), `.husky/_/.gitignore`, `package.json` |
+| `path-pre-commit/` | https://github.com/pre-commit/pre-commit | `ba5c4209a6d561b0dff5db24620778d2133d068e` | MIT (`LICENSES/pre-commit-MIT.txt`) | `pre_commit/resources/hook-tmpl` as `dot-git/hooks/pre-commit`, with its two templated lines filled in as `pre-commit install` fills them | `dot-git/config`, `.pre-commit-config.yaml` |
+| `path-git-lfs/` | https://github.com/git-lfs/git-lfs | `ac128b57bca49e04041b2ce064a09ac6b1d24d51` | MIT (`LICENSES/git-lfs-MIT.txt`) | the hook text of `hookBaseContent` in `lfs/hook.go`, with the command filled in for `pre-push` and `post-checkout` as `git lfs install` writes it | `dot-git/config`, `.gitattributes` |
+| `path-sccache/` | https://github.com/Mesh-LLM/mesh-llm | `74c8765c95b737e1f00cea67c021fa0720452195` | Apache-2.0 (`LICENSES/mesh-llm-Apache-2.0.txt`) | `.cargo/config.toml`, with `rustc-wrapper = "sccache"` and in-repo linker scripts | none |
+
 The files were fetched with `git clone --depth 1 --filter=blob:none --no-checkout` into a scratch
 folder outside the repo and one `git checkout <commit> -- <file>` per file, then copied in. The
 `minified-bundle/` file sits at the top of its folder, not under `dist/`, so the blob rule that
