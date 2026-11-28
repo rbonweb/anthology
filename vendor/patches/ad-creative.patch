@@ -1,0 +1,128 @@
+--- a/SKILL.md
++++ b/SKILL.md
+@@ -162,20 +162,18 @@
+ 
+ **For static ad structure**, use the template library in [references/static-ad-templates.md](references/static-ad-templates.md) — layout frameworks (Us vs. Them, Stat Callout, Before/After, Founder Message, FAQ Card, Grid Static, Callout, Apology Letter, Simple Guarantee, With / Without, Signs Checklist, and more), plus visual styles (billboard, whiteboard, newspaper, vintage, meme) that restyle any template with copy slots, DTC and SaaS examples, and per-concept output format. Each template carries a **tier (S–F)** and **funnel role** (unicorn cold-scaler vs. mid-funnel supporting cast) so you reach for the right one first. Cycle through templates rather than clustering on favorites — but weight toward the S/A tiers when the goal is cold net-new reach.
+ 
+-**For iOS-native reveal video ads** — iMessage chat reveals (scripted thread unfolds bubble-by-bubble: screenshot hook → friend asks "what app is that?" → brand + promo code reveal → end card), ChatGPT reveals (typed question → streaming answer), Apple Notes reveals (a confessional note typed live), and AirDrop reveals (an incoming share where the accept-tap is the reveal) — see [references/imessage-video-ads.md](references/imessage-video-ads.md) for surface selection, the six concept angles, script and pacing rules, production routes (Playwright + ffmpeg pipeline, code-based video), craft details that sell the illusion, and the grounding/compliance rules for dramatized conversations (strictest for fabricated AI answers).
++**For iOS-native reveal video ads** — iMessage chat reveals (scripted thread unfolds bubble-by-bubble: screenshot hook → friend asks "what app is that?" → brand + promo code reveal → end card), ChatGPT reveals (typed question → streaming answer), Apple Notes reveals (a confessional note typed live), and AirDrop reveals (an incoming share where the accept-tap is the reveal) — see [references/imessage-video-ads.md](references/imessage-video-ads.md) for surface selection, the six concept angles, script and pacing rules, production routes (code-based video rendered in Docker, or screen capture in BrowserOS Neo), craft details that sell the illusion, and the grounding/compliance rules for dramatized conversations (strictest for fabricated AI answers).
+ 
+ **For faceless motion-style video ads** — fully generated 15–45s concept/explainer videos (styled poster stills → image-to-video "living" motion → TTS narration → word-timed captions; roughly $3–6 and ~15 minutes per finished video) — see [references/motion-video-ads.md](references/motion-video-ads.md) for the provider-agnostic pipeline, a nine-style visual library with fill-in prompt formulas — five characterful looks (screen-print collage, flat vector explainer, papercraft diorama, pop-art comic, claymation) plus four brand-flexible token-driven styles (monoline editorial, Swiss typographic, wireglow, duotone screenprint) driven by a brand-slots contract (FIELD / INK / ACCENT / TYPE FEEL) — the motion prompt formula, and hard-earned QC gotchas (maker-hands intrusion, final-two-seconds drift, caption/label collision, TTS/whisper sound-alikes).
+ 
+ **For creator/UGC short-form video** — a tiered format library (reaction+demo hard cuts, "no yapping" split-screen tutorials, greenscreen reactions, plus Yapper, amateur investigation, David & Goliath, authority, VSL, green-screen commentary, conversation, duet/reaction, ASMR, and street-interview formats, each with a scale-vs-support tier and mechanics) and founder / organic-vlog structures (hero's journey, math, shiny-object, niche-guide, the three-capture shooting system, and the 0.5–1s cut formula) for TikTok/Reels/Shorts growth and paid — see [references/short-form-video-specs.md](references/short-form-video-specs.md). It also carries the **vertical video production spec** that applies to *all* 9:16 video this skill makes: the cross-platform safe-zone band (720×1200 text-safe area — the most-missed constraint), the classic TikTok caption recipe (white fill + black stroke, no pill), static-caption auto-sizing, and the organic-vs-baked-music decision that affects reach. Load it before producing any vertical video.
+ 
+-For image and video generation tools, see [references/generative-tools.md](references/generative-tools.md) for the complete guide covering:
++For image and video generation, use AI image and video tools (the user runs them):
+ 
+ - **Image generation** — Gemini image (Nano Banana), Flux, Ideogram for static ad images
+ - **Video generation** — Veo, Kling, Runway, Seedance, Higgsfield for video ads
+ - **Voice & audio** — ElevenLabs, OpenAI TTS, Cartesia for voiceovers, cloning, multilingual
+ - **Code-based video** — Remotion or Hyperframes for templated, data-driven video at scale
+-- **Platform image specs** — Correct dimensions for every ad placement
+-- **Cost comparison** — Pricing for 100+ ad variations across tools
+ 
+ **Workflow for scaled production:**
+ 1. Generate hero creative with AI tools (exploratory, high-quality)
+@@ -372,7 +370,7 @@
+ 
+ ### Creative Review Page (client / stakeholder approval)
+ 
+-When a person who isn't you needs to review and pick — a client, a partner, a stakeholder — produce a **creative review page**: a self-contained HTML artifact that presents each concept as an in-feed platform mockup (Instagram/Facebook, with a whitelist-handle toggle), breaks carousels into a labeled frame-by-frame storyboard, lets them toggle headline/copy variations, and discloses what's grounded in real assets. It's the visual upgrade to INDEX.md — a decision made off one link instead of by reading markdown. The template ships at [assets/creative-review-template.html](assets/creative-review-template.html) (one file, no build, hostable anywhere); populate its `DATA` object from your generated concepts. Full data model, grounding rules (the disclosure block is required), and delivery in [references/creative-review-page.md](references/creative-review-page.md).
++When a person who isn't you needs to review and pick — a client, a partner, a stakeholder — produce a **creative review page**: a self-contained HTML artifact that presents each concept as an in-feed platform mockup (Instagram/Facebook, with a whitelist-handle toggle), breaks carousels into a labeled frame-by-frame storyboard, lets them toggle headline/copy variations, and discloses what's grounded in real assets. It's the visual upgrade to INDEX.md — a decision made off one link instead of by reading markdown. The template ships at [assets/creative-review-template.html](assets/creative-review-template.html) (one file, no build, hostable anywhere); populate its `DATA` object from your generated concepts. Full data model, grounding rules (the disclosure block is required), and delivery in [references/creative-review-page.md](references/creative-review-page.md). In Anthology the marketer writes the concepts in Markdown; filling assets/creative-review-template.html is a ui-designer job the lead assigns.
+ 
+ ### Iteration Report
+ 
+@@ -433,28 +431,17 @@
+ 
+ ## Tool Integrations
+ 
+-For pulling performance data and managing campaigns, see the [tools registry](https://github.com/coreyhaines31/marketingskills/blob/main/tools/REGISTRY.md).
+-
+-| Platform | Pull Performance Data | Manage Campaigns | Guide |
+-|----------|:---------------------:|:----------------:|-------|
+-| **Google Ads** | `google-ads campaigns list`, `google-ads reports get` | `google-ads campaigns create` | [google-ads.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/google-ads.md) |
+-| **Meta Ads** | `meta-ads insights get` | `meta-ads campaigns list` | [meta-ads.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/meta-ads.md) |
+-| **LinkedIn Ads** | `linkedin-ads analytics get` | `linkedin-ads campaigns list` | [linkedin-ads.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/linkedin-ads.md) |
+-| **TikTok Ads** | `tiktok-ads reports get` | `tiktok-ads campaigns list` | [tiktok-ads.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/tiktok-ads.md) |
++In Anthology, no paid keys, vendor CLIs or marketing-tool MCP servers: work from exports, screenshots or numbers the user gives, and name a paid tool only as an option the user runs.
++
++Ad platforms the user may already run: Google Ads, Meta Ads, LinkedIn Ads, TikTok Ads.
+ 
+ ### Workflow: Pull Data, Analyze, Generate
+ 
+-```bash
+-# 1. Pull recent ad performance
+-node tools/clis/google-ads.js reports get --type ad_performance --date-range last_30_days
+-
+-# 2. Analyze output (identify top/bottom performers)
+-# 3. Feed winning patterns into this skill
+-# 4. Generate new variations
+-# 5. Upload to platform
+-```
+-
+-**If wiring up step 1 for each platform is the obstacle**, there are three routes: the repo's ad platform CLIs (setup in [tools/SETUP.md](https://github.com/coreyhaines31/marketingskills/blob/main/tools/SETUP.md)), a reporting connector such as [Supermetrics](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/supermetrics.md) or [Coupler](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/coupler.md), or one connection to several ad accounts through an MCP gateway such as [Composio](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/composio.md), [Cogny](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/cogny.md), or [Magister](https://github.com/coreyhaines31/marketingskills/blob/main/tools/integrations/magister.md). Magister is built by this repository's maintainer; say so if you name it.
++1. Take recent ad performance from the user's export, screenshot or numbers.
++2. Analyze it (identify top/bottom performers).
++3. Feed winning patterns into this skill.
++4. Generate new variations.
++5. Hand them to the user to upload to the platform.
+ 
+ ---
+ 
+--- a/references/imessage-video-ads.md
++++ b/references/imessage-video-ads.md
+@@ -81,19 +81,19 @@
+ 
+ ### Route 1: Code-based pipeline (full control)
+ 
+-The architecture that produces a convincing result: render the chat as HTML/CSS mimicking the iMessage UI, drive the animation with a timeline script, record it headlessly with Playwright, and assemble audio + end card with ffmpeg.
++The architecture that produces a convincing result: render the chat as HTML/CSS mimicking the iMessage UI, drive the animation with a timeline script, record it as code-based video rendered in Docker, or screen capture in BrowserOS Neo, and assemble audio + end card with ffmpeg in Docker.
+ 
+ 1. **Script as data.** Store the thread as JSON: participants (peer name, initials, avatar color), ordered messages (`from`, `text`, attachment paths, typing-indicator flags), theme, header. The script is reviewable and re-renderable without touching code.
+ 2. **Render the chat UI in HTML/CSS.** Dark theme reads most native. Two variants: full-bleed chat, or the chat inside an iPhone frame (status bar + Dynamic Island) over a brand-relevant background photo — the framed variant reads more native in-feed and is the better default.
+ 3. **Animate with a timeline, record in ONE continuous session.** All bubbles exist in the DOM but hidden (`display: none` — not `opacity: 0`, or the thread pre-allocates space and never "grows"). A driver script walks a timeline array revealing each bubble, driving the composer, and auto-scrolling. Never record scene-by-scene and concat — every page reload causes a visible micro-flicker.
+ 4. **Type the composer for every sent bubble.** The typed text must exactly equal the sent text (a mismatch reads fake on second watch). Pace ~12–15 chars/sec with ±30% per-character jitter so it feels like thumbs, not a script.
+-5. **Record at native output resolution.** Set both the Playwright `viewport` *and* `recordVideo.size` to 1080×1920 — if you omit `recordVideo.size`, Playwright records a scaled-down video by default. Recording small and upscaling ships soft, blurry bubble text.
++5. **Record at native output resolution.** Set both the render viewport *and* the recorded video size to 1080×1920 — if you leave the video size unset, the recorder may capture a scaled-down video by default. Recording small and upscaling ships soft, blurry bubble text.
+ 6. **Layer audio with ffmpeg.** SFX cues computed deterministically from the same timeline that drove the recording, so sounds land exactly on bubble pops.
+ 7. **Stitch: chat → 300ms crossfade → static end card.** ffmpeg's `xfade` requires both inputs to match in resolution, pixel format, and frame rate — render the end card to a fixed-frame MP4 at the same specs as the chat recording before fading. Export the 9:16 master plus a 1:1 center crop.
+ 
+ ### Route 2: Code-based video (templated scale)
+ 
+-Once a winning script structure emerges, rebuild it as a Remotion or Hyperframes composition (see [generative-tools.md](generative-tools.md)) with the thread JSON as props. Then variations — new hooks, new codes, new personas — are data changes, not re-productions. Right move at the "we're testing 10 script variants a week" stage, not for the first ad.
++Once a winning script structure emerges, rebuild it as a Remotion or Hyperframes composition (see AI image and video tools (the user runs them)) with the thread JSON as props. Then variations — new hooks, new codes, new personas — are data changes, not re-productions. Right move at the "we're testing 10 script variants a week" stage, not for the first ad.
+ 
+ ---
+ 
+--- a/references/meta-creative-formats.md
++++ b/references/meta-creative-formats.md
+@@ -109,6 +109,6 @@
+ - **Static formats** (grid, us-vs-them, headline, callout, before/after, founder's letter, FAQ, tweet/Reddit, etc.) → structural templates with copy slots in [static-ad-templates.md](static-ad-templates.md).
+ - **Video formats** (VSL, yapper, green-screen, UGC reaction, faceless/motion, iOS-native reveals) → the vertical-video production spec + creator-format library in [short-form-video-specs.md](short-form-video-specs.md), the motion-style pipeline in [motion-video-ads.md](motion-video-ads.md), and the iOS-native reveals in [imessage-video-ads.md](imessage-video-ads.md).
+ - **Deciding which specific concepts to make** (evidence-ranked, account-state-aware) → the Creative Strategy Loop in [creative-roadmap.md](creative-roadmap.md).
+-- **Kill/keep/scale math** once these are live → `ads` skill's [meta-decision-system.md](../../ads/references/meta-decision-system.md).
++- **Kill/keep/scale math** once these are live → work from the account numbers the user gives; this skill covers the creative, not the account-level decision.
+ 
+ *Tier list and the unicorn-vs-supporting-cast framing adapted from Dara Denney's "I Ranked 51 Meta Ad Creative Types (Tier List)"; yapper/investigation craft informed by Oren John. Patterns credited, descriptions re-expressed. Tiers reflect a point in time — Meta's algorithm and format fatigue shift; re-verify against current account data.*
+--- a/references/short-form-video-specs.md
++++ b/references/short-form-video-specs.md
+@@ -52,7 +52,7 @@
+ 
+ UGC- and creator-driven short-form formats that reliably perform for growth and paid. Each is a *structure*, not a script — feed it your own footage and hook. All obey Part 1.
+ 
+-**Tiers** rank a format on one axis: does it *scale a cold ad into net-new audiences* (a "unicorn scaling" format), or does it just *convert people already in mid/low funnel* (a "supporting cast" format)? **S** = the rare formats that both scale cold and carry heavy education. **A** = scales up well. **B** = solid supporting cast under the right conditions. **C** = situational or operationally complex (rights, specific talent, or better faked than captured). Build a *portfolio* across tiers — don't expect every format to scale. Meta's persona-based delivery is why creator-fronted formats (Yapper, Investigation, Authority, VSL) rank so high: they reach personas natively through the creators those personas already follow. For the full 51-format taxonomy and where each sits, see [meta-creative-formats.md](meta-creative-formats.md) (companion reference) and the tier/portfolio logic in [ads/references/meta-decision-system.md](../../ads/references/meta-decision-system.md).
++**Tiers** rank a format on one axis: does it *scale a cold ad into net-new audiences* (a "unicorn scaling" format), or does it just *convert people already in mid/low funnel* (a "supporting cast" format)? **S** = the rare formats that both scale cold and carry heavy education. **A** = scales up well. **B** = solid supporting cast under the right conditions. **C** = situational or operationally complex (rights, specific talent, or better faked than captured). Build a *portfolio* across tiers — don't expect every format to scale. Meta's persona-based delivery is why creator-fronted formats (Yapper, Investigation, Authority, VSL) rank so high: they reach personas natively through the creators those personas already follow. For the full 51-format taxonomy and where each sits, see [meta-creative-formats.md](meta-creative-formats.md) (companion reference).
+ 
+ ### Format 1 — Reaction + Demo (hard cut) · A
+ **Shape:** creator reaction clip with a hook caption → **hard cut** to an app/product demo screen recording. ~9–12s total.
+--- a/references/static-ad-templates.md
++++ b/references/static-ad-templates.md
+@@ -447,7 +447,7 @@
+ **Headline**: [the headline copy]
+ **Body**: [supporting copy, if the template uses it]
+ **Visual**: [layout description specific enough to design or generate from]
+-**Image prompt**: [prompt for the image tool, if generating — see generative-tools.md]
++**Image prompt**: [prompt for the image tool, if generating — use AI image and video tools (the user runs them)]
+ **Grounded in**: [which review / winning ad / comment this traces to, quoted or named]
+ ```
+ 
