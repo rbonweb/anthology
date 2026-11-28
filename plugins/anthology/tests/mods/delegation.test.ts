@@ -1144,3 +1144,81 @@ test('a repo that leaves the setting out is still refused, and the refusal says 
   expect(r.deny).toContain('ANTHOLOGY_DELEGATION=0')
   expect(r.deny).toContain('"delegation": false in .claude/anthology.json')
 })
+
+// The mask marker: masking.ts replaces a secret in Bash output with `[masked by anthology: <kind>]`,
+// and Claude must never write that text into a file. The refusal sits in the edit hook, ahead of
+// every delegation rule, so it holds for a subagent, a headless run, the lead's own notes and a
+// session with delegation off.
+const MARKER_DENY =
+  'Blocked by anthology: this edit contains a masked secret placeholder; write the real value from its source (env file or ~/.config/<project>/<service>.env), never the marker.'
+const MARKED = 'GITHUB_TOKEN=[masked by anthology: github-token]'
+
+test('a Write, Edit, MultiEdit or NotebookEdit that carries the mask marker is refused', async ($, on) => {
+  const ran = engine(on)
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: `x\n${MARKED}\n` })).deny).toBe(MARKER_DENY)
+  expect((await edit($, SRC, 'a', MARKED)).deny).toBe(MARKER_DENY)
+  const multi = await $.tool.call({
+    tool: 'MultiEdit',
+    file_path: SRC,
+    edits: [
+      { old_string: 'a', new_string: 'b' },
+      { old_string: 'c', new_string: MARKED },
+    ],
+  })
+  expect(multi.deny).toBe(MARKER_DENY)
+  const notebook = await $.tool.call({ tool: 'NotebookEdit', notebook_path: `${ROOT}/n.ipynb`, new_source: MARKED })
+  expect(notebook.deny).toBe(MARKER_DENY)
+  expect(ran).toHaveLength(0)
+})
+
+test('the marker is refused for a subagent, a headless run, the lead\'s notes and a repo with delegation off', async ($, on) => {
+  const ran = engine(on, { surfaces: [], env: { ANTHOLOGY_DELEGATION: '0' } })
+  const sub = await $.tool.call({ tool: 'Write', file_path: SRC, content: MARKED, agentId: 'a1' })
+  expect(sub.deny).toBe(MARKER_DENY)
+  const headless = await $.tool.call({ tool: 'Write', file_path: SRC, content: MARKED })
+  expect(headless.deny).toBe(MARKER_DENY)
+  const note = await $.tool.call({ tool: 'Write', file_path: `${ROOT}/.superpowers/plan.md`, content: MARKED })
+  expect(note.deny).toBe(MARKER_DENY)
+  expect(ran).toHaveLength(0)
+})
+
+test('a refused marker spends none of the turn\'s inline edits', async ($, on) => {
+  const ran = engine(on)
+  await newTurn($)
+  for (let i = 0; i < 4; i++) expect((await edit($, SRC, 'a', MARKED)).deny).toBe(MARKER_DENY)
+  for (let i = 0; i < 3; i++) expect((await edit($, SRC)).deny).toBeUndefined()
+  expect(ran).toHaveLength(3)
+})
+
+test('text that only mentions masking is not refused', async ($, on) => {
+  const ran = engine(on, { surfaces: [] })
+  for (const text of ['masked by anthology', '[masked by anthology', 'secrets are masked: see docs', 'masked']) {
+    expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: text })).deny).toBeUndefined()
+    expect((await edit($, SRC, MARKED, text)).deny).toBeUndefined()
+  }
+  // Only the new text counts: an edit that removes a marker is fine.
+  expect((await edit($, SRC, MARKED, 'GITHUB_TOKEN=real')).deny).toBeUndefined()
+  expect(ran).toHaveLength(9)
+})
+
+test('a MultiEdit without the marker is passed on, as before', async ($, on) => {
+  const ran = engine(on)
+  const r = await $.tool.call({ tool: 'MultiEdit', file_path: SRC, edits: [{ old_string: 'a', new_string: 'b' }] })
+  expect(r.deny).toBeUndefined()
+  expect(ran).toEqual([`MultiEdit ${SRC}`])
+})
+
+const MARKER_OFF: { readonly [name: string]: string }[] = [{ ANTHOLOGY_SECRET_MASK: '0' }, { ANTHOLOGY_MODS: '0' }]
+for (const env of MARKER_OFF) {
+  test(`the marker is allowed with ${JSON.stringify(env)}`, async ($, on) => {
+    const ran = engine(on, { surfaces: [], env })
+    expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: MARKED })).deny).toBeUndefined()
+    expect(ran).toEqual([`Write ${SRC}`])
+  })
+}
+
+test('the marker check fails open when the session cannot be read', async ($, on) => {
+  const ran = engine(on, { surfaces: [], fails: ['env.get'] })
+  expect((await $.tool.call({ tool: 'Write', file_path: SRC, content: MARKED })).deny).toBeUndefined()
+  expect(ran).toEqual([`Write ${SRC}`])
+})
