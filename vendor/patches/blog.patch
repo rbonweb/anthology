@@ -1,0 +1,260 @@
+--- a/references/ai-crawler-guide.md
++++ b/references/ai-crawler-guide.md
+@@ -275,7 +275,7 @@
+ ### Key Rules
+ 
+ - Do not exceed 10KB (LLMs may truncate or ignore larger files)
+-- Use markdown-style links: `[Title](URL): Description`
++- Use markdown-style links: `[Title](<URL>): Description`
+ - Include only your most important and highest-quality pages
+ - Update when you publish significant new content
+ - This is NOT a sitemap replacement: it supplements sitemap.xml
+--- a/references/ai-slop-detection.md
++++ b/references/ai-slop-detection.md
+@@ -45,7 +45,7 @@
+ This is what the advisory style diagnostics in `blog-analyze` and
+ `blog-rewrite` cover. Documented here for completeness.
+ 
+-**Trigger phrases** (full list in `agents/blog-reviewer.md` and `scripts/analyze_blog.py`):
++**Trigger phrases** (the list below):
+ 
+ - "In today's digital landscape" / "In the ever-evolving"
+ - "It's important to note" / "It is worth mentioning"
+--- a/references/cognitive-load.md
++++ b/references/cognitive-load.md
+@@ -2,7 +2,7 @@
+ 
+ A reader has finite working memory. A blog post that introduces too many new concepts, named entities, or numeric claims in too short a span will lose them. Most readability scores (Flesch, Gunning Fog) measure surface-level prose difficulty; this reference adds the dimension they miss: **how much the reader must actively hold to follow a section**.
+ 
+-Run the cognitive-load analyzer (`scripts/cognitive_load.py`) on long-form B2B posts (1,500+ words). It produces a heatmap of sections by load.
++Estimate per section by hand: the analyzer script is not shipped. Do this on long-form B2B posts (1,500+ words) to find the sections with the highest load.
+ 
+ Adapted from the impeccable plugin's UI cognitive-load reference (Paul Bakaus, Apache 2.0).
+ 
+@@ -69,11 +69,11 @@
+ 
+ ## What the analyzer measures
+ 
+-`scripts/cognitive_load.py` segments the post by H2 and computes per-section:
++Estimate per section by hand: the analyzer script is not shipped. Segment the post by H2 and judge, per section:
+ 
+ 1. **new_entity_density**: capitalized phrases not seen in prior sections, normalized per 100 words. High counts signal too many proper nouns introduced at once.
+ 2. **numeric_claim_density**: count of numbers (percentages, counts, currencies, dates) per 100 words.
+-3. **jargon_introduction_count**: words that match a domain-jargon list and have not been defined in or before the section. The default list lives at the top of `scripts/cognitive_load.py` and covers SEO/GEO/web-vitals terms. To extend for a different domain, pass `--jargon <path-to-newline-delimited-file>`; entries augment the defaults rather than replacing them.
++3. **jargon_introduction_count**: words that match a domain-jargon list and have not been defined in or before the section. Use a list that fits the domain (SEO/GEO/web-vitals terms by default).
+ 4. **forward_reference_count**: phrases like "as we will see," "discussed below," "later in this post."
+ 5. **avg_clause_depth**: average count of subordinate-clause markers per sentence (commas, semicolons, "which," "that," parentheticals).
+ 6. **load_score**: composite 0 to 100 where higher is more loaded.
+--- a/references/content-rules.md
++++ b/references/content-rules.md
+@@ -324,7 +324,7 @@
+ 
+ ## Citation Format
+ 
+-Inline: `[Number]% [claim] ([Source](url), [Year])`. Always name the source.
++Inline: `[Number]% [claim] ([Source](<url>), [Year])`. Always name the source.
+ Study: Name the paper, institution, and year. Quote: Use quotation marks with speaker name and date.
+ 
+ ## Citation Tiers
+--- a/references/flow-alignment.md
++++ b/references/flow-alignment.md
+@@ -49,14 +49,12 @@
+ 
+ ## 5. What claude-blog adds beyond FLOW
+ 
+-- Visual media pipeline: AI image generation via Gemini (`blog-image`), inline SVG charts (`blog-chart`), Pixabay/Unsplash/Pexels integration. FLOW does not prescribe asset generation.
+ - Writing-persona system (`blog-persona`) for voice/tone profiles. FLOW is voice-agnostic.
+ - 5-category 100-point scoring (`blog-analyze`). FLOW provides quality bars but no numeric scoring.
+ - Topic-cluster execution engine (`blog-cluster`). FLOW prescribes content planning; claude-blog also executes clusters end-to-end with auto-interlinks.
+ - Multilingual publishing (`blog-multilingual`, `blog-translate`, `blog-localize`, `blog-locale-audit`). FLOW is single-locale by default.
+ - Audio narration (`blog-audio`). Not in FLOW scope.
+ - Google API integration (`blog-google`: PSI, CrUX, GSC, GA4, NLP, YouTube, Keywords). FLOW references measurement; claude-blog provides API tooling.
+-- Source-grounded research via NotebookLM (`blog-notebooklm`). Adjacent to FLOW's evidence discipline; provides the research side.
+ - CMS taxonomy sync (`blog-taxonomy`). Operational layer FLOW does not address.
+ 
+ These additions implement the FLOW principles in production tooling; they do not modify the principles.
+--- a/references/google-landscape-2026.md
++++ b/references/google-landscape-2026.md
+@@ -278,15 +278,6 @@
+ 
+ ## Refresh Procedure
+ 
+-Maintainer steps, run against a trusted checkout of this repository (`<repo-root>` is
+-its absolute path):
+-
+-1. Run `python3 "<repo-root>/scripts/check_google_currentness.py" --root "<repo-root>" --json`.
+-2. Review all manual sources in `data/google-updates.json`.
+-3. Add only claims directly supported by the cited source.
+-4. Keep source conflicts and pending impact explicit.
+-5. Run `python3 "<repo-root>/scripts/sync_google_updates.py" --root "<repo-root>"`.
+-6. Run the Google ledger tests and repository release gates.
+-
+-The automated checker reports new source dates and stale reviews. It never
+-creates guidance, changes scoring, or decides what an update targeted.
++The checker scripts are not shipped. Check dates against Google's docs with WebFetch.
++
++Add only claims directly supported by the cited source. Keep source conflicts and pending impact explicit.
+--- a/references/internal-linking.md
++++ b/references/internal-linking.md
+@@ -139,12 +139,12 @@
+ ### Example
+ 
+ **Post A**: "Complete Guide to Technical SEO"
+-- Contains: "...proper [schema markup implementation](/blog/schema-guide)
++- Contains: "...proper [schema markup implementation](</blog/schema-guide>)
+   is essential for AI visibility."
+ 
+ **Post B**: "Schema Markup Implementation Guide" (should link back)
+ - Add: "...schema is a critical component of [technical SEO
+-  optimization](/blog/technical-seo-guide), affecting how search engines
++  optimization](</blog/technical-seo-guide>), affecting how search engines
+   interpret your content."
+ 
+ ---
+--- a/references/quality-scoring.md
++++ b/references/quality-scoring.md
+@@ -68,15 +68,14 @@
+ Every other file in this package refers to this table instead of restating a
+ number. Two different scorers exist and they are not interchangeable: the
+ **reviewer** (`blog-reviewer` agent, judgment-based, drives delivery) and the
+-**analyzer** (`scripts/analyze_blog.py`, mechanical heuristic, drives audits and
++**analyzer** (a mechanical check (not shipped), a heuristic, drives audits and
+ the pre-commit hook). Both use the same 30/25/15/15/15 category maxima.
+ 
+ | Threshold | Value | Scorer | Where it applies |
+ |---|---|---|---|
+-| Delivery gate | Overall 90 or higher AND zero P0 issues | Reviewer | Gate 4 in `blog_preflight.py`; the draft is not shown to the user below it |
++| Delivery gate | Overall 90 or higher AND zero P0 issues | Reviewer | the blog-writer score gate; below it the draft is not handed over as ready |
+ | Rating bands | 90-100 Exceptional, 80-89 Strong, 70-79 Acceptable, 60-69 Below Standard, under 60 Rewrite | Either | Labels only. 80-89 means "minor polish still needed"; it does not clear the delivery gate |
+ | Strategy target | 80 or higher on existing posts | Analyzer | `blog-strategy` planning goal for a back catalog, not a delivery rule |
+-| Pre-commit gate | 70 | Analyzer | `scripts/quality_gate.py` (`DEFAULT_THRESHOLD`); a hook floor, not a delivery gate |
+ | Audit buckets | 90+ Excellent, 70-89 Good, 50-69 Needs Work, under 50 Poor | Analyzer | `blog-audit` summary dashboard |
+ | Rewrite regression | New score no lower than the original | Reviewer | `blog-rewrite`; a drop sets `BLOCKING: true` |
+ 
+--- a/references/research-quality.md
++++ b/references/research-quality.md
+@@ -24,7 +24,7 @@
+ | Specificity | 25 | Named entities, exact numbers, dates beat general phrasing. "$47B Q3 2025 revenue" beats "tens of billions in revenue." Specific subreddit names, X handles, GitHub repos beat "the community says." |
+ | Coverage | 20 | At least two independent sources per load-bearing claim. At least two perspectives represented (proponent + critic, vendor + customer, expert + practitioner). Single-source dependency on a load-bearing claim is a failure. |
+ | Actionability | 15 | The reader can do something concrete with this. "Use X library, version Y, this way" beats "consider modern frameworks." Includes commands, configs, decision criteria, or a clear yes/no. |
+-| Format compliance | 10 | Research synthesis uses citations inline as `[name](url)` per `synthesis-contract.md`. No duplicate trailing Sources block when inline citations are present. Publishable drafts may include retrieval notes when they identify a changeable or undated source or change interpretation. No invented titles. No em-dashes. No raw-cluster dumps. |
++| Format compliance | 10 | Research synthesis uses citations inline as `[name](<url>)` per `synthesis-contract.md`. No duplicate trailing Sources block when inline citations are present. Publishable drafts may include retrieval notes when they identify a changeable or undated source or change interpretation. No invented titles. No em-dashes. No raw-cluster dumps. |
+ 
+ ### Scoring procedure
+ 
+--- a/references/synthesis-contract.md
++++ b/references/synthesis-contract.md
+@@ -8,7 +8,7 @@
+ 
+ ## LAW 1: No duplicate trailing "Sources" block when citations are already inline
+ 
+-If your research synthesis has inline citations as `[name](url)`, do NOT add a
++If your research synthesis has inline citations as `[name](<url>)`, do NOT add a
+ trailing `## Sources` or `## References` block that repeats the same URLs. The
+ inline citations are the reader-facing source list. A duplicate trailing block is
+ unsynthesized and reads as filler.
+@@ -29,11 +29,11 @@
+ 
+ ## LAW 2: No invented titles for unverified sources
+ 
+-Never cite a source with a title you did not see in the source itself. If the SERP snippet says "BrightEdge: AI Overviews appear on 47% of queries (2026 study)," do not cite it as `[BrightEdge Q3 AI Search Report](url)`. Use the actual visible title.
++Never cite a source with a title you did not see in the source itself. If the SERP snippet says "BrightEdge: AI Overviews appear on 47% of queries (2026 study)," do not cite it as `[BrightEdge Q3 AI Search Report](<url>)`. Use the actual visible title.
+ 
+ **Why**: invented titles are the most common synthesis hallucination. They look plausible and are usually wrong. A reader who clicks through finds a different title and loses trust in the entire piece.
+ 
+-**Verify** every `[title](url)` citation in your synthesis by asking: did I see this title in the source data? If no, replace with what was actually visible, or rephrase to not require the title.
++**Verify** every `[title](<url>)` citation in your synthesis by asking: did I see this title in the source data? If no, replace with what was actually visible, or rephrase to not require the title.
+ 
+ ---
+ 
+@@ -64,9 +64,9 @@
+ 
+ ---
+ 
+-## LAW 5: Every citation is an inline markdown link `[name](url)`
++## LAW 5: Every citation is an inline markdown link `[name](<url>)`
+ 
+-In synthesis prose, every cited @handle, subreddit, publication, YouTube channel, person, or organization is wrapped as `[name](url)` at first mention. Never:
++In synthesis prose, every cited @handle, subreddit, publication, YouTube channel, person, or organization is wrapped as `[name](<url>)` at first mention. Never:
+ - A raw URL string: `per https://www.example.com/path/...`
+ - A plain name when a URL is available: `per Rolling Stone`
+ - A broken empty link: `per [Rolling Stone]()`
+@@ -80,7 +80,7 @@
+ 
+ **Why this matters**: inline links are the citation. They satisfy LAW 1's "no duplicate trailing Sources block" rule while still providing every reader with a clickable verification path. Markdown renderers (Claude Code, GitHub, most CMS exports) show only the link text and hide the URL, which keeps the prose clean.
+ 
+-**Count check**: count `[name](url)` patterns in your synthesis. If zero, and the source data has URLs, regenerate with inline links added.
++**Count check**: count `[name](<url>)` patterns in your synthesis. If zero, and the source data has URLs, regenerate with inline links added.
+ 
+ ---
+ 
+@@ -92,7 +92,7 @@
+ > Many practitioners are discussing Docker workflows. Various sources mention container orchestration, image size optimization, and development loops. Multiple opinions exist on the best approach.
+ 
+ **Good (discrete claim)**:
+-> The dominant Docker-workflow complaint in the last 30 days is image bloat. [@nginx-tip on X](url) reports 4.2 GB images shipping to production in 31% of audited registries. [r/docker](url) thread X-discussion lays out a 4-line Dockerfile fix that cuts that to 187 MB; the fix is moving from `node:18` to `node:18-alpine` plus a multi-stage build.
++> The dominant Docker-workflow complaint in the last 30 days is image bloat. [@nginx-tip on X](<url>) reports 4.2 GB images shipping to production in 31% of audited registries. [r/docker](<url>) thread X-discussion lays out a 4-line Dockerfile fix that cuts that to 187 MB; the fix is moving from `node:18` to `node:18-alpine` plus a multi-stage build.
+ 
+ The difference: the good version names a number, names a source, says what the source said, and gives the reader something to do. The bad version is hedge stack.
+ 
+--- a/references/video-embeds.md
++++ b/references/video-embeds.md
+@@ -175,7 +175,7 @@
+ 
+ | Scenario | Behavior |
+ |----------|----------|
+-| No GOOGLE_AI_API_KEY available | Use WebSearch `site:youtube.com [topic] [year]` to find videos |
++| No YouTube API access | Use WebSearch `site:youtube.com [topic] [year]` to find videos |
+ | No suitable videos found | Skip silently, continue blog generation without video |
+ | API rate limit exceeded | Use cached/previously found videos, or skip |
+ | Video removed after embedding | Noscript text provides graceful fallback with title and link |
+--- a/references/visual-media.md
++++ b/references/visual-media.md
+@@ -39,16 +39,10 @@
+ - Render the final social image to PNG or WebP at 1200x630. Do not use raw SVG
+   as `og:image`; many social parsers do not reliably render SVG previews.
+ 
+-### Option 3: AI-Generated Cover (via blog-image)
++### Option 3: AI-Generated Cover
+ 
+ For custom, topic-specific covers when stock photos don't match:
+-1. Requires nanobanana-mcp configured (see `/blog image setup`)
+-2. Uses 6-component Reasoning Brief for optimized Gemini prompts
+-3. Supports 14 aspect ratios (16:9 for hero, 1.91:1 for OG)
+-4. Use the default image model that the `blog-image` skill currently documents
+-   (its Gemini model reference); do not hard-code a model ID
+-   here, and record the model ID the tool reports
+-5. Post-processing: auto-resize to 1200x630, convert to WebP/AVIF
++AI images: leave a marker with a prompt idea; the user generates it.
+ 
+ Best for: Abstract topics, branded imagery, niche subjects with poor stock results.
+ 
+@@ -77,7 +71,7 @@
+ | General topic | Photo cover from Pixabay/Unsplash/Pexels |
+ | Data-heavy article | Generated SVG with key stat highlight |
+ | Brand-focused | Generated SVG with brand colors |
+-| Abstract/niche topic | AI-generated via `blog-image` (Gemini) |
++| Abstract/niche topic | Ask the user for an image or leave a marker |
+ | Tutorial/how-to | Screenshot or relevant photo |
+ 
+ ---
+@@ -113,7 +107,7 @@
+ ### Pexels (Fallback)
+ - **License**: Pexels License - free for commercial use, no attribution required
+ - **URL**: https://pexels.com
+-- **Finding**: use the official Pexels API when `PEXELS_API_KEY` is present; do not scrape pages or build CDN URLs
++- **Finding**: Suggest Pexels or Unsplash search terms; the user downloads and adds the file.
+ 
+ ### Image Usage Rules
+ 
+--- a/templates/how-to-guide.md
++++ b/templates/how-to-guide.md
+@@ -72,7 +72,7 @@
+ 
+ **Example:**
+ > **What you'll need:**
+-> - Current active LTS version of Node.js installed ([how to install](/link))
++> - Current active LTS version of Node.js installed ([how to install](</link>))
+ > - A GitHub account with repo access
+ > - Basic familiarity with the terminal
+ > - **Time:** ~45 minutes
