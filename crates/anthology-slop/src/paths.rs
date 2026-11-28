@@ -1,10 +1,11 @@
 //! Which files the gate skips, and how a path is shown in a message.
 
-use std::ffi::OsStr;
+use std::fs::File;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
-/// A path whose part below the repo root has one of these components is exempt.
-pub const EXEMPT_DIRS: [&str; 13] = [
+/// A path whose part below the repo root has one of these components is exempt, in any case.
+pub const EXEMPT_DIRS: [&str; 15] = [
     ".git",
     ".claude",
     ".superpowers",
@@ -18,7 +19,12 @@ pub const EXEMPT_DIRS: [&str; 13] = [
     "fixtures",
     "__fixtures__",
     "__snapshots__",
+    "__tests__",
+    "stories",
 ];
+
+/// A file whose name has one of these as a dotted part (`Button.stories.tsx`) is exempt, in any case.
+const EXEMPT_FILE_PARTS: [&str; 3] = ["stories", "test", "spec"];
 
 /// The nearest folder above `path` that holds `.git` (a folder or a file), looking at most 64
 /// folders up. A Claude Code worktree has a `.git` file, so it is its own root.
@@ -30,10 +36,13 @@ pub fn repo_root(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Whether the gate skips `path`: it is under the Claude config folder, or a folder in the part
-/// below the repo root is one of `EXEMPT_DIRS`. Only the part below the root counts, so a worktree
-/// at `<repo>/.claude/worktrees/<id>/` is gated while the repo's own `.claude/` is not. With no
-/// root the whole path is read.
+/// Whether the gate skips `path`: it is under the Claude config folder, a folder in the part below
+/// the repo root is one of `EXEMPT_DIRS`, or its file name is a story or test file. Names match in
+/// any case. Only the part below the root counts, so a worktree at `<repo>/.claude/worktrees/<id>/`
+/// is gated while the repo's own `.claude/` is not. With no root the whole path is read.
+///
+/// When the nearest root is a submodule (`is_submodule`), the part below the repo that holds it is
+/// read too, and so on up: a submodule in `vendor/` has its own `.git` and is still vendored code.
 pub fn exempt(path: &Path, root: Option<&Path>, config_dir: Option<&Path>) -> bool {
     // An empty or root-only config folder would hold every path (`starts_with("")` is true).
     let named = |dir: &&Path| dir.components().any(|c| matches!(c, Component::Normal(_)));
@@ -43,10 +52,76 @@ pub fn exempt(path: &Path, root: Option<&Path>, config_dir: Option<&Path>) -> bo
     {
         return true;
     }
-    below(path, root).components().any(|part| match part {
-        Component::Normal(name) => EXEMPT_DIRS.iter().any(|dir| OsStr::new(dir) == name),
+    if exempt_name(path) || exempt_folder(below(path, root)) {
+        return true;
+    }
+    let mut inner = root
+        .filter(|root| path.starts_with(root))
+        .map(Path::to_path_buf);
+    while let Some(dir) = inner.filter(|dir| is_submodule(dir)) {
+        let Some(outer) = repo_root(&dir) else { break };
+        if exempt_folder(below(path, Some(&outer))) {
+            return true;
+        }
+        inner = Some(outer);
+    }
+    false
+}
+
+/// Whether a component of `path` is one of `EXEMPT_DIRS`.
+fn exempt_folder(path: &Path) -> bool {
+    path.components().any(|part| match part {
+        Component::Normal(name) => name
+            .to_str()
+            .is_some_and(|name| EXEMPT_DIRS.iter().any(|dir| dir.eq_ignore_ascii_case(name))),
         _ => false,
     })
+}
+
+/// Whether the file name of `path` has a dotted part of `EXEMPT_FILE_PARTS` that is neither the
+/// first nor the last part: `Button.stories.tsx` and `guide.test.md`, not `test.md`.
+fn exempt_name(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let parts: Vec<&str> = name.split('.').collect();
+    parts
+        .get(1..parts.len().saturating_sub(1))
+        .unwrap_or_default()
+        .iter()
+        .any(|part| {
+            EXEMPT_FILE_PARTS
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case(part))
+        })
+}
+
+/// Whether the `.git` of `root` is the file of a submodule: a `gitdir:` line that points into the
+/// outer repo's `.git/modules`. A worktree's file points into `.git/worktrees`, and a worktree of
+/// a submodule has both, so the last of the two decides. A `.git` folder is a standalone clone: a
+/// repo that merely sits below another one, say in `~/build/proj`, must stay gated.
+fn is_submodule(root: &Path) -> bool {
+    let mut line = String::new();
+    // a `.git` file is one short line; a folder fails to read
+    let read = File::open(root.join(".git")).and_then(|f| f.take(4096).read_to_string(&mut line));
+    if read.is_err() {
+        return false;
+    }
+    let Some(target) = line.lines().next().and_then(|l| l.strip_prefix("gitdir:")) else {
+        return false;
+    };
+    Path::new(target.trim())
+        .components()
+        .rev()
+        .find_map(|part| match part {
+            Component::Normal(name) => match name.to_str() {
+                Some("modules") => Some(true),
+                Some("worktrees") => Some(false),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or(false)
 }
 
 /// `path` relative to `root` when under it, else as given. A control character in a name is
@@ -112,6 +187,53 @@ mod tests {
     }
 
     #[test]
+    fn exempt_folders_match_in_any_case() {
+        // macOS folders are case-insensitive: `Vendor/` is the vendor folder
+        assert!(exempt(p("/r/Vendor/pkg/README.md"), Some(p("/r")), None));
+        assert!(exempt(p("/r/NODE_MODULES/p/a.md"), Some(p("/r")), None));
+        assert!(exempt(p("/r/.Claude/memory/x.md"), Some(p("/r")), None));
+        for dir in EXEMPT_DIRS {
+            let path = format!("/r/{}/pkg/README.md", dir.to_uppercase());
+            assert!(exempt(p(&path), Some(p("/r")), None), "{path}");
+        }
+        // a different name is still a different name
+        assert!(!exempt(p("/r/Vendors/a.md"), Some(p("/r")), None));
+        assert!(!exempt(p("/r/Docs/a.md"), Some(p("/r")), None));
+    }
+
+    #[test]
+    fn story_and_test_files_are_exempt() {
+        for path in [
+            "/r/src/Button.stories.tsx",
+            "/r/src/Button.STORIES.mdx",
+            "/r/docs/guide.test.md",
+            "/r/src/card.spec.css",
+            "/r/src/Card.Spec.jsx",
+            "/r/src/__tests__/guide.md",
+            "/r/src/__TESTS__/guide.md",
+            "/r/ui/stories/intro.mdx",
+            "/r/ui/Stories/intro.mdx",
+        ] {
+            assert!(exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+        // the marker must be a whole dotted part of the name, or a whole folder name
+        for path in [
+            "/r/docs/stories.md",
+            "/r/docs/test.md",
+            "/r/docs/spec.md",
+            "/r/docs/latest.md",
+            "/r/docs/contest.spec-sheet.md",
+            "/r/docs/a.testing.md",
+            "/r/docs/stories-index/a.md",
+            "/r/docs/tests/a.md",
+            "/r/docs/story/a.md",
+            "/r/docs/test.d/a.md",
+        ] {
+            assert!(!exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+    }
+
+    #[test]
     fn only_the_part_below_the_root_is_checked() {
         // the repo itself lives in a folder called build: its own files are still gated
         assert!(!exempt(
@@ -159,6 +281,94 @@ mod tests {
                 "{cfg:?}"
             );
         }
+    }
+
+    /// An outer repo `top/outer` (a `.git` folder) with a submodule whose `.git` file points into
+    /// `.git/modules`, at `top/outer/<at>`. Returns the path of `<at>/<file>` and its nearest root.
+    fn submodule(top: &Path, at: &str, file: &str) -> (PathBuf, PathBuf) {
+        let outer = top.join("outer");
+        fs::create_dir_all(outer.join(".git")).unwrap();
+        let sub = outer.join(at);
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join(".git"), "gitdir: ../../.git/modules/sub\n").unwrap();
+        let path = sub.join(file);
+        let root = repo_root(&path).unwrap();
+        assert_eq!(root, sub);
+        (path, root)
+    }
+
+    #[test]
+    fn a_submodule_under_an_exempt_folder_is_exempt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, root) = submodule(tmp.path(), "vendor/sub", "docs/README.md");
+        assert!(exempt(&path, Some(&root), None));
+        // the case of the folder does not matter
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, root) = submodule(tmp.path(), "Vendor/sub", "README.md");
+        assert!(exempt(&path, Some(&root), None));
+        // a submodule in a folder that is not exempt is gated
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, root) = submodule(tmp.path(), "docs/sub", "README.md");
+        assert!(!exempt(&path, Some(&root), None));
+        // the exempt folder inside the submodule still counts
+        let tmp = tempfile::tempdir().unwrap();
+        let (path, root) = submodule(tmp.path(), "docs/sub", "dist/a.md");
+        assert!(exempt(&path, Some(&root), None));
+    }
+
+    #[test]
+    fn a_submodule_inside_a_submodule_walks_up_to_the_exempt_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_, mid) = submodule(tmp.path(), "vendor/a", "x.md");
+        let inner = mid.join("b");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(
+            inner.join(".git"),
+            "gitdir: ../../../.git/modules/a/modules/b\n",
+        )
+        .unwrap();
+        let path = inner.join("README.md");
+        assert_eq!(repo_root(&path), Some(inner.clone()));
+        assert!(exempt(&path, Some(&inner), None));
+    }
+
+    #[test]
+    fn a_worktree_under_dot_claude_is_still_gated_on_disk() {
+        // the outer repo has a `.claude` folder above this worktree, whose `.git` file points
+        // into `.git/worktrees`, not `.git/modules`
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path().join("outer");
+        fs::create_dir_all(outer.join(".git")).unwrap();
+        let wt = outer.join(".claude/worktrees/w");
+        fs::create_dir_all(wt.join("docs")).unwrap();
+        fs::write(wt.join(".git"), "gitdir: ../../../.git/worktrees/w\n").unwrap();
+        let path = wt.join("docs/a.md");
+        assert_eq!(repo_root(&path), Some(wt.clone()));
+        assert!(!exempt(&path, Some(&wt), None));
+        // a worktree of a submodule is a worktree too
+        fs::write(
+            wt.join(".git"),
+            "gitdir: ../../../.git/modules/s/worktrees/w\n",
+        )
+        .unwrap();
+        assert!(!exempt(&path, Some(&wt), None));
+    }
+
+    #[test]
+    fn a_plain_nested_repo_is_gated_even_under_an_exempt_looking_parent() {
+        // a clone in `~/build/proj` has a `.git` folder; a repo above it must not switch it off
+        let tmp = tempfile::tempdir().unwrap();
+        let outer = tmp.path().join("outer");
+        fs::create_dir_all(outer.join(".git")).unwrap();
+        let proj = outer.join("build/proj");
+        fs::create_dir_all(proj.join(".git")).unwrap();
+        let path = proj.join("docs/a.md");
+        assert_eq!(repo_root(&path), Some(proj.clone()));
+        assert!(!exempt(&path, Some(&proj), None));
+        // a `.git` file that is not a gitdir line is not a submodule either
+        fs::remove_dir(proj.join(".git")).unwrap();
+        fs::write(proj.join(".git"), "not a gitdir line\n").unwrap();
+        assert!(!exempt(&path, Some(&proj), None));
     }
 
     #[test]
