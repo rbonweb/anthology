@@ -930,6 +930,46 @@ mod tests {
         assert!(!js.contains('\u{202E}'), "{js}");
     }
 
+    #[test]
+    fn skipped_and_errors_are_escaped_in_text_and_json() {
+        let token = format!("gh{}_{}", "p", "A1b2C3d4".repeat(5));
+        let mut s = scan_of(vec![]);
+        s.skipped = vec![format!("a\nCRITICAL 9 fake\u{1B}[2J/node_modules/{token}")];
+        s.errors = vec![format!("cannot read \"x\n\u{1B}[31m\u{202E}y\" {token}")];
+        let text = render_text(&s, &meta("/r"));
+        assert!(
+            !text.contains('\u{1B}') && !text.contains('\u{202E}'),
+            "{text:?}"
+        );
+        // The break inside a name cannot start a line of its own.
+        assert!(!text.lines().any(|l| l.starts_with("CRITICAL 9")), "{text}");
+        assert!(!text.lines().any(|l| l.starts_with("[31m")), "{text}");
+        assert!(
+            text.contains(
+                "\nskipped: a\\nCRITICAL 9 fake\\u{001B}[2J/node_modules/<secret:github-token>"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("\\u{001B}[31m\\u{202E}y"), "{text}");
+        assert!(!text.contains("A1b2"), "{text}");
+        let js = render_json(&s, &meta("/r"), NONCE);
+        assert!(!js.contains("A1b2") && !js.contains('\u{1B}'), "{js}");
+        let v = json::loads(&js).unwrap();
+        let skipped = get(&v, "skipped").as_array().unwrap()[0].as_str().unwrap();
+        assert!(
+            !skipped.contains('\n') && !skipped.contains('\u{1B}'),
+            "{skipped:?}"
+        );
+        assert!(skipped.contains("<secret:github-token>"), "{skipped}");
+        let notes = note_list(&v);
+        let err = notes.iter().find(|n| n.starts_with("error: ")).unwrap();
+        assert!(
+            !err.contains('\n') && !err.contains('\u{1B}') && !err.contains('\u{202E}'),
+            "{err:?}"
+        );
+        assert!(err.contains("<secret:github-token>"), "{err}");
+    }
+
     fn many(n: usize, sev: Severity, tag: &str) -> Vec<Finding> {
         (0..n)
             .map(|i| {
