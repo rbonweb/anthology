@@ -797,8 +797,20 @@ mod tests {
     fn non_utf8_names_are_listed_and_readable() {
         let tmp = tempfile::tempdir().unwrap();
         let odd = std::ffi::OsStr::from_bytes(b"odd\xffname");
-        fs::create_dir(tmp.path().join(odd)).unwrap();
-        fs::write(tmp.path().join(odd).join("a.txt"), b"inside").unwrap();
+        let made = fs::create_dir(tmp.path().join(odd))
+            .and_then(|()| fs::write(tmp.path().join(odd).join("a.txt"), b"inside"));
+        if let Err(e) = made {
+            // APFS refuses names that are not valid UTF-8 (EILSEQ: 92 on macOS, 84 on Linux). Any
+            // other error is a real failure; Linux accepts the name, so it asserts there.
+            let refused = matches!(e.raw_os_error(), Some(84 | 92))
+                || matches!(
+                    e.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::InvalidFilename
+                );
+            assert!(refused, "the fixture could not be made: {e}");
+            eprintln!("skipped: this file system refuses names that are not UTF-8: {e}");
+            return;
+        }
         let t = open(tmp.path());
         let p = paths(&t);
         assert_eq!(p.len(), 1, "{p:?}");
