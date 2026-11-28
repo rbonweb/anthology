@@ -27,6 +27,10 @@ const SAMPLES: &[&str] = &[
     "husky",
     "mcp-pinned",
     "minified-bundle",
+    "path-git-lfs",
+    "path-husky",
+    "path-pre-commit",
+    "path-sccache",
     "ripgrep",
     "sharp",
     "unicode-text",
@@ -34,8 +38,37 @@ const SAMPLES: &[&str] = &[
     "vscode-tasks",
 ];
 
+/// Copies `from` to `to`, with every `dot-git` folder named `.git`: git does not store a folder
+/// named `.git`, so a sample keeps its git folder under the other name.
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).expect("a folder");
+    for entry in fs::read_dir(from).expect("a sample folder") {
+        let entry = entry.expect("an entry");
+        let name = entry.file_name();
+        let target = if name == "dot-git" {
+            to.join(".git")
+        } else {
+            to.join(&name)
+        };
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            fs::copy(entry.path(), &target).expect("a copy");
+        }
+    }
+}
+
+/// Scans the sample as a folder the user named (path mode). A sample with a `dot-git` folder is
+/// copied to a temp folder first, so the scan sees a real `.git`.
 fn scan_sample(name: &str) -> Scan {
-    let root = benign_root().join(name);
+    let source = benign_root().join(name);
+    let copy = tempfile::tempdir().expect("a temp folder");
+    let root = if source.join("dot-git").is_dir() {
+        copy_tree(&source, copy.path());
+        copy.path().to_path_buf()
+    } else {
+        source
+    };
     let tree = DiskTree::open(&root, &WalkOpts::default(), None)
         .unwrap_or_else(|e| panic!("cannot open {}: {e}", root.display()));
     let found = scan(&tree);
@@ -109,6 +142,34 @@ fn devcontainer_with_features_and_a_container_side_command() {
 #[test]
 fn husky_prepare_script_and_hook() {
     check("husky", &[("autorun.npm-lifecycle", Severity::Info)]);
+}
+
+// The four samples below are path mode: the folder holds a `.git` that a hook installer wrote.
+
+#[test]
+fn husky_install_sets_core_hooks_path_to_its_own_folder() {
+    check(
+        "path-husky",
+        &[("autorun.git-config-command", Severity::Low)],
+    );
+}
+
+#[test]
+fn pre_commit_hook_stub_is_low() {
+    check("path-pre-commit", &[("autorun.git-hooks", Severity::Low)]);
+}
+
+#[test]
+fn git_lfs_hook_stubs_are_low() {
+    check("path-git-lfs", &[("autorun.git-hooks", Severity::Low)]);
+}
+
+#[test]
+fn sccache_as_the_rustc_wrapper_is_medium() {
+    check(
+        "path-sccache",
+        &[("autorun.cargo-config", Severity::Medium)],
+    );
 }
 
 #[test]
