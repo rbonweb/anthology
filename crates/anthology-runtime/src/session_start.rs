@@ -48,6 +48,12 @@
 //! plugin is enabled next to `anthology-superpowers`: one line naming both and the command that
 //! disables the official one.
 //!
+//! **A repo that runs code on open.** At startup (same conditions), [`check_hint`] names the
+//! files at the repo top that run code when Claude Code or an editor opens it (hooks, env or
+//! helper commands in `.claude/settings*.json`, `.mcp.json` servers, a VS Code folder-open task,
+//! `.envrc`) and points at `/anthology:check-repo`. It is said once per repo top (state key
+//! `check_repo_hinted`) and goes to `systemMessage`, never `additionalContext`.
+//!
 //! **Time (I-7, GC-7).** Every elapsed check counts from `ANTHOLOGY_HOOK_T0` (epoch seconds,
 //! set by `hooks/session-start.sh`). The live guard's binary is ensured only when
 //! `ANTHOLOGY_BOOTSTRAP_DOWNLOADED` is exactly `0` and
@@ -93,6 +99,7 @@ use anthology_settings::{self as settings, SettingsDeps, SettingsLimits, TAG_PLU
 
 use crate::atl_install::{self, AtlDeps, AtlLimits, Reconciled};
 use crate::bootstrap::{self, GuardBinaryStatus};
+use crate::check_hint;
 use crate::compat;
 use crate::doctor;
 use crate::guardrails_loc::{self, GUARD_REL, Problem};
@@ -505,6 +512,7 @@ pub mod label {
     pub const COMPOSE: &str = "assembling the session context";
     pub const STALE: &str = "the loaded plugin version check";
     pub const DUPLICATE_SUPERPOWERS: &str = "the duplicate superpowers check";
+    pub const CHECK_REPO_HINT: &str = "the check-repo hint";
 }
 
 /// `_step`: runs `f`; an exception (or a panic) becomes `anthology: <label> failed (<Class>)`.
@@ -1358,6 +1366,16 @@ fn run_inner(env: &Env, stdin: &str, deps: &SessionDeps<'_>) -> Result<String, P
             None,
         );
         warnings.extend(w);
+        let w = step(
+            &mut warnings,
+            label::CHECK_REPO_HINT,
+            |_| {
+                fault(deps, "_check_repo_hint")?;
+                check_repo_hint(env, &cwd, &current, deps)
+            },
+            None,
+        );
+        warnings.extend(w);
     }
 
     let (memory, messages) = memory_step(&mut warnings, &cwd, env, deps);
@@ -1537,6 +1555,39 @@ fn agent_memory_warning(
         Err(other) => return Err(other),
     }
     Ok(Some(format!("anthology: {}", (c.agent_memory_hint)(first))))
+}
+
+/// The check-repo hint ([`check_hint`]): said once per repo top, when the repo holds a file that
+/// runs code on open. `check_repo_hinted` in the state maps each repo top to `true`, the way
+/// `agent_memory_warned` does. The repo top is [`compat::repo_top`] itself, not the
+/// [`CompatDeps`] seam, so a broken compat import loses the other checks and not this one.
+fn check_repo_hint(
+    env: &Env,
+    cwd: &Path,
+    current: &Map,
+    deps: &SessionDeps<'_>,
+) -> Result<Option<String>, PyExc> {
+    let Some(top) = compat::repo_top(cwd) else {
+        return Ok(None);
+    };
+    let key = path_str(&top);
+    let mut seen = match current.get("check_repo_hinted") {
+        Some(Value::Object(m)) => m.clone(),
+        _ => Map::new(),
+    };
+    if seen.get(&key).is_some_and(truthy) {
+        return Ok(None);
+    }
+    let labels = check_hint::surfaces(&top);
+    if labels.is_empty() {
+        return Ok(None);
+    }
+    seen.insert(key, Value::Bool(true));
+    match (deps.state_write)(env, vec![("check_repo_hinted".into(), Value::Object(seen))]) {
+        Ok(()) | Err(PyExc::OSError { .. }) => {} // cannot record it: still say it this once
+        Err(other) => return Err(other),
+    }
+    Ok(Some(check_hint::hint(&labels)))
 }
 
 // --- prune <ah>/bin (design §8.5, GC-17) ----------------------------------------------------

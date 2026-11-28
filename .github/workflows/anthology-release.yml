@@ -161,7 +161,7 @@ jobs:
         run: >-
           cargo test --locked --target "$TARGET"
           -p anthology-pycompat -p anthology-shell -p anthology-guard -p anthology-core
-          -p anthology-settings -p anthology-memory -p anthology-runtime -p anthology-slop
+          -p anthology-settings -p anthology-memory -p anthology-runtime -p anthology-slop -p anthology-scan
           -p anthology-cli
       - name: Build
         run: cargo build --release --locked -p anthology-cli --target "$TARGET"
