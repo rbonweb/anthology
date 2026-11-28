@@ -499,26 +499,54 @@ fn is_relative_path(word: &str) -> bool {
         && !word.contains("://")
 }
 
+/// The variables an agent or an editor sets to the folder of the project.
+const PROJECT_VARS: &[&str] = &[
+    "${CLAUDE_PROJECT_DIR}",
+    "$CLAUDE_PROJECT_DIR",
+    "%CLAUDE_PROJECT_DIR%",
+    "${workspaceFolder}",
+    "${workspaceRoot}",
+];
+
+/// `word` without a project folder variable that starts it (and the separator after it), and
+/// whether there was one. The variable must be the whole of the first part of the path: a longer
+/// name that starts with it is another variable.
+fn strip_project_var(word: &str) -> (String, bool) {
+    for var in PROJECT_VARS {
+        if let Some(rest) = word.strip_prefix(var)
+            && (rest.is_empty() || rest.starts_with(['/', '\\']))
+        {
+            return (rest.trim_start_matches(['/', '\\']).to_string(), true);
+        }
+    }
+    (word.to_string(), false)
+}
+
 /// The files one simple command runs, each with whether an interpreter runs it.
 fn command_files(tokens: &[String]) -> Vec<(String, bool)> {
     let tokens = skip_wrappers(tokens);
     let Some(first) = tokens.first() else {
         return Vec::new();
     };
-    // A word with a folder part that is not absolute is a file of the repo, even when its name is
-    // `sh` or `node`: `./tools/sh -c x` runs that file, not the shell.
-    if is_relative_path(first) {
-        return vec![(clean(first), false)];
+    // A word that starts with the project folder variable names a path from the root of the
+    // project, whatever the file is called; a word with a folder part that is not absolute is a
+    // file of the repo too. Either is run itself, even when its name is `sh` or `node`
+    // (`./tools/sh -c x` runs that file); an interpreter name means the files it is given run as
+    // well.
+    let (rooted, had_var) = strip_project_var(first);
+    let word = if had_var { rooted.as_str() } else { first };
+    let direct = (had_var && !rooted.is_empty()) || is_relative_path(first);
+    let mut out = Vec::new();
+    if direct {
+        out.push((clean(word), false));
     }
-    let Some(kind) = interpreter(first) else {
-        return if looks_like_script(first) {
-            vec![(clean(first), false)]
-        } else {
-            Vec::new()
-        };
+    let Some(kind) = interpreter(word) else {
+        if !direct && looks_like_script(first) {
+            out.push((clean(first), false));
+        }
+        return out;
     };
     let args = &tokens[1..];
-    let mut out = Vec::new();
     let mut seen_positional = false;
     let mut i = 0;
     while i < args.len() {
@@ -1180,19 +1208,25 @@ mod tests {
 
     #[test]
     fn a_relative_path_named_like_an_interpreter_is_a_file_of_the_repo() {
+        // The word is a file of the repo, and when its name is an interpreter's, the file it is
+        // given runs as well.
         for (cmd, want) in [
-            ("./tools/sh -c echo", "tools/sh"),
-            ("tools/bash run.sh", "tools/bash"),
-            ("../bin/node app.js", "bin/node"),
-            (".\\tools\\python3 x.py", "tools/python3"),
-            ("sudo ./bin/sh -c id", "bin/sh"),
+            ("./tools/sh -c echo", vec!["tools/sh"]),
+            ("tools/bash run.sh", vec!["tools/bash", "run.sh"]),
+            ("../bin/node app.js", vec!["../bin/node", "app.js"]),
+            (".\\tools\\python3 x.py", vec!["tools/python3", "x.py"]),
+            ("sudo ./bin/sh -c id", vec!["bin/sh"]),
+            (
+                "./bin/node -r ./pre.js app.js",
+                vec!["bin/node", "pre.js", "app.js"],
+            ),
+            ("./tools/lint --fix", vec!["tools/lint"]),
         ] {
-            let got = files_run(cmd);
-            assert_eq!(got.len(), 1, "{cmd}: {got:?}");
-            assert!(
-                got[0].ends_with(want) || got[0].replace('\\', "/").ends_with(want),
-                "{cmd}: {got:?}"
-            );
+            let got: Vec<String> = files_run(cmd)
+                .into_iter()
+                .map(|f| f.replace('\\', "/"))
+                .collect();
+            assert_eq!(got, want, "{cmd}");
         }
         // An interpreter on the machine still runs the file after it.
         assert_eq!(files_run("/bin/sh run.sh"), ["run.sh"]);
@@ -1200,6 +1234,38 @@ mod tests {
         assert!(files_run("/usr/bin/node -e 1").is_empty());
         assert!(files_run("$HOME/bin/sh -c id").is_empty());
         assert!(files_run("~/bin/sh -c id").is_empty());
+    }
+
+    #[test]
+    fn a_script_run_from_the_project_folder_variable_is_a_file_whatever_its_name() {
+        for (cmd, want) in [
+            ("$CLAUDE_PROJECT_DIR/hooks/check", vec!["hooks/check"]),
+            (
+                "\"$CLAUDE_PROJECT_DIR\"/hooks/check.rb --x",
+                vec!["hooks/check.rb"],
+            ),
+            ("${CLAUDE_PROJECT_DIR}/run", vec!["run"]),
+            ("%CLAUDE_PROJECT_DIR%\\tools\\go", vec!["tools\\go"]),
+            ("${workspaceFolder}/bin/lint", vec!["bin/lint"]),
+            ("${workspaceRoot}/bin/lint", vec!["bin/lint"]),
+            ("sudo $CLAUDE_PROJECT_DIR/bin/x", vec!["bin/x"]),
+            // An interpreter-named file under the variable runs, and so does what it is given.
+            (
+                "$CLAUDE_PROJECT_DIR/bin/node app.js",
+                vec!["bin/node", "app.js"],
+            ),
+        ] {
+            assert_eq!(files_run(cmd), want, "{cmd}");
+        }
+        // The variable is not a prefix of some longer name, and a bare variable is no file.
+        assert!(files_run("$CLAUDE_PROJECT_DIRX/bin/x").is_empty());
+        assert!(files_run("$CLAUDE_PROJECT_DIR").is_empty());
+        assert!(files_run("$CLAUDE_PROJECT_DIR/").is_empty());
+        // Arguments of an interpreter keep their form for the caller to resolve.
+        assert_eq!(
+            files_run("node $CLAUDE_PROJECT_DIR/x.js"),
+            ["$CLAUDE_PROJECT_DIR/x.js"]
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ So run the check from outside: in a terminal before you start `claude` in the re
 The check itself is built to be safe to run on hostile input:
 
 - It reads files and nothing else. It runs no package manager, build, hook, MCP server or submodule, and it installs nothing.
-- It never follows a symlink and never reads outside the folder you name. A link to something outside is reported, and what it points at is not read.
+- It never reads outside the folder you name. It follows a symlink only at a settings or auto-run path, and only when the link resolves inside the folder. A link to something outside is reported, and what it points at is not read.
 - It uses the network only to fetch a URL you give it.
 - Text from the repo is data. The report shows hidden characters as escapes (controls, bidirectional and zero-width characters, tag characters, line and paragraph separators, combining marks, private-use characters) and masks anything that looks like a key.
 
@@ -45,7 +45,7 @@ anthology check-repo --notice
 | `--json` | Prints one JSON object on stdout instead of the text report (see [Scripts and CI](#scripts-and-ci)). |
 | `--opened` | Says the folder is already open in Claude Code. The report starts with a warning (see [If the repo is already open](#if-the-repo-is-already-open)). |
 | `--no-tools` | Skips the optional tools (see [Optional tools](#optional-tools)). |
-| `--all` | Also walks `node_modules/` and `.claude/worktrees/`, which are skipped by default. |
+| `--all` | Also walks `node_modules/`, the environment folders `.venv`, `venv`, `.tox`, `.nox` and `.direnv`, and `.claude/worktrees/`, which a folder scan skips by default. A URL scan reads them without it. |
 | `--rev REV` | For a URL: the branch, tag or commit to fetch. The default is the remote's `HEAD`. |
 | `--into DIR` | For a URL: the folder to fetch into. It must not exist yet. |
 | `--notice` | Prints the license notice for the bundled GuardDog rules and exits 0 (see [Licenses](#licenses)). |
@@ -116,14 +116,14 @@ Each finding carries a rule ID. The part before the first dot is its group:
 
 | Group | What it looks at | Examples |
 |---|---|---|
-| `agent` | Files that steer an AI agent: `.claude/settings.json` and `.claude/settings.local.json` at any depth, `.mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`, skill and agent frontmatter, `.env*` | Hook, status line and credential-helper commands. `env` keys that redirect traffic or tools (`ANTHROPIC_BASE_URL`, `*_BASE_URL`, proxies, `NODE_OPTIONS`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) are CRITICAL. `enableAllProjectMcpServers: true`, a broad `Bash` allow rule and `additionalDirectories` outside the repo are HIGH. A stdio MCP server that runs an unpinned package is MEDIUM. |
-| `autorun` | Anything that runs on open, install or build | npm lifecycle scripts and `start` scripts, `.vscode/tasks.json` folder-open tasks, a dev container `initializeCommand`, `Makefile`, `*.m4` and `configure` lines, `.envrc`, pre-commit, husky and `Justfile` commands, `.csproj` build events, `setup.py` overrides, `pyproject.toml` `backend-path`, `build.rs`, `.cargo/config.toml` wrappers and runners, a Gradle or Maven wrapper that fetches from another host, `.gitmodules`, `.gitattributes` filters, `.git/hooks`, `.git/config` commands, `.npmrc`, `yarnPath`, and symlinks that point outside the folder |
-| `hidden` | Text a reviewer cannot see | Bidirectional controls, zero-width characters, Unicode tag characters (CRITICAL in agent files), runs of variation selectors, code pushed past 150 spaces or tabs on a line, file names that mix Latin with Cyrillic or Greek |
+| `agent` | Files that steer an AI agent: `.claude/settings.json` and `.claude/settings.local.json` at any depth, `.mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`, skill and agent frontmatter, `.env*` | Hook, status line and credential-helper commands. `env` keys that redirect traffic or credentials (`ANTHROPIC_BASE_URL`, proxies, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) are CRITICAL. So are `env` keys, in a settings file or a `.env` file, that make every command run code: `BASH_ENV`, `LD_PRELOAD`, `GIT_SSH_COMMAND`, a `PATH` with an entry from the repo, and option keys such as `NODE_OPTIONS` when the value loads code. Other `*_BASE_URL` keys are MEDIUM. `enableAllProjectMcpServers: true`, a broad `Bash` allow rule and `additionalDirectories` outside the repo are HIGH. A stdio MCP server that runs an unpinned package is MEDIUM. |
+| `autorun` | Anything that runs on open, install or build | npm lifecycle scripts and `start` scripts, `.vscode/tasks.json` folder-open tasks, a dev container `initializeCommand`, `Makefile`, `*.m4` and `configure` lines, `.envrc`, pre-commit, husky and `Justfile` commands, `.csproj` build events, `setup.py` overrides, `pyproject.toml` `backend-path`, `build.rs`, `.cargo/config.toml` wrappers and runners, a Gradle or Maven wrapper that fetches from another host, `.gitmodules`, `.gitattributes` filters, `.git/hooks`, `.git/config` commands, `.npmrc`, `yarnPath`, symlinks that point outside the folder, and a link at a settings or auto-run path that cannot be resolved inside it (HIGH) |
+| `hidden` | Text a reviewer cannot see | Bidirectional controls, zero-width characters, Unicode tag characters (CRITICAL in agent files), runs of variation selectors, code pushed past 150 spaces or tabs on a line, file names that mix Latin with Cyrillic or Greek, two paths that differ only in case (HIGH) |
 | `payload` | Hidden or disguised code | A font or image file that holds script text or has an executable's header (HIGH), committed executables, `.pyc` files, archives, long base64 or hex blobs, a decoder and an executor in one file |
 | `exfil` | Where data would go | Discord, Telegram and similar webhooks, paste and tunnel hosts, reads of `~/.ssh`, cloud and browser credential paths, `process.env` sent over the network, miner pool strings, AI command-line tools started with their permission checks off |
 | `deps` | Lockfiles and package settings | Resolved URLs on a host other than the default registry, `http:` URLs, a package name that does not match its URL, extra index URLs in `requirements*.txt` and `pip.conf`, `go.mod` `replace` lines |
 | `yara` | Code files | The threat rules from Datadog's GuardDog, run by a small evaluator built into the binary |
-| `scanner` | Files that switch scanners off | `.gitleaks.toml`, `.gitleaksignore`, `.semgrepignore`, `zizmor.yml`, `osv-scanner.toml`, `.guarddog*`, `.trufflehogignore`, `.atl/filters.toml`, inline `gitleaks:allow` and `nosemgrep` |
+| `scanner` | Files that switch scanners off | `.gitleaks.toml`, `.gitleaksignore`, `.semgrepignore`, `zizmor.yml`, `osv-scanner.toml`, `.guarddog*`, `.trufflehogignore`, `.atl/filters.toml`, inline `gitleaks:allow`, `nosemgrep` and `zizmor: ignore` |
 
 Every auto-run file also gets one INFO finding, so the report lists what would run even when it looks fine.
 
@@ -176,7 +176,7 @@ What each level asks of you:
 
 | Level | Meaning | What to do |
 |---|---|---|
-| CRITICAL | A known-malicious dependency, or code that runs on open, install or build and fetches and runs, decodes and runs, runs a data file or reaches a HIGH file. Also an agent `env` redirect. | Do not install, build or open the repo in an editor or an agent. |
+| CRITICAL | A known-malicious dependency, or code that runs on open, install or build and fetches and runs, decodes and runs, runs a data file or reaches a HIGH file. Also an agent `env` key that redirects traffic or makes commands run code. | Do not install, build or open the repo in an editor or an agent. |
 | HIGH | An auto-run command that reaches the network, agent config that runs commands or takes credentials, hidden text in code, a disguised file. | Read it before you open the repo. |
 | MEDIUM | Suspicious but common: an install script that is not on the allowlist, an odd registry, an unexplained blob. | Look at it. |
 | LOW | Worth knowing: scanner settings in the repo, opt-in automation, known vulnerabilities. | Note it. |
@@ -312,7 +312,7 @@ Things it does not do or does not read:
 - It reads no git history, only `.git/config` and `.git/hooks` in a folder.
 - It does not open archives and binaries. It records that they exist and what their first bytes say they are.
 - It does not fetch a submodule or a dependency. It reads lockfiles, and with OSV-Scanner it matches them against known-malicious versions.
-- It skips `node_modules/` and `.claude/worktrees/` unless you pass `--all`, and it reads only the first 2 MiB of a file for text rules.
+- A folder scan skips `node_modules/`, `.venv`, `venv`, `.tox`, `.nox`, `.direnv` and `.claude/worktrees/` unless you pass `--all`, and it reads only the first 2 MiB of a file for text rules.
 - It does not read workflow files, unless zizmor is installed.
 
 Left out on purpose for now: lists of typosquatted package names, a checksum table for the Gradle wrapper jar (the check looks at the wrapper's download host and whether a jar is present), SARIF output, and mixed-script identifiers inside code (mixed-script file names are checked).
@@ -322,12 +322,12 @@ Left out on purpose for now: lists of typosquatted package names, a checksum tab
 The check is a static, pattern-based scan. A clean result means no known-bad shape was found, nothing more. These are the gaps to keep in mind before you trust it:
 
 - **Behavior that matches no known shape.** Novel or heavily obfuscated code, a logic bomb, a package name that looks normal but is a typosquat, and code that turns malicious only in a later update all pass unless something else in the repo gives them away.
-- **Dependencies.** The check does not download or read the packages a repo installs. In a folder scan it skips `node_modules/`, unless you pass `--all`. Lockfile oddities, such as another registry host or an `http:` URL, are reported. A malicious package is caught by name only when OSV-Scanner is installed with a local database and the package is already on its known-malicious list.
+- **Dependencies.** The check does not download or read the packages a repo installs. A folder scan skips `node_modules/` and the environment folders `.venv`, `venv`, `.tox`, `.nox` and `.direnv`, unless you pass `--all`. A URL scan reads them when the repo commits them. Lockfile oddities, such as another registry host or an `http:` URL, are reported. A malicious package is caught by name only when OSV-Scanner is installed with a local database and the package is already on its known-malicious list.
 - **Code fetched at run time.** A script that downloads its real payload later is flagged only when the download-and-run shape is visible in the repo.
 - **Binaries and compiled files.** These are checked only for a type that does not match the file extension and for known file headers, such as executables and archives. Their behavior is not analyzed.
 - **Triggers it does not read yet.** Gradle build scripts (`build.gradle`, `settings.gradle`, `init.gradle` and their Kotlin forms) run when an IDE imports the project, and only the Gradle wrapper is read. MSBuild files are read for `<Exec>` commands and pre- and post-build events, all rated as build-time, so other task types and targets that an IDE runs on project load are not covered. Editor and tool settings that the `autorun` row of the [group table](#what-it-checks) does not list are not read either.
-- **Optional tools.** gitleaks always reads `.gitleaksignore` from the folder and drops the findings it lists. The check reports that file as LOW but cannot turn this off, so treat the secrets check as incomplete for such a repo. zizmor obeys inline `# zizmor: ignore` comments in workflow files, and no flag turns that off either.
-- **Case and links.** The check matches the names of the files it knows without regard to case. It follows a link only when the link stays inside the folder, such as a `.git` link or a file that another file includes. Other tricks with case-insensitive file systems or links may be missed.
+- **Optional tools.** gitleaks always reads `.gitleaksignore` from the folder and drops the findings it lists. The check reports that file as LOW but cannot turn this off, so treat the secrets check as incomplete for such a repo. zizmor obeys inline `# zizmor: ignore` comments in workflow files, and no flag turns that off either. The check reports those comments as LOW.
+- **Case and links.** The check matches file names without regard to ASCII case, and two paths that differ only in case are HIGH. Differences in non-ASCII letters are not compared. A link at a settings or auto-run path is read as its target when it resolves inside the folder, and is HIGH when it does not. A link anywhere else is listed and not read. Other tricks with case-insensitive file systems or links may be missed.
 
 With a clean result:
 
