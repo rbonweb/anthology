@@ -1,0 +1,1 @@
+- Add: the slop gate refuses a Write, Edit or MultiEdit whose new text holds a known AI-writing or AI-design tell, and names the line and phrase.

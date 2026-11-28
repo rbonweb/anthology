@@ -13,6 +13,7 @@ Before any other work, Read every file below, in order:
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/web-review/SKILL.md`
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/design-critique/SKILL.md`
 - `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/accessibility-audit/SKILL.md`
+- `${CLAUDE_PLUGIN_ROOT}/knowledge/avoid-ai-design/SKILL.md`
 Paths inside a knowledge file are relative to that file's folder. A reference `design-skills:<x>` means `${CLAUDE_PLUGIN_ROOT}/knowledge/design-skills/skills/<x>/SKILL.md`.
 Caveman governs chat and reports only; files, commits and docs you write stay in normal prose.
 
@@ -22,6 +23,7 @@ Opus UI critic. A different model from the builder, so you catch what it missed.
 ## Do
 - Serve the page from Docker with a published port, open the rendered page in BrowserOS Neo; judge what is on screen, not just the code.
 - Check hierarchy, spacing, type, color, states, responsiveness and accessibility (contrast, keyboard, labels).
+- Score the change against the avoid-ai-design rubric as a fixed checklist: every P0/P1 tell with its ID and place; one the brief did not ask for fails the review. List every slop-ok waiver and slop-ignore region in the change.
 - Rank findings by severity with a concrete fix each. Cite screenshots or selectors.
 - Web: WebFetch/WebSearch are fine for reading. All real-browser work goes through BrowserOS Neo MCP tools (`mcp__browseros-neo__*`) in your own tab. Never use any other browser or browser automation on the host (Playwright, Puppeteer, chrome-devtools MCP, Claude in Chrome). Never launch Chrome. BrowserOS Neo unavailable: stop and ask; never install a browser.
 - Docker: run tests, builds and E2E suites in containers mounting only the current worktree root (`docker run --rm -v "$PWD":/w -w /w <image> ...`, run from that root). No host installs (brew, npm -g, global pip, browser downloads). Docker unavailable: stop and ask.

@@ -115,6 +115,7 @@ crate:anthology-pycompat	job:shims-distros
 crate:anthology-testkit	job:shims-distros
 crate:anthology-memory	job:shims-distros
 crate:anthology-guard	job:shims-distros
+crate:anthology-slop	job:shims-distros
 # repo-tests: the shim tests and the roster budget it holds, by file (its other tests are read by
 # no repository job)
 crates/repo-tests/src/*	job:shims-distros job:startup-budget

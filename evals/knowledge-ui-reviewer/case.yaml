@@ -78,3 +78,15 @@ graders:
     type: tool_order
     before: {tool: Read, input_match: 'knowledge/design-skills/skills/design-critique/SKILL\.md'}
     after: {tool: Read, input_match: 'knowledge/design-skills/skills/accessibility-audit/SKILL\.md'}
+  - name: read-avoid-ai-design
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/avoid-ai-design/SKILL\.md'
+  - name: order-avoid-ai-design
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/avoid-ai-design/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-ds-accessibility-audit-avoid-ai-design
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/design-skills/skills/accessibility-audit/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/avoid-ai-design/SKILL\.md'}
