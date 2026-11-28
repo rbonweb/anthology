@@ -1,0 +1,11 @@
+anthology-scan
+
+The threat rules in rules/guarddog/ are taken from DataDog/guarddog
+(https://github.com/DataDog/guarddog) and used under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). The full licence text is kept in
+rules/guarddog/LICENSE. The NOTICE of that project reads:
+
+Datadog guarddog
+Copyright [2022-Present] Datadog, Inc.
+
+This product includes software developed at Datadog (https://www.datadoghq.com/).
