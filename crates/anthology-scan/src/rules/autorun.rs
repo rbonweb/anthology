@@ -15,9 +15,12 @@
 //! reader rejects gives `autorun.unparsed` (MEDIUM): the editor may read what this cannot.
 //!
 //! Two functions are for the orchestrator to call outside `surfaces`: `entry_findings` once with
-//! the path of every tree entry (git hooks, which must count even as a symlink), and
-//! `raise_gitattributes_filters` for every text file (a filter that another file tells you to
-//! configure).
+//! the path of every tree entry (git hooks, which must count even as a symlink; it also lowers
+//! an `autorun.vscode-program` finding whose target is not in the tree), and
+//! `raise_gitattributes_filters` for every text file and every git hook file (a filter that
+//! another file tells you to configure; a stock hook stub).
+//!
+//! Every name is matched without regard to ASCII case, as macOS and Windows resolve it.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
