@@ -1,6 +1,6 @@
 //! The v1 rules: the 17 rules of the plan's rule table, in that order.
 
-// The colour helpers are frozen in Task 1 and used by the UI rules of Task 5.
+// The color helpers are frozen in Task 1 and used by the UI rules of Task 5.
 #[allow(dead_code)]
 mod color;
 mod density;
@@ -84,7 +84,7 @@ pub static RULES: &[Rule] = &[
         severity: Block,
         kinds: STYLED,
         summary: "purple or indigo gradient (C1)",
-        hint: "pick a gradient from the brand palette, or use a flat colour",
+        hint: "pick a gradient from the brand palette, or use a flat color",
         run: Run::Text(ui::purple_gradient),
     },
     Rule {
@@ -92,7 +92,7 @@ pub static RULES: &[Rule] = &[
         severity: Block,
         kinds: STYLED,
         summary: "gradient-filled text (C6)",
-        hint: "use a solid text colour; put emphasis in size or weight",
+        hint: "use a solid text color; put emphasis in size or weight",
         run: Run::Text(ui::gradient_text),
     },
     Rule {

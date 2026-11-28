@@ -903,7 +903,7 @@ fn a_path_or_equals_sign_in_front_of_a_denied_program_does_not_hide_it() {
 
 /// I-B: a denied command behind a launcher the gate does not model.
 #[test]
-fn a_denied_command_behind_an_unmodelled_launcher_is_asked_about() {
+fn a_denied_command_behind_an_unmodeled_launcher_is_asked_about() {
     let sb = push_only_sandbox();
     asked(
         &sb,

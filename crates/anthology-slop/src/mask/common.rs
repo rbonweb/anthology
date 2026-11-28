@@ -474,16 +474,16 @@ mod tests {
             )]
         );
         for doc in [
-            "{/* slop-ok: ui.purple-gradient brand colour from the style guide */}",
-            "/* slop-ok: ui.purple-gradient brand colour from the style guide */",
-            "// slop-ok: ui.purple-gradient brand colour from the style guide",
+            "{/* slop-ok: ui.purple-gradient brand color from the style guide */}",
+            "/* slop-ok: ui.purple-gradient brand color from the style guide */",
+            "// slop-ok: ui.purple-gradient brand color from the style guide",
         ] {
             assert_eq!(
                 parse(doc),
                 [waiver(
                     1,
                     Some("ui.purple-gradient"),
-                    "brand colour from the style guide",
+                    "brand color from the style guide",
                     true
                 )],
                 "{doc}"

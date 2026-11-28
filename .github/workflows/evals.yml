@@ -1,7 +1,7 @@
 name: evals
 
 # Weekly (and on demand, and when upstream-watch sees a new Claude Code release): run the
-# behaviour evals with the pinned Claude Code and gate them against evals/baseline.json
+# behavior evals with the pinned Claude Code and gate them against evals/baseline.json
 # (scripts/run-evals.sh). It costs real model calls, so it has no pull_request, pull_request_target
 # or push trigger: it never runs for a fork. To evaluate a Claude Code bump, dispatch it on the
 # Dependabot branch: gh workflow run evals.yml --ref <branch>.
@@ -39,7 +39,7 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::ANTHROPIC_API_KEY is not set; the behaviour evals are skipped"
+            echo "::notice::ANTHROPIC_API_KEY is not set; the behavior evals are skipped"
           fi
       - if: steps.key.outputs.present == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,7 +68,7 @@ jobs:
           # Fail here, before any model call is paid for, if the sandbox still cannot start.
           bwrap --unshare-user --unshare-net --ro-bind / / true
           command -v socat
-      - name: Run the behaviour evals
+      - name: Run the behavior evals
         if: steps.key.outputs.present == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

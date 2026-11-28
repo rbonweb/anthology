@@ -30,7 +30,7 @@ Anthology configures Claude Code and the agents that run inside it. The risks it
 | The guard's binary is missing, broken or cannot run | The guard fails closed: only read-only tools are allowed (see [Fail closed](#fail-closed)) |
 | Vendored upstream content changes silently | Every pin is exact, and CI regenerates all vendored content and fails on a difference |
 
-The assumed cause is a mistake, or an agent misled by content it read (a web page, a file in a repo). It is **not** a defence against a determined attacker, a malicious plugin, or code you choose to run yourself. The guardrails are not a sandbox.
+The assumed cause is a mistake, or an agent misled by content it read (a web page, a file in a repo). It is **not** a defense against a determined attacker, a malicious plugin, or code you choose to run yourself. The guardrails are not a sandbox.
 
 What Anthology changes outside the plugin, by who writes it:
 
@@ -66,7 +66,7 @@ Nothing is written to `~/.claude/CLAUDE.md`.
 
 Read these before relying on the guardrails. The guard is built to stop accidental browser installs and launches by cooperative agents. It is not a sandbox, and it does not defend against deliberate obfuscation.
 
-- **Two layers, neither a jail.** The deny rules cover Claude Code's built-in file tools and the Bash file commands it recognises. The hook, `hooks/guard.sh` and the `anthology` binary it runs (`anthology guard hook`), sees each tool call before it runs and blocks the call with exit code 2. There is no OS-level enforcement.
+- **Two layers, neither a jail.** The deny rules cover Claude Code's built-in file tools and the Bash file commands it recognizes. The hook, `hooks/guard.sh` and the `anthology` binary it runs (`anthology guard hook`), sees each tool call before it runs and blocks the call with exit code 2. There is no OS-level enforcement.
 - **A hook sees commands, not what a script does.** A script that launches Chrome internally is invisible to it. That is why the knowledge Anthology ships must never launch Chrome, and why the deny layer exists.
 - **Rules match commands, not text.** `grep playwright package.json` is allowed on purpose.
 - **Indirection is blocked, with known limits.** A command whose program, script or evaluated text comes from a value the guard cannot see is blocked as too complex to check (G0). The next section lists exactly what that covers and what still gets through.
@@ -124,7 +124,7 @@ The guard is a small POSIX `sh` shim, `hooks/guard.sh`, that runs the `anthology
 - **Residual risk while the binary is missing.** The read-only tools above are let through unchecked, so guardrail G3 (Chrome profiles) is not enforced for `Read`, `Grep`, `Glob`, `LS`, `NotebookRead` or `WebFetch` (a `file:` URL) until the binary is installed. The native `Read(…)` deny rules that setup adds still apply.
 - **A stopped guard.** The binary starts its own 8-second watchdog before it reads its input. Only a process that cannot run at all (stopped with SIGSTOP, a kernel stall) reaches the 60-second hook timeout. Claude Code then blocks the call with its generic `onFailure` message, which names neither the cause nor `/plugin`.
 - **Integrity is checked at session start, not per call.** Each session start re-hashes the installed binary against `anthology.lock` and its install record, and sets it aside on a mismatch. A binary changed in the middle of a session runs until it fails, and is then set aside.
-- **Downloads.** The archive URL is fixed by the lock (`https://github.com/<repo>/releases/download/anthology-bin--v<version>/anthology-<target>.tar.gz`), and nothing is unpacked until its sha256 matches the lock. `curl` and GNU `wget` are limited to HTTPS; BusyBox `wget` has no such switch, so there the HTTPS URL and the pin decide which bytes are accepted. `node`, the last resort, honours `HTTPS_PROXY` only on node 24 or newer; on older node behind a proxy the download fails.
+- **Downloads.** The archive URL is fixed by the lock (`https://github.com/<repo>/releases/download/anthology-bin--v<version>/anthology-<target>.tar.gz`), and nothing is unpacked until its sha256 matches the lock. `curl` and GNU `wget` are limited to HTTPS; BusyBox `wget` has no such switch, so there the HTTPS URL and the pin decide which bytes are accepted. `node`, the last resort, honors `HTTPS_PROXY` only on node 24 or newer; on older node behind a proxy the download fails.
 - **Air-gapped installs.** Copy the release's `anthology-<target>.tar.gz` into `~/.claude/anthology/bin/` and start a new session. That file is tried first and is used only if its sha256 matches the pin; a file that does not match is neither used nor deleted, and the message names it. Maintainers build the same layout for tests with `anthology-dev seed`, which writes a seed archive, an installed binary and matching locks into a scratch copy of the plugins.
 - **Checking a release yourself.** Download an archive and run `gh attestation verify anthology-<target>.tar.gz --repo rbonweb/anthology`, then compare its sha256 with `anthology.lock`.
 

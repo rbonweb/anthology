@@ -430,7 +430,7 @@ fn the_arithmetic_holder_shapes_are_not_proven() {
         "ls `",
         "cat <(cat <(ls))",
         "cat $(cat $(ls))",
-        // the neighbours outside `$((`
+        // the neighbors outside `$((`
         "`echo agent-browser` open x",
         r#"$(echo open) -a "Google Chrome""#,
     ]);
@@ -1903,7 +1903,7 @@ fn a_read_of_an_obvious_secret_path_is_not_proven() {
         "cat ./.e*",
         "cat .net*",
     ]);
-    // the neighbours are plain
+    // the neighbors are plain
     for command in [
         "cat env.rs",
         "cat .environment",
@@ -2356,7 +2356,7 @@ fn a_git_format_that_runs_gpg_or_ssh_keygen_is_not_proven() {
         "git branch --format=%GS",
         "git log --pretty=%%G",
     ]);
-    // the neighbours: `%g` (reflog) and every other placeholder
+    // the neighbors: `%g` (reflog) and every other placeholder
     for command in [
         "git log --pretty=format:%h",
         "git log --pretty='%h %s %an'",
@@ -2450,7 +2450,7 @@ proptest! {
         }
     }
 
-    /// Shell-flavoured soup: the same property over text built from the tokens that matter.
+    /// Shell-flavored soup: the same property over text built from the tokens that matter.
     #[test]
     fn shell_soup_never_panics_and_a_proven_command_is_a_table_program(
         words in proptest::collection::vec(

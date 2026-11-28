@@ -1,6 +1,6 @@
 ---
 name: 'Marketing skills prior art (survey 2026-11-28)'
-description: 'Open-source marketing skills, agents and MCP servers for coding agents, with stars, licences, key needs'
+description: 'Open-source marketing skills, agents and MCP servers for coding agents, with stars, licenses, key needs'
 metadata:
   type: reference
   modified: 2026-11-28

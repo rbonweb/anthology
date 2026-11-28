@@ -1,4 +1,4 @@
-//! CLI behaviour of `version-bump` and `release-edit` that no Python test pins (exit codes
+//! CLI behavior of `version-bump` and `release-edit` that no Python test pins (exit codes
 //! GC-5, argparse messages R5, uncaught exceptions R10, the git gate marker R7). Not ledger
 //! targets: the Python suite has no such ids; the difftest compares these against the Python.
 

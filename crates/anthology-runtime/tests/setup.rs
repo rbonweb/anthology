@@ -343,7 +343,7 @@ mod preview_test {
         let out = f.preview(None);
         assert_eq!(mem::snapshot(f.tmp()), before);
         assert_eq!(f.atl_calls(), 0);
-        assert!(json::loads(&dumped(&out)).is_ok()); // JSON-serialisable
+        assert!(json::loads(&dumped(&out)).is_ok()); // JSON-serializable
     }
 
     #[test]
@@ -3728,7 +3728,7 @@ mod old_notes_by_type_test {
     }
 
     #[test]
-    fn the_move_is_refused_where_it_cannot_be_honoured_and_writes_nothing() {
+    fn the_move_is_refused_where_it_cannot_be_honored_and_writes_nothing() {
         let Some(n) = N::new() else { return };
         let before = mem::snapshot(n.f.tmp());
         let one = vec!["topics.md".to_string()];

@@ -31,10 +31,10 @@ pub const SUPERPOWERS: &str = "plugins/anthology-superpowers";
 pub const BUDGET: [(&str, u64); 12] = [
     ("researcher", 89267),       // measured 77623
     ("architect", 24131), // measured 20532, +126 atl rule, +393 credential path rule (owner, 2026-11-28)
-    ("implementer", 26601), // measured 23096 (karpathy-guidelines); 26601 with the Docker cache rule (owner, 2026-11-28)
-    ("debugger", 22774), // measured 19275 (karpathy-guidelines), +126 atl rule, +393 credential path rule (owner, 2026-11-28), +88 Docker cache rule (owner, 2026-11-28)
+    ("implementer", 26687), // measured 23096 (karpathy-guidelines); 26601 with the Docker cache rule (owner, 2026-11-28); +86 US English line (owner, 2026-11-28)
+    ("debugger", 22860), // measured 19275 (karpathy-guidelines), +126 atl rule, +393 credential path rule (owner, 2026-11-28), +88 Docker cache rule (owner, 2026-11-28), +86 US English line (owner, 2026-11-28)
     ("reviewer", 37538), // measured 32641: always + largest conditional (copy-editing), copy plan 2026-11-28
-    ("scout", 7677), // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl, +393 credential path rule (owner, 2026-11-28)
+    ("scout", 7763), // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl, +393 credential path rule (owner, 2026-11-28), +86 US English line (owner, 2026-11-28)
     ("docs-writer", 117281), // measured 101983: always + largest conditional (ux-microcopy), copy plan 2026-11-28
     ("ui-designer", 179165), // measured 155795: always + largest conditional (ux-microcopy), copy plan 2026-11-28
     ("ui-reviewer", 65986),  // measured 57379
@@ -97,7 +97,7 @@ pub fn sections(body: &str) -> (Vec<String>, Vec<(String, String)>) {
     (names, map)
 }
 
-/// `str(Path(p))`: pathlib's normalised spelling (no `.` parts, no repeated or trailing `/`;
+/// `str(Path(p))`: pathlib's normalized spelling (no `.` parts, no repeated or trailing `/`;
 /// exactly two leading slashes are kept; empty is `.`).
 pub fn pathlib_str(p: &str) -> String {
     let lead = if p.starts_with("//") && !p.starts_with("///") {

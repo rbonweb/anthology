@@ -643,7 +643,7 @@ mod tests {
                 "The tapestry museum opens at ten.",
                 "A tapestry kit with a needle.",
                 "Tapestry wool by the skein.",
-                "Tapestry yarn in six colours.",
+                "Tapestry yarn in six colors.",
                 "Tapestry workshops are full.",
                 "A woven tapestry hangs here.",
                 "An antique tapestry hangs here.",
@@ -656,7 +656,7 @@ mod tests {
                 "Elevate\nthe privileges.",
             ],
         );
-        // the neighbours that are not on a list stay flagged
+        // the neighbors that are not on a list stay flagged
         assert_each_flagged(
             ai_vocab,
             &[

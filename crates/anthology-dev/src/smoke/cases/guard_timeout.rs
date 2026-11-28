@@ -1,6 +1,6 @@
 //! `guard-timeout` (m-8): a `PreToolUse` command hook that outlives its `timeout` with
 //! `onFailure: "block"` blocks the call, and the tool result says the hook timed out. A model
-//! smoke, modelled on `missing-interpreter`; needs no Anthology binary.
+//! smoke, modeled on `missing-interpreter`; needs no Anthology binary.
 //!
 //! The wording is what Claude Code 2.1.311 prints (see `guard_timeout_problems`): the tool result
 //! `PreToolUse:Bash hook error: [sleep 30]: timed out; blocking because onFailure is "block"`.

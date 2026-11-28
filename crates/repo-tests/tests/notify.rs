@@ -2,7 +2,7 @@
 //! toast. A notification app of the user's choice works alongside it; the `/anthology-status` pane
 //! stays.
 //!
-//! The behaviour of the mod is pinned in `plugins/anthology/tests/mods/alerts.test.ts`, and the
+//! The behavior of the mod is pinned in `plugins/anthology/tests/mods/alerts.test.ts`, and the
 //! absence of a `Notification` hook in `cutover_hooks.rs`, `shims/statics.rs` and
 //! `anthology-runtime/tests/atl_install.rs`. This file holds what only the file tree can show.
 

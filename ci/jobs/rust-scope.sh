@@ -28,7 +28,7 @@
 #                  packages, those a rule names, and all of them for a difftest change
 #   atl            true when atl-test runs: atl/ changed, or a crate atl builds did
 #   atl_macos      true when atl-test-macos runs: atl/ itself changed (or a full run); its tests
-#                  meet macOS-only path behaviour, such as the /private/var symlinks
+#                  meet macOS-only path behavior, such as the /private/var symlinks
 #   fuzz           true when fuzz-build runs: fuzz/ changed, or a crate the targets build did
 #   run_linux      true when any Linux shard runs
 #   run_macos      true when the macOS shards run: always for a full run, otherwise when a

@@ -841,6 +841,27 @@ mod roster_test {
         }
     }
 
+    // The owner wants US English everywhere, so every agent carries the same sentence and writes
+    // color, behavior, organize, license and canceled in files, commits and reports. It sits in
+    // the Do section, on a line of its own or at the end of a writing rule when the body is full.
+    #[test]
+    fn test_every_agent_is_told_to_write_us_english() {
+        each_agent(
+            |_| true,
+            |spec, p| {
+                let Some((_, _, rules)) = load_section(spec.name, "Do", p) else {
+                    return;
+                };
+                expect_in(
+                    p,
+                    "Write US English (color, behavior, organize, license, canceled), never UK spelling.",
+                    &rules,
+                    "Do",
+                );
+            },
+        );
+    }
+
     // The shell rules are not repeated in the Do section of the writers.
     #[test]
     fn test_writers_do_not_repeat_the_shell_rules() {

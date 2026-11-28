@@ -32,12 +32,12 @@ fn re(pattern: &str) -> Regex {
 
 static GRADIENT_CALL: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)(?:linear|radial|conic)-gradient\("));
-/// The first item of a gradient's arguments when it is no colour stop: an angle, a direction
+/// The first item of a gradient's arguments when it is no color stop: an angle, a direction
 /// (`to right`), a shape or size (`circle`, `ellipse`, `closest-side`), a position (`at 30% 20%`),
-/// a conic start (`from 0deg`) or a colour space (`in oklch`).
+/// a conic start (`from 0deg`) or a color space (`in oklch`).
 static PRELUDE: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)^(?:[-+.\d]|(?:to|from|in|at)\s|circle|ellipse|closest-|farthest-)"));
-/// A colour hint between two stops: a bare length or percentage.
+/// A color hint between two stops: a bare length or percentage.
 static HINT: LazyLock<Regex> = LazyLock::new(|| re(r"^[-+]?(?:\d+\.?\d*|\.\d+)(?:%|[A-Za-z]+)?$"));
 static VAR_DECL: LazyLock<Regex> = LazyLock::new(|| re(r#"(--[A-Za-z0-9_-]+)\s*:\s*([^;{}"']*)"#));
 static VAR_USE: LazyLock<Regex> =
@@ -499,8 +499,8 @@ fn gradient_calls(css: &str) -> Vec<(usize, usize, usize)> {
         .collect()
 }
 
-/// The colour stops of a gradient's arguments, each as the colours it holds: the items between
-/// top-level commas, without the leading angle, shape or position and without colour hints (a bare
+/// The color stops of a gradient's arguments, each as the colors it holds: the items between
+/// top-level commas, without the leading angle, shape or position and without color hints (a bare
 /// length or percentage).
 fn stops(args: &str) -> Vec<Vec<Rgba>> {
     let mut items = top_level_items(args);
@@ -535,7 +535,7 @@ fn top_level_items(args: &str) -> Vec<&str> {
 
 /// The stock purple gradient: two or three stops with a violet among them, and either every stop
 /// violet, indigo, purple or pink-violet, or (two stops) the other end a saturated blue or pink.
-/// A stop with several colours (a var declared for a light and a dark theme) counts when any one
+/// A stop with several colors (a var declared for a light and a dark theme) counts when any one
 /// of them does. A longer list is a legend, a hue slider or a brand palette, not the tell.
 fn is_purple_stock(stops: &[Vec<Rgba>]) -> bool {
     if !(2..=3).contains(&stops.len()) {
@@ -585,7 +585,7 @@ impl<'a> Vars<'a> {
     }
 
     /// `text` with each `var(--x)` replaced by what `--x` resolves to, `depth` links deep. A
-    /// variable with no declaration stays, so its fallback colour is still read.
+    /// variable with no declaration stays, so its fallback color is still read.
     fn expand(&mut self, text: &str, depth: usize) -> Option<String> {
         if text.len() > MAX_RESOLVED {
             return None;
@@ -719,7 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn every_gradient_kind_and_colour_form_counts() {
+    fn every_gradient_kind_and_color_form_counts() {
         for doc in [
             "a { background: radial-gradient(circle, hsl(262 83% 58%), hsl(330 80% 60%)); }",
             "a { background: conic-gradient(from 0deg, rgba(124, 58, 237, 0.4), #ec4899); }",
@@ -1013,7 +1013,7 @@ mod tests {
     }
 
     #[test]
-    fn clip_alone_or_a_background_colour_is_not_gradient_text() {
+    fn clip_alone_or_a_background_color_is_not_gradient_text() {
         assert!(gradient_text(&css(".t { background-clip: text; }")).is_empty());
         assert!(
             gradient_text(&css(

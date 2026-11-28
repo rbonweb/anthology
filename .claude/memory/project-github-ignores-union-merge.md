@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-The repo's `.gitattributes` marks the generated memory indexes (`MEMORY.md`) as `merge=union`. Local git honours it; GitHub does not. A PR whose branch and `build` both added a line to the same index shows CONFLICTING, and `gh pr update-branch` fails with "Cannot update PR branch due to conflicts", while `git merge-tree --write-tree origin/build origin/<branch>` is clean.
+The repo's `.gitattributes` marks the generated memory indexes (`MEMORY.md`) as `merge=union`. Local git honors it; GitHub does not. A PR whose branch and `build` both added a line to the same index shows CONFLICTING, and `gh pr update-branch` fails with "Cannot update PR branch due to conflicts", while `git merge-tree --write-tree origin/build origin/<branch>` is clean.
 
 **Why:** seen 2026-11-23 on the project-map PR and the guard docker-exec PR.
 

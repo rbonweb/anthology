@@ -1,7 +1,7 @@
 //! Word-level refusals on top of the classifier's table, read from the same parse the classifier
 //! cross-checks (`anthology_shell::analyze`): every stage's program and arguments, quotes removed.
 //!
-//! - `grep`, `egrep` and `fgrep` with `GREP_OPTIONS` set (BSD grep honours it), and `rg` with
+//! - `grep`, `egrep` and `fgrep` with `GREP_OPTIONS` set (BSD grep honors it), and `rg` with
 //!   `RIPGREP_CONFIG_PATH` set (it can add any option): no decision.
 //! - git, any word holding a signature atom (`%G…`, `%(signature…)`, `--sort=signature`): it runs
 //!   gpg or ssh-keygen.

@@ -714,7 +714,7 @@
  },
  "eval_baseline": {
   "prog": "eval_baseline.py",
-  "description": "Baseline gate for the behaviour evals: record scores, then fail on a regression.",
+  "description": "Baseline gate for the behavior evals: record scores, then fail on a regression.",
   "args": [
    {
     "sub": {

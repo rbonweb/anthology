@@ -76,7 +76,7 @@ The two density rules leave out structure and plain verb phrases, since people w
 - **Brackets.** A dash inside `[...]` on the same line does not count.
 - **Lists of three.** A list never crosses a line break. It is dropped when the word after it starts an object (`the`, `a`, `your`, `it`, and similar), because then the last two words are a verb phrase, as in `stop and return the question`.
 
-The codes in parentheses are entries in the avoid-ai-design catalogue, which the `ui-reviewer` agent also scores against. `anthology slop rules` prints the same list with each rule's kind, its files and a one-line summary.
+The codes in parentheses are entries in the avoid-ai-design catalog, which the `ui-reviewer` agent also scores against. `anthology slop rules` prints the same list with each rule's kind, its files and a one-line summary.
 
 Every rule has to give no finding on this repo's own docs. CI runs all of them over `README.md`, the other top-level documents and every page under `docs/` (`crates/repo-tests/tests/slop_corpus.rs`), so a rule that flags a human page is narrowed, never waived.
 
@@ -94,9 +94,9 @@ Ignore, CSS and JS:         /* slop-ignore-start */      ...   /* slop-ignore-en
 Ignore, JSX:                {/* slop-ignore-start */}    ...   {/* slop-ignore-end */}
 
 Waive, Markdown and HTML:   <!-- slop-ok: text.ai-vocab the product is called Seamless Sync -->
-Waive, JSX:                 {/* slop-ok: ui.purple-gradient brand colour from the style guide */}
-Waive, CSS and JS:          /* slop-ok: ui.purple-gradient brand colour from the style guide */
-                            // slop-ok: ui.purple-gradient brand colour from the style guide
+Waive, JSX:                 {/* slop-ok: ui.purple-gradient brand color from the style guide */}
+Waive, CSS and JS:          /* slop-ok: ui.purple-gradient brand color from the style guide */
+                            // slop-ok: ui.purple-gradient brand color from the style guide
 ```
 
 A waiver with an unknown rule ID or a shorter reason waives nothing, and the hit stands. A density hit has no single line, so a valid waiver for that rule on any line of the new text waives it.

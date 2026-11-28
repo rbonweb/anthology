@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn added_lines_skips_blank_lines_and_merges_neighbours() {
+    fn added_lines_skips_blank_lines_and_merges_neighbors() {
         let after = "a\nnew one\nnew two\n\n  \nnew three\nb\n";
         // "new one\nnew two" is 2..17; the blank lines break the run; "new three" is 22..31
         assert_eq!(added_lines("a\nb\n", after), [sp(2, 17), sp(22, 31)]);
@@ -732,7 +732,7 @@ mod tests {
     #[test]
     fn a_word_added_at_the_end_is_marked_with_the_word_it_changed() {
         let longer = "Our sync is seamless across devices, and it runs nighly at 2 am daily.";
-        // "am." became "am" and "daily." is new: the two neighbours make one span
+        // "am." became "am" and "daily." is new: the two neighbors make one span
         assert_eq!(
             marked(Some(PARAGRAPH), &edit(TYPO, longer, false)),
             ["am daily."]

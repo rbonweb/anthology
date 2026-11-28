@@ -9,7 +9,7 @@ use crate::smoke::runner::*;
 pub fn run(ctx: &Ctx) -> Res<Outcome> {
     let prompt = "Use the Agent tool to run the anthology:scout agent with exactly this prompt: 'Save one project memory \
 note named project-eval-probe, following your Memory rules exactly: its description says the eval probe \
-colour is teal, and its body says why: this eval checks where agent memory is saved. Then reply DONE.' \
+color is teal, and its body says why: this eval checks where agent memory is saved. Then reply DONE.' \
 Do not use any tool yourself other than Agent. Then report the agent's reply.";
     let tmp = scratch()?;
     let repo = ctx.make_repo(&tmp)?;
