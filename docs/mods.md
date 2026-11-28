@@ -73,14 +73,42 @@ Approvals come first because nothing moves until you answer them. A subagent's a
 
 Not built yet: a block of open pull requests and their CI status (it needs `gh`). The pane does not show it.
 
+## Secret masking
+
+The mod `hooks/mods/masking.ts` masks secrets in the output of a Bash call before Claude reads it, for the main session and for subagents. A secret is replaced with a marker such as `[masked by anthology: github-token]`; the rest of the output is left as it was. The marker names the kind of secret, never the value. The result Claude Code writes to the transcript is the masked one too.
+
+What it masks: AWS access keys, GitHub tokens, API keys, Slack tokens, private keys (the lines between `BEGIN` and `END` become one marker line, and both header lines stay) and the value of a `password` or `api_key` setting. It leaves lockfile hashes, git SHAs, integrity strings (`sha512-...`), CSS class names and code that only reads a secret (`password = os.environ["DB_PASSWORD"]`) as they were.
+
+How it stays fast: a cheap text check runs first, and the masker, `anthology guard mask`, starts only when the output holds a likely match. Output with no match starts no process. Output over 1,000,000 characters is left as it is.
+
+Only Bash results are masked. Output of Read, background commands and other tools is not, and neither are other kinds of secret (JWTs, bearer tokens, Stripe keys).
+
+The mod fails open: with the binary missing or too old, an error or a timeout, Claude sees the output unmasked.
+
+Claude may not write the marker into a file. A Write, Edit or MultiEdit whose new text contains `[masked by anthology:` is refused, with the message to write the real value from its source (an env file or `~/.config/<project>/<service>.env`) and never the marker.
+
+## Parallel work reminder
+
+During a long build with a plan and a ledger in `.superpowers/sdd`, the lead tends to run one task at a time when more could start. The mod `hooks/mods/nudge.ts` adds one reminder to an agent's report, in the main session only, when:
+
+- the repo has a `.superpowers/sdd` folder (a repo without one costs one file check);
+- the newest `progress.md` in it changed in the last 6 hours, its first line names a plan that exists, and no ledger line starts with `Serial:`;
+- tasks of the plan are not started, at most two other agents are running, and at least one task could start now.
+
+The reminder says how many agents run and how many tasks are not started, and asks the lead to start each task whose inputs are published, one agent per task. If the rest must wait, the lead adds a line `Serial: <reason>` to the ledger, and the reminder stops.
+
+It shows at most once every 20 minutes, and not again for the same number of tasks left. It adds nothing to the report of a subagent, or in an embedded host (see [Host mode](agents.md#host-mode)). It fails open: an error leaves the report as it was.
+
 ## Switches
 
 Set these in the environment, for example in the `env` block of `~/.claude/settings.json`, and restart the session.
 
 | Switch | Effect |
 |---|---|
-| `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the status pane, and the read-only commands mod |
+| `ANTHOLOGY_MODS=0` | Turns off every Anthology mod: strict delegation, the after-work check, the status pane, the read-only commands mod, secret masking and the parallel work reminder |
 | `ANTHOLOGY_DELEGATION=0` | Turns off strict delegation (for one approved repo only: `{"delegation": false}` in its `.claude/anthology.json`, see [Your own agents and skills](agents.md#your-own-agents-and-skills)) |
 | `ANTHOLOGY_AFTERWORK=0` | Turns off the after-work check |
+| `ANTHOLOGY_SECRET_MASK=0` | Turns off secret masking of Bash output |
+| `ANTHOLOGY_NUDGE=0` | Turns off the parallel work reminder |
 | `ANTHOLOGY_SLOP_GATE=0` | Turns off the slop gate (see [The slop gate](slop-gate.md)) and its part of the after-work check |
 | `ANTHOLOGY_HOST_MODE=full` | Opts back in when another program drives the session (see [Host mode](agents.md#host-mode)) |

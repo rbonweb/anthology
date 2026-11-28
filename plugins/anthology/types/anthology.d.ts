@@ -9,6 +9,11 @@ declare module 'claude-code' {
       /** strict delegation: whether the system prompt carries the coordinator section */
       coordinator: boolean
       /**
+       * parallel work reminder (hooks/mods/nudge.ts): the last reminder, so it is not repeated.
+       * `ledger` is the SDD ledger path it was about, `pending` the tasks left then, `at` epoch ms.
+       */
+      nudge: { ledger: string; pending: number; at: number }
+      /**
        * alerts and status pane (hooks/mods/alerts.tsx): what the pane draws. A pane reads it while
        * it draws, so a write redraws it, and a hot reload keeps it. Times are epoch milliseconds.
        * Change the shape tag on its atom when a row's fields change.

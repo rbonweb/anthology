@@ -19,10 +19,13 @@
 //
 // `tool.check` is hooked by the permissions feature alone, so it is registered in
 // `registerPermissions` like any single-owner event; only `agent.report` is shared (below).
+// Likewise `session.append` belongs to the masking feature alone (`registerMasking`).
 import type { Register } from 'claude-code'
 import { afterworkReport } from './afterwork.ts'
 import { alertsReport, registerAlerts } from './alerts.tsx'
 import { registerDelegation } from './delegation.ts'
+import { registerMasking } from './masking.ts'
+import { nudgeReport } from './nudge.ts'
 import { registerPermissions } from './permissions.ts'
 import { isolated } from './util.ts'
 
@@ -30,11 +33,14 @@ export const register: Register = on => {
   registerPermissions(on)
   registerAlerts(on)
   registerDelegation(on)
+  registerMasking(on)
 
-  // Shared: the after-work check (changes the text) and the status pane (tracks the run).
+  // Shared: the after-work check and the parallel work reminder (each changes the text, in that
+  // order) and the status pane (tracks the run).
   on('agent.report', async ($, e, next) => {
     const core = await next(e)
-    const report = await isolated(() => afterworkReport($, e, core), core)
+    let report = await isolated(() => afterworkReport($, e, core), core)
+    report = await isolated(() => nudgeReport($, e, report), report)
     await isolated(() => alertsReport($, e), undefined)
     return report
   }).catch(($, e, next) => next(e))
