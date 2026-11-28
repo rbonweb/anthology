@@ -627,11 +627,19 @@ fn hook_skips_exempt_paths() {
         "node_modules/p/README.md",
         "vendor/lib/a.md",
         "docs/fixtures/a.md",
+        "pkg/testdata/a.md",
+        "src/__mocks__/a.md",
+        "LICENSE.md",
+        "docs/Code_of_Conduct.md",
     ] {
         let file = fx.repo.join(rel);
         let run = fx.hook(&payload("Write", &write_input(s(&file), TELL), &fx.repo));
         assert_allowed(&run, rel);
     }
+    // a name that only holds the word is gated
+    let file = fx.repo.join("docs/licensing.md");
+    let run = fx.hook(&payload("Write", &write_input(s(&file), TELL), &fx.repo));
+    assert_blocked(&run, "Write", "docs/licensing.md", "licensing");
     // the Claude config folder, from CLAUDE_CONFIG_DIR. It is a repo of its own, as many are,
     // so no folder name below its root makes the file exempt: only the config-folder rule does.
     std::fs::create_dir_all(fx.config.join(".git")).unwrap();
