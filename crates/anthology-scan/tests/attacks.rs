@@ -405,11 +405,19 @@ setup(name="demo", version="1.0", cmdclass={"install": PostInstall})
 "#,
     );
     let s = repo.scan();
+    // A HIGH content finding in setup.py is raised to CRITICAL: it runs on install.
+    expect(
+        &s,
+        "yara.threat_process_download_exec",
+        "setup.py",
+        Severity::High,
+    );
+    expect(&s, "autorun.setup-py", "setup.py", Severity::Critical);
     expect(
         &s,
         "autorun.setup-py-cmdclass",
         "setup.py",
-        Severity::Critical,
+        Severity::Medium,
     );
     expect_exit(&s, 2);
 }
