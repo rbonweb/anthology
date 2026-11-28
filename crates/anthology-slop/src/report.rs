@@ -317,7 +317,7 @@ text.stock-phrase\tblock\tmarkdown,html,jsx\tstock opener or cliche
 text.chat-residue\tblock\tmarkdown,html,jsx\tchat-assistant wording in a file
 text.not-x-but-y\tblock\tmarkdown,html,jsx\tdenied-alternative contrast
 text.hype-cta\tblock\tmarkdown,html,jsx\thype call to action
-text.em-dash-density\tdensity\tmarkdown,html\tem dashes: 3 or more, over 1 per 120 words
+text.em-dash-density\tdensity\tmarkdown,html\tem dashes: 3 or more, over 1 per 80 words
 text.triad-density\tdensity\tmarkdown,html\tlists of three: 3 or more, over 1 per 150 words
 ui.purple-gradient\tblock\tcss,html,jsx\tpurple or indigo gradient (C1)
 ui.gradient-text\tblock\tcss,html,jsx\tgradient-filled text (C6)

@@ -53,7 +53,7 @@ A **block** rule refuses on one hit. A **density** rule counts hits across the n
 | `text.chat-residue` | Markdown, HTML, JSX | block | Chat-assistant wording left in a file: `I hope this helps`, `let me know if you have any questions`, `I'd be happy to help`, `great question`, `you're absolutely right`, `as an AI, I`, `here's the revised version`, and a sentence that opens with `Certainly!`, `Absolutely!` or `Sure!`. |
 | `text.not-x-but-y` | Markdown, HTML, JSX | block | A contrast that says what a thing is not before it says what it is: `It's not a tool, it's a platform.`, `This isn't just a cache; it's a memory layer.`, `It's not about speed. It's about trust.` |
 | `text.hype-cta` | Markdown, HTML, JSX | block | Hype calls to action: `ready to transform`, `to the next level`, `join thousands of`, `say goodbye to`, `at your fingertips`, `in just a few clicks`, `we've got you covered`, `don't miss out`. |
-| `text.em-dash-density` | Markdown, HTML | density | 3 or more em dashes (`—`, or an en dash with a space on each side) at a rate above 1 per 120 words. Dashes in table rows and after the bold lead term of a list item do not count. |
+| `text.em-dash-density` | Markdown, HTML | density | 3 or more em dashes (`—`, or an en dash with a space on each side) at a rate above 1 per 80 words. Dashes in table rows and after the bold lead term of a list item do not count. |
 | `text.triad-density` | Markdown, HTML | density | 3 or more lists of three, such as `plans, specs and roadmaps`, at a rate above 1 per 150 words. Each item needs 4 letters or more. |
 | `ui.purple-gradient` | CSS, HTML, JSX | block | A gradient with a violet or indigo stop (`C1`): `linear-gradient(135deg, #6366f1, #a855f7)`, or the Tailwind classes `bg-gradient-to-r from-indigo-500 to-purple-600`. A `var(--x)` is resolved first. A blue gradient passes. |
 | `ui.gradient-text` | CSS, HTML, JSX | block | Text filled with a gradient (`C6`): `background-clip: text` together with a transparent text fill, or `bg-clip-text text-transparent`. |
@@ -96,7 +96,9 @@ Use a waiver only for wording the user asked for word for word, such as a produc
 
 - Any file whose extension is not in the table above.
 - Anything under the Claude config folder: `CLAUDE_CONFIG_DIR`, else `~/.claude`.
-- A file with one of these folder names in its path below the repository root: `.git`, `.claude`, `.superpowers`, `node_modules`, `vendor`, `third_party`, `dist`, `build`, `.next`, `coverage`, `fixtures`, `__fixtures__` and `__snapshots__`. The root is the nearest folder above the file that holds `.git`, as a folder or a file. With no such folder, the whole path is searched for those names.
+- A file with one of these folder names in its path below the repository root, in any letter case: `.git`, `.claude`, `.superpowers`, `node_modules`, `vendor`, `third_party`, `dist`, `build`, `.next`, `coverage`, `fixtures`, `__fixtures__`, `__snapshots__`, `__tests__` and `stories`. The root is the nearest folder above the file that holds `.git`, as a folder or a file. With no such folder, the whole path is searched for those names.
+- A git submodule inside one of those folders, such as `vendor/lib`. It has its own `.git` file, so the search goes on above it, up to the repository that holds it.
+- A story or test file: a name with `.stories.`, `.test.` or `.spec.` in it, such as `Button.stories.tsx` or `guide.test.md`.
 
 An agent's worktree sits under `<repo>/.claude/worktrees/<id>/` and holds its own `.git` file, so it is its own root and is checked. Only the repo's own `.claude/` folder (the memory notes, for one) is skipped.
 
