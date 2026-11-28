@@ -3587,12 +3587,88 @@ mod check_hint_test {
         fs::create_dir_all(dir.join(".vscode/tasks.json")).unwrap();
         fs::create_dir_all(dir.join(".claude/settings.json")).unwrap();
         assert!(check_hint::surfaces(&dir).is_empty());
-        // a link to a file elsewhere is read as the file
+        // a link out of the repo is not read, and counts as a surface
         fs::remove_dir(dir.join(".claude/settings.json")).unwrap();
         let outside = f.tmp().join("outside.json");
         write(&outside, HOOKS, None);
         symlink(&outside, dir.join(".claude/settings.json")).unwrap();
         assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS]);
+    }
+
+    #[test]
+    fn a_link_out_of_the_repo_is_not_followed_and_one_inside_is_read() {
+        let f = Fx::new();
+        let dir = repo(&f, "links");
+        // The file the link names holds nothing: a surface here means it was not read.
+        let outside = f.tmp().join("outside-clean.json");
+        write(&outside, r#"{"permissions": {}}"#, None);
+        fs::create_dir_all(dir.join(".claude")).unwrap();
+        symlink(&outside, dir.join(".claude/settings.json")).unwrap();
+        assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS], "link to a file");
+        fs::remove_file(dir.join(".claude/settings.json")).unwrap();
+        // A folder link out of the repo is not followed either.
+        let elsewhere = f.tmp().join("elsewhere");
+        write(
+            &elsewhere.join("settings.json"),
+            r#"{"permissions": {}}"#,
+            None,
+        );
+        fs::remove_dir(dir.join(".claude")).unwrap();
+        symlink(&elsewhere, dir.join(".claude")).unwrap();
+        assert_eq!(
+            check_hint::surfaces(&dir),
+            vec![SETTINGS],
+            "link to a folder"
+        );
+        fs::remove_file(dir.join(".claude")).unwrap();
+        // A link that stays inside the repo is read as the file it names.
+        put(&dir, "shared/clean.json", r#"{"permissions": {}}"#);
+        put(&dir, "shared/hooked.json", HOOKS);
+        fs::create_dir_all(dir.join(".claude")).unwrap();
+        symlink(
+            dir.join("shared/clean.json"),
+            dir.join(".claude/settings.json"),
+        )
+        .unwrap();
+        assert!(check_hint::surfaces(&dir).is_empty());
+        fs::remove_file(dir.join(".claude/settings.json")).unwrap();
+        symlink(
+            dir.join("shared/hooked.json"),
+            dir.join(".claude/settings.json"),
+        )
+        .unwrap();
+        assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS]);
+    }
+
+    #[test]
+    fn a_folder_open_written_with_json_escapes_still_counts() {
+        let f = Fx::new();
+        let dir = repo(&f, "escaped");
+        // `\u00XX` for one character, built here so no escape sits in the source text.
+        let esc = |c: char| format!("{}u{:04x}", '\\', c as u32);
+        let all: String = "folderOpen".chars().map(esc).collect();
+        let upper: String = "folderOpen"
+            .chars()
+            .map(|c| esc(c).to_uppercase())
+            .collect();
+        for run_on in [
+            format!("folder{}pen", esc('O')),
+            format!("{}olderOpen", esc('f')),
+            all,
+            // The hex digits are not case sensitive; the `u` is, so keep it lower case.
+            upper.replace('U', "u"),
+        ] {
+            let text = format!(r#"{{"tasks": [{{"runOptions": {{"runOn": "{run_on}"}}}}]}}"#);
+            put(&dir, ".vscode/tasks.json", &text);
+            assert_eq!(check_hint::surfaces(&dir), vec![TASK], "{run_on}");
+        }
+        // An escape that does not spell folderOpen is no surface.
+        let text = format!(
+            r#"{{"tasks": [{{"runOptions": {{"runOn": "d{}fault"}}}}]}}"#,
+            esc('e')
+        );
+        put(&dir, ".vscode/tasks.json", &text);
+        assert!(check_hint::surfaces(&dir).is_empty());
     }
 
     #[test]

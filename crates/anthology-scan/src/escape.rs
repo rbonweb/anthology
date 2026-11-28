@@ -6,7 +6,8 @@ use std::fmt::Write as _;
 use anthology_memory::privacy::secret_match_starts;
 
 /// True for a character `escape` writes as `\u{XXXX}`: controls other than newline and tab, and
-/// the invisible, joining, direction and private-use characters a repo can hide text in.
+/// the invisible, joining, direction, line-separator, combining-mark (U+0300 to U+036F, which holds
+/// U+034F, and the extended blocks) and private-use characters a repo can hide text in.
 fn is_hidden(c: char) -> bool {
     matches!(
         c as u32,
@@ -14,7 +15,12 @@ fn is_hidden(c: char) -> bool {
             | 0x0B..=0x1F
             | 0x7F..=0x9F
             | 0xAD
-            | 0x34F
+            | 0x300..=0x36F
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x20D0..=0x20FF
+            | 0xFE20..=0xFE2F
+            | 0x2028..=0x2029
             | 0x61C
             | 0x115F..=0x1160
             | 0x17B4..=0x17B5
@@ -202,6 +208,9 @@ mod tests {
             0x1160, 0x17B4, 0x17B5, 0x180B, 0x180F, 0x200B, 0x200F, 0x202A, 0x202E, 0x2060, 0x206F,
             0x3164, 0xFE00, 0xFE0F, 0xFEFF, 0xFFA0, 0xFFF0, 0xFFFB, 0x1BCA0, 0x1BCA3, 0x1D173,
             0x1D17A, 0xE0000, 0xE007F, 0xE0100, 0xE0FFF, 0xE000, 0xF8FF, 0xF0000, 0x10FFFF,
+            // Line and paragraph separators, and the combining mark blocks.
+            0x2028, 0x2029, 0x300, 0x301, 0x36F, 0x1AB0, 0x1AFF, 0x1DC0, 0x1DFF, 0x20D0, 0x20FF,
+            0xFE20, 0xFE2F,
         ];
         for &u in hidden {
             let c = char::from_u32(u).unwrap();
@@ -209,16 +218,29 @@ mod tests {
             assert_eq!(got, format!("\\u{{{u:04X}}}"), "U+{u:04X}");
         }
         let shown: &[u32] = &[
-            0x09, 0x0A, 0x20, 0x7E, 0xA0, 0xA1, 0xAC, 0x34E, 0x61B, 0x115E, 0x1161, 0x17B3, 0x17B6,
-            0x180A, 0x1810, 0x200A, 0x2010, 0x2029, 0x202F, 0x205F, 0x2070, 0x3163, 0xFDFF, 0xFE10,
-            0xFF9F, 0xFFEF, 0xFFFC, 0xFFFD, 0x1BC9F, 0x1BCA4, 0x1D172, 0x1D17B, 0xF900, 0xE1000,
-            0xEFFFF, 0x1F600,
+            0x09, 0x0A, 0x20, 0x7E, 0xA0, 0xA1, 0xAC, 0x2FF, 0x370, 0x61B, 0x115E, 0x1161, 0x17B3,
+            0x17B6, 0x180A, 0x1810, 0x1AAF, 0x1B00, 0x1DBF, 0x1E00, 0x200A, 0x2010, 0x2027, 0x202F,
+            0x205F, 0x2070, 0x20CF, 0x2100, 0x3163, 0xFDFF, 0xFE10, 0xFE1F, 0xFE30, 0xFF9F, 0xFFEF,
+            0xFFFC, 0xFFFD, 0x1BC9F, 0x1BCA4, 0x1D172, 0x1D17B, 0xF900, 0xE1000, 0xEFFFF, 0x1F600,
         ];
         for &u in shown {
             let Some(c) = char::from_u32(u) else { continue };
             let got = escape(c.to_string().as_bytes(), 100);
             assert_eq!(got, c.to_string(), "U+{u:04X}");
         }
+    }
+
+    #[test]
+    fn escape_shows_line_separators_and_combining_marks() {
+        assert_eq!(
+            escape("a\u{2028}b\u{2029}c".as_bytes(), 100),
+            "a\\u{2028}b\\u{2029}c"
+        );
+        // A stack of marks cannot pile up over the letter before it.
+        assert_eq!(
+            escape("e\u{301}\u{20D2}\u{1AB1}".as_bytes(), 100),
+            "e\\u{0301}\\u{20D2}\\u{1AB1}"
+        );
     }
 
     #[test]
