@@ -237,6 +237,7 @@ fn hook_blocks_a_write_with_a_tell() {
     let want = report::hook_message(
         "Write",
         "docs/a.md",
+        Kind::Markdown,
         &anthology_slop::check_all(Kind::Markdown, TELL),
     );
     assert!(want.contains("text.ai-vocab"), "{want}");
@@ -282,6 +283,53 @@ fn hook_blocks_an_edit_and_a_multiedit_with_a_tell() {
     // without replace_all, an old_string found twice does not apply: allowed
     let twice = edit_input(s(&file), "x", "We delve");
     assert_allowed(&fx.hook(&payload("Edit", &twice, &fx.repo)), "ambiguous");
+}
+
+#[test]
+fn hook_allows_an_edit_that_keeps_a_line_with_a_tell() {
+    let fx = Fx::new();
+    let file = fx.repo.join("docs/a.md");
+    let old = "Sync is seamless across devices.\nIt runs nightly.";
+    fx.write(&file, old.as_bytes());
+    let new = "Sync is seamless across devices.\nIt runs hourly.";
+    let edit = edit_input(s(&file), old, new);
+    assert_allowed(&fx.hook(&payload("Edit", &edit, &fx.repo)), "kept line");
+    // a tell on the changed line is still refused
+    let edit = edit_input(
+        s(&file),
+        old,
+        "Sync is seamless across devices.\nIt delves deeper.",
+    );
+    assert_blocked(
+        &fx.hook(&payload("Edit", &edit, &fx.repo)),
+        "Edit",
+        "docs/a.md",
+        "changed line",
+    );
+}
+
+#[test]
+fn hook_message_shows_the_waiver_syntax_of_the_file_kind() {
+    let fx = Fx::new();
+    let content = "export const A = () => <p>We delve into it.</p>;\n";
+    let jsx = fx.repo.join("src/a.tsx");
+    let run = fx.hook(&payload("Write", &write_input(s(&jsx), content), &fx.repo));
+    assert_blocked(&run, "Write", "src/a.tsx", "jsx");
+    assert!(
+        run.stderr
+            .contains("Add {/* slop-ok: <rule> <reason> */} only"),
+        "{}",
+        run.stderr
+    );
+    assert!(!run.stderr.contains("<!--"), "{}", run.stderr);
+    let md = fx.repo.join("docs/a.md");
+    let run = fx.hook(&payload("Write", &write_input(s(&md), TELL), &fx.repo));
+    assert!(
+        run.stderr
+            .contains("Add <!-- slop-ok: <rule> <reason> --> only"),
+        "{}",
+        run.stderr
+    );
 }
 
 #[test]

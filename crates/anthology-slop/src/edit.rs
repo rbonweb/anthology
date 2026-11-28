@@ -34,7 +34,8 @@ impl ToolEdit {
 /// when the edit would not apply.
 ///
 /// A Write over an existing file and a MultiEdit mark the lines of the result that are not lines
-/// of `before` (see `added_lines`). An Edit marks the text it inserts.
+/// of `before` (see `added_lines`). An Edit marks the lines of its `new` that are not lines of its
+/// `old`.
 pub fn apply(before: Option<&str>, edit: &ToolEdit) -> Option<(String, Vec<Span>)> {
     match edit {
         ToolEdit::Write { content } => {
@@ -65,7 +66,8 @@ pub fn apply(before: Option<&str>, edit: &ToolEdit) -> Option<(String, Vec<Span>
 }
 
 /// One Edit. An empty `old` only creates a file that is missing or empty; otherwise `old` must
-/// occur once, or any number of times with `replace_all`. The spans are the inserted `new` texts.
+/// occur once, or any number of times with `replace_all`. The spans are the lines of each inserted
+/// `new` that are not lines of `old` (see `added_lines`), so a line the Edit keeps is not new.
 fn replace(
     before: Option<&str>,
     old: &str,
@@ -94,17 +96,17 @@ fn replace(
     } else {
         return None;
     };
+    // The same in every place `old` is replaced: the lines of `new` that are not lines of `old`.
+    let fresh = added_lines(old, new);
     let mut out = String::with_capacity(text.len() + new.len() * at.len());
     let mut spans = Vec::new();
     let mut from = 0;
     for pos in at {
         out.push_str(&text[from..pos]);
-        if !new.is_empty() {
-            spans.push(Span {
-                start: out.len(),
-                end: out.len() + new.len(),
-            });
-        }
+        spans.extend(fresh.iter().map(|s| Span {
+            start: out.len() + s.start,
+            end: out.len() + s.end,
+        }));
         out.push_str(new);
         from = pos + old.len();
     }
@@ -281,6 +283,54 @@ mod tests {
         assert_eq!(
             apply(Some("one two three"), &edit("two", "2 bits", false)),
             done("one 2 bits three", &[sp(4, 10)])
+        );
+    }
+
+    #[test]
+    fn an_edit_marks_only_the_lines_it_changed() {
+        // review repro: line 1 is kept word for word, only line 2 changes
+        let before = "Sync is seamless across devices.\nIt runs nightly.";
+        let old = before;
+        let new = "Sync is seamless across devices.\nIt runs hourly.";
+        // "It runs hourly." is bytes 33..48
+        assert_eq!(
+            apply(Some(before), &edit(old, new, false)),
+            done(new, &[sp(33, 48)])
+        );
+        // the kept line has a tell, so the whole new text would have been refused
+        let (after, spans) = apply(Some(before), &edit(old, new, false)).unwrap();
+        assert!(crate::check(crate::Kind::Markdown, &after, &spans).is_empty());
+        assert!(!crate::check_all(crate::Kind::Markdown, &after).is_empty());
+    }
+
+    #[test]
+    fn an_edit_still_marks_a_new_line_next_to_kept_ones() {
+        let before = "intro\nkept\noutro\n";
+        let after = "intro\nkept\nfresh start\nkept again\noutro\n";
+        // "fresh start\nkept again" is bytes 11..33
+        assert_eq!(
+            apply(
+                Some(before),
+                &edit("kept\n", "kept\nfresh start\nkept again\n", false)
+            ),
+            done(after, &[sp(11, 33)])
+        );
+        // a copy of a kept line is new: only one copy was in `old`
+        assert_eq!(
+            apply(Some("a\nb\n"), &edit("a\n", "a\na\n", false)),
+            done("a\na\nb\n", &[sp(2, 3)])
+        );
+    }
+
+    #[test]
+    fn a_replace_all_line_diffs_each_insertion() {
+        // each occurrence keeps its unchanged line; "two" is new in both
+        assert_eq!(
+            apply(
+                Some("keep\nx\nmid\nkeep\nx\n"),
+                &edit("keep\nx", "keep\ntwo", true)
+            ),
+            done("keep\ntwo\nmid\nkeep\ntwo\n", &[sp(5, 8), sp(18, 21)])
         );
     }
 

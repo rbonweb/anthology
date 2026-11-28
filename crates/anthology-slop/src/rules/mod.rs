@@ -67,7 +67,7 @@ pub static RULES: &[Rule] = &[
         id: "text.em-dash-density",
         severity: Density,
         kinds: PAGES,
-        summary: "em dashes: 3 or more, over 1 per 120 words",
+        summary: "em dashes: 3 or more, over 1 per 80 words",
         hint: "use commas, colons, parentheses or full stops for most of these dashes",
         run: Run::Density(density::em_dash),
     },
