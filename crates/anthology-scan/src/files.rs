@@ -170,6 +170,21 @@ pub(crate) fn lang_of_program(prog: &str) -> Lang {
     }
 }
 
+/// Whether the file that starts with `head` is a binary to the interpreter of language `lang` that a
+/// command runs it with. A shell looks at the first 80 bytes and refuses a file with a NUL before
+/// the first line break, so only that is a binary there: a NUL later, or past the 80 bytes, is a
+/// script the shell runs. Any other interpreter reads a file with a known program or archive magic
+/// as a binary.
+pub(crate) fn is_binary_run_by(lang: Lang, head: &[u8]) -> bool {
+    if lang != Lang::Sh {
+        return magic(head).is_some();
+    }
+    head.iter()
+        .take(80)
+        .find(|&&c| c == 0 || c == b'\n')
+        .is_some_and(|&c| c == 0)
+}
+
 /// The kind a file has when a command runs it: code in the language of its extension, else the
 /// language of a `#!` first line in `head`, else `fallback` (the interpreter of the command, or a
 /// shell script).
@@ -615,6 +630,19 @@ mod tests {
         ] {
             assert!(!is_strict_json_name(p), "{p}");
         }
+    }
+
+    #[test]
+    fn a_shell_sees_a_binary_only_by_a_nul_before_the_first_newline_in_80_bytes() {
+        assert!(is_binary_run_by(Lang::Sh, b"ab\0cd\necho\n"));
+        assert!(is_binary_run_by(Lang::Sh, b"\x7fELF\x02\x01\x01\0"));
+        assert!(!is_binary_run_by(Lang::Sh, b"echo hi\n\0"));
+        assert!(!is_binary_run_by(Lang::Sh, b"echo hi"));
+        let long = [vec![b'x'; 80], b"\0\n".to_vec()].concat();
+        assert!(!is_binary_run_by(Lang::Sh, &long), "past the 80 bytes");
+        // Another interpreter goes by the magic of a program or an archive.
+        assert!(is_binary_run_by(Lang::Py, b"\x7fELF\x02\x01"));
+        assert!(!is_binary_run_by(Lang::Py, b"ab\0cd\n"));
     }
 
     #[test]

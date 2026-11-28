@@ -163,7 +163,6 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     for (path, target) in tree.gitdir_outside() {
         derived.push(gitdir_finding(path, target));
     }
-    derived.extend(case_twin_findings(&all_paths));
 
     // A link at a settings or agent path that resolved inside the root is read as its target.
     let files_at: Vec<usize> = entries
@@ -276,6 +275,13 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     let raise_errors =
         raise_file_findings(tree, hooks, &reached, &run_by_command, &kinds, &mut content);
     scan.errors.extend(raise_errors);
+    let surface_paths: HashSet<&str> = surfaces.iter().map(|s| s.path.as_str()).collect();
+    derived.extend(case_twin_findings(&all_paths, &|p| {
+        surface_paths.contains(p)
+            || reached.contains(p)
+            || files::is_autorun_name(p)
+            || (hooks.is_instruction)(p)
+    }));
     (hooks.raise_twins)(&all_paths, &mut content);
     (hooks.raise_reached)(&mut content, &|path| reached.contains(path));
     (hooks.entry_findings)(&all_paths, &mut content);
@@ -396,7 +402,9 @@ fn analyze(tree: &DiskTree, entry: &Entry, hooks: &Hooks, run_as: Option<Lang>) 
         Err(e) => return failed(e),
     };
     // A program (ELF, Mach-O, ...) that a command runs is a binary, not a script to read as text.
-    if run_as.is_some() && files::magic(&bytes).is_some() {
+    if let Some(lang) = run_as
+        && files::is_binary_run_by(lang, &bytes)
+    {
         return FileOut::default();
     }
     let kind = match run_as {
@@ -1056,7 +1064,6 @@ fn raise_file_findings(
         .filter(|p| {
             kinds.get(p.as_str()).is_some_and(|k| match k {
                 FileKind::Code(_) => true,
-                FileKind::Binary => false,
                 _ => run.contains_key(p.as_str()),
             })
         })
@@ -1067,7 +1074,11 @@ fn raise_file_findings(
         let Ok(bytes) = tree.read(path, cap) else {
             continue;
         };
-        if files::magic(&bytes).is_some() {
+        let binary = match run.get(path.as_str()) {
+            Some(lang) => files::is_binary_run_by(*lang, &bytes),
+            None => files::magic(&bytes).is_some(),
+        };
+        if binary {
             continue;
         }
         let kind = match (kinds.get(path.as_str()), run.get(path.as_str())) {
@@ -1104,10 +1115,13 @@ fn raise_file_findings(
     errors
 }
 
-/// A HIGH `files.case-twin` for every path that differs from another only in ASCII case. macOS and
+/// A `files.case-twin` for every path that differs from another only in ASCII case. macOS and
 /// Windows read the two as one name: a checkout there keeps one and drops the other, so the file
-/// the scan read is not the file the tool reads.
-fn case_twin_findings(paths: &[&str]) -> Vec<Finding> {
+/// the scan read is not the file the tool reads. The finding is HIGH when a path of the set is
+/// `important` (a settings, auto-run, instruction or reached path) and MEDIUM otherwise: a pair of
+/// headers that nothing reads (`xt_MARK.h` and `xt_mark.h`) is a nuisance, not an attack. The sets
+/// that matter come first when there are more than 100.
+fn case_twin_findings(paths: &[&str], important: &dyn Fn(&str) -> bool) -> Vec<Finding> {
     let mut groups: HashMap<String, Vec<&str>> = HashMap::new();
     for path in paths {
         groups
@@ -1120,12 +1134,24 @@ fn case_twin_findings(paths: &[&str]) -> Vec<Finding> {
         set.sort_unstable();
     }
     sets.sort();
+    let mut rated: Vec<(Severity, Vec<&str>)> = sets
+        .into_iter()
+        .map(|set| {
+            let severity = if set.iter().any(|p| important(p)) {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            (severity, set)
+        })
+        .collect();
+    rated.sort_by_key(|a| std::cmp::Reverse(a.0));
     let mut out = Vec::new();
-    for set in sets.into_iter().take(100) {
+    for (severity, set) in rated.into_iter().take(100) {
         for path in &set {
             let others: Vec<&str> = set.iter().copied().filter(|p| p != path).collect();
             out.push(Finding {
-                severity: Severity::High,
+                severity,
                 group: Group::Hidden,
                 rule: "files.case-twin".to_string(),
                 path: (*path).to_string(),
@@ -2788,14 +2814,15 @@ mod tests {
     // N1: names that differ only in case.
 
     #[test]
-    fn paths_that_differ_only_in_case_are_each_a_high_case_twin() {
-        let found = case_twin_findings(&[
+    fn paths_that_differ_only_in_case_are_each_a_case_twin() {
+        let paths = [
             ".claude/settings.json",
             ".Claude/settings.json",
             "a.txt",
             "b/c",
             "B/d",
-        ]);
+        ];
+        let found = case_twin_findings(&paths, &|p| p.ends_with("settings.json"));
         assert_eq!(found.len(), 2, "{found:#?}");
         for f in &found {
             assert_eq!(f.severity, Severity::High);
@@ -2805,26 +2832,58 @@ mod tests {
         assert_eq!(found[0].path, ".Claude/settings.json");
         assert_eq!(found[0].seen, ".claude/settings.json");
         assert_eq!(found[1].seen, ".Claude/settings.json");
-        assert!(case_twin_findings(&["a", "b", "A/b"]).is_empty());
+        assert!(case_twin_findings(&["a", "b", "A/b"], &|_| true).is_empty());
     }
 
     #[test]
-    fn the_real_scan_flags_two_files_that_differ_only_in_case() {
+    fn a_case_twin_is_high_only_when_a_twin_is_important_and_medium_otherwise() {
+        // R6: Linux headers such as `xt_MARK.h` and `xt_mark.h` are twins that nothing reads.
+        let paths = ["include/xt_MARK.h", "include/xt_mark.h", "A.js", "a.js"];
+        let found = case_twin_findings(&paths, &|p| p == "a.js");
+        let sev = |path: &str| found.iter().find(|f| f.path == path).unwrap().severity;
+        assert_eq!(sev("include/xt_MARK.h"), Severity::Medium);
+        assert_eq!(sev("include/xt_mark.h"), Severity::Medium);
+        // One important twin makes the whole set HIGH.
+        assert_eq!(sev("a.js"), Severity::High);
+        assert_eq!(sev("A.js"), Severity::High);
+    }
+
+    #[test]
+    fn the_real_scan_rates_a_case_twin_by_what_reads_it() {
         let tmp = tempfile::tempdir().unwrap();
-        write(tmp.path(), "docs/Readme.md", b"one");
-        write(tmp.path(), "docs/README.md", b"two");
-        if fs::read_dir(tmp.path().join("docs")).unwrap().count() < 2 {
+        write(tmp.path(), "include/xt_MARK.h", b"one");
+        write(tmp.path(), "include/xt_mark.h", b"two");
+        write(tmp.path(), "package.json", b"{}");
+        write(tmp.path(), "run/Go.js", b"one");
+        write(tmp.path(), "run/go.js", b"two");
+        write(tmp.path(), ".claude/CLAUDE.md", b"one");
+        write(tmp.path(), ".claude/claude.md", b"two");
+        if fs::read_dir(tmp.path().join("include")).unwrap().count() < 2 {
             eprintln!("skipped: this file system keeps one name for both");
             return;
         }
-        let s = scan_with(tmp.path(), quiet());
+        let h = Hooks {
+            surfaces: |f, _| {
+                if f.path == "package.json" {
+                    open_surface(f.path, "node run/go.js", "")
+                } else {
+                    Vec::new()
+                }
+            },
+            files_run: |c| c.split_whitespace().skip(1).map(str::to_string).collect(),
+            is_instruction: |p| p.eq_ignore_ascii_case(".claude/claude.md"),
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        let sev = |path| by_rule(&s, "files.case-twin", path).severity;
+        assert_eq!(sev("include/xt_MARK.h"), Severity::Medium);
+        assert_eq!(sev("include/xt_mark.h"), Severity::Medium);
+        assert_eq!(sev("run/go.js"), Severity::High, "a command runs it");
+        assert_eq!(sev("run/Go.js"), Severity::High);
+        assert_eq!(sev(".claude/CLAUDE.md"), Severity::High, "an instruction");
         assert_eq!(
-            by_rule(&s, "files.case-twin", "docs/README.md").severity,
-            Severity::High
-        );
-        assert_eq!(
-            by_rule(&s, "files.case-twin", "docs/Readme.md").seen,
-            "docs/README.md"
+            by_rule(&s, "files.case-twin", "include/xt_mark.h").seen,
+            "include/xt_MARK.h"
         );
     }
 
@@ -2921,6 +2980,40 @@ mod tests {
             !s.findings.iter().any(|f| f.path == "src-link"),
             "{:#?}",
             s.findings
+        );
+    }
+
+    #[test]
+    fn a_fetched_placeholder_chain_is_parsed_or_high() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "docs/real.json", b"{\"hooks\":3}");
+        write(tmp.path(), ".claude/settings.json", b"../docs/hop");
+        write(tmp.path(), "docs/hop", b"real.json");
+        write(tmp.path(), ".claude/settings.local.json", b"../docs/back");
+        write(tmp.path(), "docs/back", b"../.claude/settings.local.json");
+        let modes: Vec<(String, u32)> = [
+            ".claude/settings.json",
+            "docs/hop",
+            ".claude/settings.local.json",
+            "docs/back",
+        ]
+        .iter()
+        .map(|p| ((*p).to_string(), 0o120_000))
+        .collect();
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&modes)).unwrap();
+        let h = Hooks {
+            check: echo_rule,
+            ..quiet()
+        };
+        let s = run_with(&tree, &h);
+        assert_eq!(
+            by_rule(&s, "echo.file", ".claude/settings.json").seen,
+            "{\"hooks\":3}"
+        );
+        assert_eq!(
+            by_rule(&s, "autorun.symlink-escape", ".claude/settings.local.json").severity,
+            Severity::High,
+            "a chain that never reaches a file"
         );
     }
 
@@ -3283,6 +3376,48 @@ mod tests {
         assert!(
             !s.findings.iter().any(|f| f.path == "notes.txt"),
             "{:#?}",
+            s.findings
+        );
+    }
+
+    #[test]
+    fn a_file_a_shell_runs_is_binary_only_if_a_nul_comes_before_the_first_newline() {
+        // Bash looks at the first 80 bytes: a NUL before the first line break means a binary.
+        let late_nul = [&b"echo hi\n"[..], b"\0\0 echo more\n"].concat();
+        let long_first_line = [vec![b'x'; 100], b"\0\n".to_vec()].concat();
+        let early_nul = b"ab\0cd\necho hi\n".to_vec();
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "package.json", b"{}");
+        write(tmp.path(), "late.txt", &late_nul);
+        write(tmp.path(), "long.txt", &long_first_line);
+        write(tmp.path(), "early.txt", &early_nul);
+        let h = Hooks {
+            surfaces: |f, _| {
+                if f.path != "package.json" {
+                    return Vec::new();
+                }
+                ["late.txt", "long.txt", "early.txt"]
+                    .iter()
+                    .flat_map(|name| open_surface(f.path, &format!("bash {name}"), ""))
+                    .collect()
+            },
+            raise_reached_file: |f, out| {
+                out.push(finding("stub.raised", f.path, Severity::High, 1, 1));
+            },
+            ..code_rule_hooks()
+        };
+        let s = scan_with(tmp.path(), h);
+        for name in ["late.txt", "long.txt"] {
+            assert_eq!(by_rule(&s, "stub.code-rule", name).seen, "Sh", "{name}");
+            assert_eq!(
+                by_rule(&s, "stub.raised", name).severity,
+                Severity::High,
+                "{name}"
+            );
+        }
+        assert!(
+            !s.findings.iter().any(|f| f.path == "early.txt"),
+            "a NUL on the first line is a binary: {:#?}",
             s.findings
         );
     }

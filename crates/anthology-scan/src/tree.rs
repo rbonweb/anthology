@@ -67,6 +67,8 @@ struct Linked<'a> {
     odd: bool,
     hops: u8,
     fetched: bool,
+    /// The git modes of a fetched tree (empty for a folder the user named).
+    modes: &'a HashMap<&'a str, u32>,
 }
 
 /// The limits of a walk.
@@ -380,6 +382,7 @@ impl DiskTree {
                         odd: child_odd,
                         hops,
                         fetched,
+                        modes,
                     };
                     self.surface_link(&path, &at, &mut queue)
                 } else if let Some(entry) = self.leaf(&real, &path, &meta, mode) {
@@ -486,8 +489,7 @@ impl DiskTree {
         let resolved = if at.meta.file_type().is_symlink() {
             self.inside(at.real)
         } else {
-            let base = at.real.parent().unwrap_or(at.real);
-            self.resolve_inside(base, &target)
+            self.follow_placeholders(at.real, &target, at.modes)
         };
         let found = resolved.and_then(|r| fs::symlink_metadata(&r).ok().map(|m| (r, m)));
         match found {
@@ -529,6 +531,34 @@ impl DiskTree {
                 true
             }
         }
+    }
+
+    /// Where a link placeholder (a file that holds a link's target, from a checkout with
+    /// `core.symlinks=false`) leads: `target` taken from the folder of the placeholder `real`. A
+    /// target that is itself a placeholder (its git mode is a link) is followed in turn, up to
+    /// `MAX_LINK_HOPS` placeholders. `None` if the chain leaves the root, loops, runs past the
+    /// cap or ends at nothing.
+    fn follow_placeholders(
+        &self,
+        real: &Path,
+        target: &str,
+        modes: &HashMap<&str, u32>,
+    ) -> Option<PathBuf> {
+        let mut base = real.parent().unwrap_or(real).to_path_buf();
+        let mut text = target.to_string();
+        for _ in 0..=MAX_LINK_HOPS {
+            let next = self.resolve_inside(&base, &text)?;
+            let rel = next.strip_prefix(&self.root).ok()?.to_str()?;
+            let placeholder = modes.get(rel) == Some(&MODE_SYMLINK)
+                && fs::symlink_metadata(&next).is_ok_and(|m| m.is_file());
+            if !placeholder {
+                return Some(next);
+            }
+            let bytes = read_regular(&next, LINK_TARGET_MAX).ok()?;
+            text = String::from_utf8_lossy(&bytes).into_owned();
+            base = next.parent()?.to_path_buf();
+        }
+        None
     }
 
     /// A `.git` in a folder the user named (`path` is `.git` or `<dir>/.git`): a folder, a link or
@@ -1557,6 +1587,77 @@ mod tests {
         assert_eq!(t.read(".claude/settings.json", 100).unwrap(), b"{}");
         assert!(t.is_linked(".cursor/rules.json"));
         assert_eq!(t.read(".cursor/rules.json", 100).unwrap(), b"{}");
+    }
+
+    fn placeholder_modes(paths: &[&str]) -> Vec<(String, u32)> {
+        paths
+            .iter()
+            .map(|p| ((*p).to_string(), 0o120_000))
+            .collect()
+    }
+
+    #[test]
+    fn a_chain_of_link_placeholders_in_a_fetch_is_followed_to_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "docs/real.json", b"{\"real\":1}");
+        // `core.symlinks=false`: each link is a file that holds its target.
+        write(tmp.path(), ".cursor/rules.json", b"../docs/hop1");
+        write(tmp.path(), "docs/hop1", b"hop2");
+        write(tmp.path(), "docs/hop2", b"real.json");
+        let modes = placeholder_modes(&[".cursor/rules.json", "docs/hop1", "docs/hop2"]);
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&modes)).unwrap();
+        assert!(t.is_linked(".cursor/rules.json"), "{:?}", t.entries());
+        assert_eq!(
+            t.read(".cursor/rules.json", 100).unwrap(),
+            b"{\"real\":1}",
+            "the file at the end of the chain, not a placeholder's text"
+        );
+        assert!(t.unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn a_chain_of_link_placeholders_that_loops_or_leaves_the_root_is_unresolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "outside/x.json", b"{}");
+        write(tmp.path(), "repo/.cursor/loop.json", b"../a");
+        write(tmp.path(), "repo/a", b"b");
+        write(tmp.path(), "repo/b", b"a");
+        write(tmp.path(), "repo/.cursor/out.json", b"../hop");
+        write(tmp.path(), "repo/hop", b"../../outside/x.json");
+        write(tmp.path(), "repo/.cursor/long.json", b"../c1");
+        for n in 1..8 {
+            write(
+                tmp.path(),
+                &format!("repo/c{n}"),
+                format!("c{}", n + 1).as_bytes(),
+            );
+        }
+        write(tmp.path(), "repo/c8", b"end.json");
+        write(tmp.path(), "repo/end.json", b"{}");
+        let modes = placeholder_modes(&[
+            ".cursor/loop.json",
+            "a",
+            "b",
+            ".cursor/out.json",
+            "hop",
+            ".cursor/long.json",
+            "c1",
+            "c2",
+            "c3",
+            "c4",
+            "c5",
+            "c6",
+            "c7",
+            "c8",
+        ]);
+        let t =
+            DiskTree::open(&tmp.path().join("repo"), &WalkOpts::default(), Some(&modes)).unwrap();
+        let mut unresolved = t.unresolved_links().to_vec();
+        unresolved.sort();
+        for p in [".cursor/loop.json", ".cursor/out.json", ".cursor/long.json"] {
+            assert!(unresolved.contains(&p.to_string()), "{p}: {unresolved:?}");
+            assert!(!t.is_linked(p), "{p}");
+        }
     }
 
     #[test]
