@@ -5,7 +5,7 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 /// A path whose part below the repo root has one of these components is exempt, in any case.
-pub const EXEMPT_DIRS: [&str; 15] = [
+pub const EXEMPT_DIRS: [&str; 17] = [
     ".git",
     ".claude",
     ".superpowers",
@@ -20,11 +20,25 @@ pub const EXEMPT_DIRS: [&str; 15] = [
     "__fixtures__",
     "__snapshots__",
     "__tests__",
+    "__mocks__",
+    "testdata",
     "stories",
 ];
 
 /// A file whose name has one of these as a dotted part (`Button.stories.tsx`) is exempt, in any case.
 const EXEMPT_FILE_PARTS: [&str; 3] = ["stories", "test", "spec"];
+
+/// A file whose name starts with one of these (lower case here), with or without an extension, is
+/// exempt, in any case: legal boilerplate has fixed wording, such as "express or implied", that
+/// the list-of-three rule would flag.
+const EXEMPT_NAME_PREFIXES: [&str; 6] = [
+    "license",
+    "licence",
+    "copying",
+    "notice",
+    "disclaimer",
+    "code_of_conduct",
+];
 
 /// The nearest folder above `path` that holds `.git` (a folder or a file), looking at most 64
 /// folders up. A Claude Code worktree has a `.git` file, so it is its own root.
@@ -37,8 +51,8 @@ pub fn repo_root(path: &Path) -> Option<PathBuf> {
 }
 
 /// Whether the gate skips `path`: it is under the Claude config folder, a folder in the part below
-/// the repo root is one of `EXEMPT_DIRS`, or its file name is a story or test file. Names match in
-/// any case. Only the part below the root counts, so a worktree at `<repo>/.claude/worktrees/<id>/`
+/// the repo root is one of `EXEMPT_DIRS`, or its file name is a story, test or legal file. Names
+/// match in any case. Only the part below the root counts, so a worktree at `<repo>/.claude/worktrees/<id>/`
 /// is gated while the repo's own `.claude/` is not. With no root the whole path is read.
 ///
 /// When the nearest root is a submodule (`is_submodule`), the part below the repo that holds it is
@@ -79,11 +93,16 @@ fn exempt_folder(path: &Path) -> bool {
 }
 
 /// Whether the file name of `path` has a dotted part of `EXEMPT_FILE_PARTS` that is neither the
-/// first nor the last part: `Button.stories.tsx` and `guide.test.md`, not `test.md`.
+/// first nor the last part (`Button.stories.tsx` and `guide.test.md`, not `test.md`), or starts
+/// with one of `EXEMPT_NAME_PREFIXES` (`LICENSE`, `license-mit.md`, `NOTICE.md`).
 fn exempt_name(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
+    let lower = name.to_ascii_lowercase();
+    if EXEMPT_NAME_PREFIXES.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
     let parts: Vec<&str> = name.split('.').collect();
     parts
         .get(1..parts.len().saturating_sub(1))
@@ -181,6 +200,68 @@ mod tests {
             "/r/docs/building/a.md",
             "/r/docs/distribution/a.md",
             "/r/docs/not-node_modules/a.md",
+        ] {
+            assert!(!exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+    }
+
+    #[test]
+    fn legal_boilerplate_files_are_exempt_in_any_case_with_or_without_an_extension() {
+        // fixed licence wording ("express or implied") trips the list-of-three rule
+        for path in [
+            "/r/LICENSE",
+            "/r/LICENSE.md",
+            "/r/license.md",
+            "/r/docs/License.MD",
+            "/r/LICENCE.md",
+            "/r/LICENSE-MIT.md",
+            "/r/LICENSE_APACHE.md",
+            "/r/COPYING",
+            "/r/COPYING.md",
+            "/r/copying.markdown",
+            "/r/NOTICE.md",
+            "/r/notice.mdx",
+            "/r/DISCLAIMER.md",
+            "/r/Disclaimer.md",
+            "/r/CODE_OF_CONDUCT.md",
+            "/r/.github/code_of_conduct.md",
+            "/r/pkg/NOTICE",
+        ] {
+            assert!(exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+        // only the name counts: a folder of the same name, or a name that merely holds the word
+        for path in [
+            "/r/docs/a.md",
+            "/r/docs/licensing.md",
+            "/r/docs/my-license.md",
+            "/r/docs/the-notice.md",
+            "/r/docs/copyright.md",
+            "/r/docs/conduct.md",
+            "/r/docs/codeofconduct.md",
+            "/r/LICENSE/a.md",
+            "/r/docs/NOTICE/a.md",
+        ] {
+            assert!(!exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+    }
+
+    #[test]
+    fn test_data_and_mock_folders_are_exempt() {
+        // review-2 M5: Go's `testdata/` and Jest's `__mocks__/` hold fixtures, as `fixtures/` does
+        for path in [
+            "/r/testdata/slop.md",
+            "/r/pkg/testdata/in/a.md",
+            "/r/src/__mocks__/a.tsx",
+            "/r/src/TestData/a.md",
+            "/r/src/__MOCKS__/a.tsx",
+        ] {
+            assert!(exempt(p(path), Some(p("/r")), None), "{path}");
+        }
+        // only a whole component counts
+        for path in [
+            "/r/docs/test-data/a.md",
+            "/r/src/mocks/a.tsx",
+            "/r/docs/data/a.md",
         ] {
             assert!(!exempt(p(path), Some(p("/r")), None), "{path}");
         }
