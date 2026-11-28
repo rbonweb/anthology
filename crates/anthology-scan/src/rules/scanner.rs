@@ -19,7 +19,13 @@ const CONFIG_NAMES: &[&str] = &[
 ];
 
 /// Inline markers that silence a scanner on one line. Split so this source does not carry them.
-const INLINE_MARKERS: [&str; 2] = [concat!("gitleaks", ":allow"), concat!("no", "semgrep")];
+/// zizmor reads its comment with or without the space and has no flag to turn that off.
+const INLINE_MARKERS: [&str; 4] = [
+    concat!("gitleaks", ":allow"),
+    concat!("no", "semgrep"),
+    concat!("zizmor", ": ignore"),
+    concat!("zizmor", ":ignore"),
+];
 
 /// Whether `path` is a scanner config or ignore file.
 fn is_scanner_config(path: &str) -> bool {
@@ -99,6 +105,8 @@ mod tests {
     /// A suppression marker, split so this source does not carry one.
     const GITLEAKS_ALLOW: &str = concat!("gitleaks", ":allow");
     const NO_SEMGREP: &str = concat!("no", "semgrep");
+    const ZIZMOR_IGNORE: &str = concat!("zizmor", ": ignore");
+    const ZIZMOR_IGNORE_COMPACT: &str = concat!("zizmor", ":ignore");
 
     #[test]
     fn scanner_config_files_are_low() {
@@ -161,8 +169,40 @@ mod tests {
     }
 
     #[test]
+    fn a_zizmor_ignore_comment_in_a_workflow_is_low() {
+        for marker in [ZIZMOR_IGNORE, ZIZMOR_IGNORE_COMPACT] {
+            let text = format!(
+                "jobs:\n  build:\n    steps:\n      - run: echo ${{{{ github.event.issue.title }}}}  # {marker}[template-injection]\n      - run: echo ${{{{ github.head_ref }}}}  # {marker}\n"
+            );
+            let out = run(".github/workflows/ci.yml", &text);
+            assert_eq!(out.len(), 1, "{marker}");
+            assert_eq!(out[0].rule, "scanner.inline-suppress");
+            assert_eq!(out[0].severity, Severity::Low);
+            assert_eq!(out[0].group, Group::Scanner);
+            assert_eq!(out[0].line, 4);
+            assert_eq!(out[0].count, 2);
+        }
+    }
+
+    #[test]
+    fn mentioning_zizmor_is_not_a_suppression() {
+        for text in [
+            "      - run: pipx run zizmor .\n",
+            "# zizmor checks workflows\n",
+            "# zizmor: config lives in .github\n",
+        ] {
+            assert!(run(".github/workflows/ci.yml", text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
     fn each_inline_marker_alone_is_found() {
-        for marker in [GITLEAKS_ALLOW, NO_SEMGREP] {
+        for marker in [
+            GITLEAKS_ALLOW,
+            NO_SEMGREP,
+            ZIZMOR_IGNORE,
+            ZIZMOR_IGNORE_COMPACT,
+        ] {
             let out = run("notes.txt", &format!("a\nb {marker}\n"));
             assert_eq!(out.len(), 1, "{marker}");
             assert_eq!(out[0].line, 2);
