@@ -1,7 +1,8 @@
 //! `hooks/slop-gate.sh`, the PreToolUse hook on Write, Edit and MultiEdit: it hands the hook input
 //! to `anthology slop hook` and turns the binary's exit 10 into a block (exit 2, the binary's
 //! stderr). Every other outcome allows, with no output: the gate fails open, so a missing, old or
-//! crashing binary never stops an edit. The script never installs the binary.
+//! crashing binary never stops an edit. The script never installs the binary. With
+//! `ANTHOLOGY_SLOP_GATE=0` it exits 0 without running the binary.
 //!
 //! The binary here is a fake: a `#!/bin/sh` script that answers `--version` like the pinned
 //! release and runs the case's body for `slop ...`.
@@ -122,6 +123,41 @@ fn only_exit_10_blocks() {
             assert_allowed(
                 &sb.run(sh, SLOP_GATE, &[], WRITE),
                 &format!("{sh:?} exit {code}"),
+            );
+        }
+    });
+}
+
+/// `ANTHOLOGY_SLOP_GATE=0` switches the gate off in the script itself: exit 0, no output, and the
+/// binary is never started, though the one installed would refuse.
+#[test]
+fn the_switch_set_to_0_allows_without_running_the_binary() {
+    each_shell("slop gate, switch off", |sh| {
+        let mut sb = installed(&format!(
+            ": >\"$BS_RAN\"; {}",
+            blocks_with("anthology slop gate: x\\n")
+        ));
+        let ran = sb.root.join("ran");
+        sb.set_env("BS_RAN", ran.clone());
+        sb.set_env("ANTHOLOGY_SLOP_GATE", "0");
+        let c = format!("{sh:?}");
+        assert_allowed(&sb.run(sh, SLOP_GATE, &[], WRITE), &c);
+        assert!(!ran.exists(), "{c}: the binary was run");
+    });
+}
+
+/// Only exactly `0` switches it off: an empty value, `1`, `00`, a word and `0` with a space
+/// leave the gate on.
+#[test]
+fn any_other_switch_value_still_blocks() {
+    each_shell("slop gate, switch not 0", |sh| {
+        for value in ["", "1", "00", "off", "false", "0 ", " 0"] {
+            let mut sb = installed(&blocks_with("anthology slop gate: x\\n"));
+            sb.set_env("ANTHOLOGY_SLOP_GATE", value);
+            assert_refused(
+                &sb.run(sh, SLOP_GATE, &[], WRITE),
+                "anthology slop gate: x\n",
+                &format!("{sh:?} value {value:?}"),
             );
         }
     });
