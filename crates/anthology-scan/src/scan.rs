@@ -38,6 +38,9 @@ pub(crate) struct Hooks {
     /// Called once with a test for the files an auto-run command reaches, after the per-file
     /// rules ran: raises the MEDIUM `exfil.*` findings of those files to HIGH.
     pub raise_reached: fn(&mut [Finding], &ReachedTest<'_>),
+    /// Called for each code file an auto-run command reaches, after the per-file rules ran: adds
+    /// the findings that a generated-folder cap (`payload`) or a test-path cap (`hidden`) held back.
+    pub raise_reached_file: fn(&FileCtx, &mut Vec<Finding>),
     /// Called once with every path of the tree, symlinks and unreadable entries included: adds the
     /// findings a path alone gives (a git hook).
     pub entry_findings: fn(&[&str], &mut Vec<Finding>),
@@ -57,7 +60,8 @@ pub(crate) const REAL: Hooks = Hooks {
     npm_scripts: autorun::npm_scripts,
     yara: yara_hits,
     raise_twins: hidden::raise_homoglyph_twins,
-    raise_reached: raise_reached_all,
+    raise_reached: exfil::raise_reached,
+    raise_reached_file: raise_reached_file_all,
     entry_findings: autorun::entry_findings,
     raise_filters: autorun::raise_gitattributes_filters,
     is_instruction: agent::is_instruction,
@@ -75,9 +79,11 @@ fn check_all(f: &FileCtx, out: &mut Vec<Finding>) {
     scanner::check(f, out);
 }
 
-/// Raises the findings of the files an auto-run command reaches: the `exfil.*` mediums to HIGH.
-fn raise_reached_all(findings: &mut [Finding], reached: &ReachedTest<'_>) {
-    exfil::raise_reached(findings, reached);
+/// The findings a reached code file gets back from the rules that cap a folder or a path: a blob
+/// or a decoder in generated code (`payload`) and a bidi control in a test file (`hidden`).
+fn raise_reached_file_all(f: &FileCtx, out: &mut Vec<Finding>) {
+    payload::raise_reached(f, out);
+    hidden::raise_reached(f, out);
 }
 
 fn surfaces_all(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
@@ -267,6 +273,9 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         }
         content.push(f);
     }
+    let raise_errors =
+        raise_file_findings(tree, hooks, &reached, &run_by_command, &kinds, &mut content);
+    scan.errors.extend(raise_errors);
     (hooks.raise_twins)(&all_paths, &mut content);
     (hooks.raise_reached)(&mut content, &|path| reached.contains(path));
     (hooks.entry_findings)(&all_paths, &mut content);
@@ -1027,6 +1036,74 @@ fn second_pass(
     }
 }
 
+/// The most reached files that are read again for `raise_reached_file`.
+const MAX_REACHED_READS: usize = 512;
+
+/// Calls `raise_reached_file` for each code file that an auto-run command reaches, with the file's
+/// text, and adds what it returns (the merge keeps the higher severity per rule and path). A file a
+/// command runs counts as code in the language of its interpreter, as in the second pass.
+fn raise_file_findings(
+    tree: &DiskTree,
+    hooks: &Hooks,
+    reached: &HashSet<String>,
+    run: &HashMap<String, Lang>,
+    kinds: &HashMap<&str, FileKind>,
+    content: &mut Vec<Finding>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut paths: Vec<&String> = reached
+        .iter()
+        .filter(|p| {
+            kinds.get(p.as_str()).is_some_and(|k| match k {
+                FileKind::Code(_) => true,
+                FileKind::Binary => false,
+                _ => run.contains_key(p.as_str()),
+            })
+        })
+        .collect();
+    paths.sort();
+    let cap = tree.opts().text_cap;
+    for path in paths.into_iter().take(MAX_REACHED_READS) {
+        let Ok(bytes) = tree.read(path, cap) else {
+            continue;
+        };
+        if files::magic(&bytes).is_some() {
+            continue;
+        }
+        let kind = match (kinds.get(path.as_str()), run.get(path.as_str())) {
+            (Some(kind @ FileKind::Code(_)), _) => *kind,
+            (_, Some(lang)) => files::code_kind_of_run(path, &bytes, *lang),
+            _ => continue,
+        };
+        let truncated = tree
+            .entries()
+            .iter()
+            .find(|e| e.path == *path)
+            .is_some_and(|e| e.size > bytes.len() as u64);
+        let (text, _) = files::decode_lossy(if truncated {
+            files::trim_incomplete(&bytes)
+        } else {
+            &bytes
+        });
+        let ctx = FileCtx {
+            path,
+            bytes: &bytes,
+            text: Some(&text),
+            kind,
+            truncated,
+        };
+        let raised = panic::catch_unwind(AssertUnwindSafe(|| {
+            (hooks.raise_reached_file)(&ctx, content);
+        }));
+        if raised.is_err() {
+            errors.push(format!(
+                "a rule failed on {path:?}; its findings as a reached file were not added"
+            ));
+        }
+    }
+    errors
+}
+
 /// A HIGH `files.case-twin` for every path that differs from another only in ASCII case. macOS and
 /// Windows read the two as one name: a checkout there keeps one and drops the other, so the file
 /// the scan read is not the file the tool reads.
@@ -1373,6 +1450,7 @@ mod tests {
             yara: |_| Vec::new(),
             raise_twins: |_, _| {},
             raise_reached: |_, _| {},
+            raise_reached_file: |_, _| {},
             entry_findings: |_, _| {},
             raise_filters: |_, _| {},
             is_instruction: |_| false,
@@ -3050,6 +3128,80 @@ mod tests {
             by_rule(&s, "stub.medium", "other.js").severity,
             Severity::Medium
         );
+    }
+
+    #[test]
+    fn raise_reached_file_gets_each_reached_code_file_and_no_other() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "package.json", b"{}");
+        write(tmp.path(), "deep.js", b"x");
+        write(tmp.path(), "other.js", b"x");
+        write(tmp.path(), "notes.txt", b"echo hi");
+        let h = Hooks {
+            raise_reached_file: |f, out| {
+                let mut x = finding("stub.raised", f.path, Severity::High, 1, 1);
+                x.seen = format!("{:?}", f.kind);
+                out.push(x);
+            },
+            surfaces: |f, _| {
+                if f.path == "package.json" {
+                    open_surface(f.path, "npm run a", "")
+                } else {
+                    Vec::new()
+                }
+            },
+            npm_scripts: |_| {
+                vec![
+                    ("a".to_string(), "npm run b".to_string()),
+                    (
+                        "b".to_string(),
+                        "node deep.js && bash notes.txt".to_string(),
+                    ),
+                ]
+            },
+            files_run: |c| {
+                if c.starts_with("npm") {
+                    Vec::new()
+                } else {
+                    c.split_whitespace()
+                        .filter(|w| w.contains('.'))
+                        .map(str::to_string)
+                        .collect()
+                }
+            },
+            ..flagged_hooks()
+        };
+        let s = scan_with(tmp.path(), h);
+        assert_eq!(by_rule(&s, "stub.raised", "deep.js").seen, "Code(Js)");
+        assert_eq!(by_rule(&s, "stub.raised", "notes.txt").seen, "Code(Sh)");
+        assert!(
+            !s.findings.iter().any(|f| f.path == "other.js"),
+            "{:#?}",
+            s.findings
+        );
+    }
+
+    #[test]
+    fn the_real_scan_raises_a_reached_blob_decoder_and_bidi_in_the_capped_folders() {
+        let js = "const s = atob('x');\neval(s);\n";
+        let bidi = "const s = \"\u{202E}abc\";\nexpect(show(s)).toBe('x');\n";
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "package.json",
+            b"{\"scripts\":{\"postinstall\":\"npm run setup\",\"setup\":\"node dist/a.js && node tests/a.test.js\"}}",
+        );
+        write(tmp.path(), "dist/a.js", js.as_bytes());
+        write(tmp.path(), "dist/b.js", js.as_bytes());
+        write(tmp.path(), "tests/a.test.js", bidi.as_bytes());
+        write(tmp.path(), "tests/b.test.js", bidi.as_bytes());
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), None).unwrap();
+        let s = crate::scan(&tree);
+        let sev = |rule, path| by_rule(&s, rule, path).severity;
+        assert_eq!(sev("payload.decode-exec", "dist/a.js"), Severity::High);
+        assert_eq!(sev("payload.decode-exec", "dist/b.js"), Severity::Medium);
+        assert_eq!(sev("hidden.bidi", "tests/a.test.js"), Severity::High);
+        assert_eq!(sev("hidden.bidi", "tests/b.test.js"), Severity::Medium);
     }
 
     // N5: a file a command runs is code.
