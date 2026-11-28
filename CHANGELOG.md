@@ -708,6 +708,10 @@ a new version section.
 
 ### [Unreleased]
 
+### [0.2.19] - 2026-11-28
+
+- The pinned anthology binary moves to 0.2.10, which adds the slop gate.
+
 ### [0.2.18] - 2026-11-27
 
 - Pin anthology-bin 0.2.9.
