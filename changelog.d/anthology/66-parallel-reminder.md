@@ -1,0 +1,1 @@
+- Add: during a long build with a plan and a ledger in `.superpowers/sdd`, the lead gets one reminder on an agent's report to start each task whose inputs are published, one agent per task. It shows at most once every 20 minutes and not again for the same number of tasks left; a `Serial: <reason>` line in the ledger stops it, and `ANTHOLOGY_NUDGE=0` turns it off.
