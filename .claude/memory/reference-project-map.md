@@ -16,7 +16,7 @@ Three Claude Code plugins and one static Rust binary, `anthology`. ATL (`atl/`, 
 - `anthology-slop` (regex rules) -> `anthology slop hook|check`. `hooks/slop-gate.sh` (PreToolUse Write/Edit): only exit 10 blocks, and a 5 s deadline allows. Docs: `docs/slop-gate.md`.
 - `anthology-scan` -> `anthology check-repo` (`cmd/check_repo.rs`; skill `skills/check-repo`; `docs/check-repo.md`). The scan reads files as data and never runs them.
   - Modules: `tree`/`files`/`scan` (walk, orchestrator); `shape` (command classes); `rules/*`; `yara/` (GuardDog rules vendored at `rules/guarddog/`); `fetch` (quarantine clone; git modes octal); `tools` (osv, gitleaks, zizmor); `report`/`escape` (verdicts, triage cap 200).
-  - In `scan.rs`: reach (`Reach::expand`) follows `npm run` scripts, project-folder variables and folders to files; files a command runs get a second pass as code and `raise_reached_file` (payload and hidden caps). In `tree.rs`: a link at a settings path is read as its target. The severity matrix is `shape::severity`.
+  - In `scan.rs`: reach (`Reach::expand`) follows `npm run` scripts, project-folder variables and folders to files; files a command runs get a second pass as code and `raise_reached_file` (payload and hidden caps). In `tree.rs`: a link at a settings path is read as its target. Each phase runs behind `guard` (a panic is a noted error, exit 3), as does the walk. The severity matrix is `shape::severity`.
   - `anthology-runtime/src/check_hint.rs` gives a once-per-repo session-start hint.
 - `plugins/anthology/hooks/mods/`: `index.ts`, the one `modules` entry in `hooks.json`. It registers each shared event once, each part in `isolated`, one file per feature.
   - `delegation.ts`: `isEmbeddedHost`; its edit hook refuses the mask marker.
