@@ -38,6 +38,8 @@
 - [Vendoring marketing knowledge: pin handling and extra patch spots](project-vendoring-marketing-knowledge.md) — vendor sync re-resolves a branch ref; marketingskills v2.14.29 holds more tool links …
 - 42 more — use `anthology-mem search`
 - 41 more — use `anthology-mem search`
+- [anthology-mem save --repo and reindex: where the code is](project-mem-repo-save-and-reindex.md) — Repo notes reuse check_note_text and write_note in save.rs; --slug is optional (slug_from_name); h…
+- 41 more — use `anthology-mem search`
 - 42 more — use `anthology-mem search`
 - 46 more — use `anthology-mem search`
 ## reference
