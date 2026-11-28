@@ -33,7 +33,9 @@ static ZIZMOR_MARKER: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Whether `path` is a scanner config or ignore file.
 fn is_scanner_config(path: &str) -> bool {
-    let name = name_of(path);
+    // ASCII case is ignored: macOS and Windows open `.GitLeaks.toml` as `.gitleaks.toml`.
+    let path = path.to_ascii_lowercase();
+    let name = name_of(&path);
     CONFIG_NAMES.contains(&name)
         || name.starts_with(".guarddog")
         || path == ".atl/filters.toml"
@@ -144,6 +146,26 @@ mod tests {
             assert_eq!(out[0].line, 0, "{path}");
             assert_eq!(out[0].count, 1, "{path}");
         }
+    }
+
+    #[test]
+    fn case_changes_do_not_hide_scanner_config() {
+        for path in [
+            ".GitLeaks.toml",
+            ".GITLEAKSIGNORE",
+            "Zizmor.YML",
+            ".github/ZIZMOR.yml",
+            "OSV-Scanner.toml",
+            ".GuardDog.yml",
+            ".ATL/Filters.TOML",
+            "pkg/.Atl/filters.toml",
+        ] {
+            let out = run(path, "x = 1\n");
+            assert_eq!(out.len(), 1, "{path}");
+            assert_eq!(out[0].rule, "scanner.config-file", "{path}");
+            assert_eq!(out[0].path, path);
+        }
+        assert!(run("Docs/Filters.toml", "x = 1\n").is_empty());
     }
 
     #[test]

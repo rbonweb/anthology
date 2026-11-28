@@ -22,8 +22,8 @@ use std::io::{self, PipeWriter, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::path::{Component, Path, PathBuf};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -133,6 +133,18 @@ struct Kid {
 struct Registered<'a> {
     guard: &'a Guard,
     id: u64,
+}
+
+impl Registered<'_> {
+    /// Takes the child out of the guard, then reaps it. The order is the point: a reaped child
+    /// frees its pid, which is also its group's id, and the system may give that id to a stranger
+    /// at once. Until the reap the child is a zombie that keeps the id, so the group may still be
+    /// signaled; once it is reaped nothing may signal it, and nothing does: the watchdog stood
+    /// down and `shutdown` no longer lists the child.
+    fn reap(self, child: &mut Child) -> io::Result<ExitStatus> {
+        self.guard.finish(self.id);
+        child.wait()
+    }
 }
 
 impl Drop for Registered<'_> {
@@ -461,7 +473,18 @@ fn open_url(
         .map(str::to_string)?;
     fetch::validate_url(&url)?;
     let dest = match &o.into {
-        Some(into) => into.clone(),
+        Some(into) => {
+            // `new/../old` does not resolve while `new` is missing, so it would look like a folder
+            // that does not exist, and an interrupt would then remove `old`. A path with no `..`
+            // names exactly the folder it says.
+            if into.components().any(|c| c == Component::ParentDir) {
+                return Err(format!(
+                    "--into {} has a `..` in it: give the folder without it",
+                    shown(into.as_os_str())
+                ));
+            }
+            into.clone()
+        }
         None => default_dest(env, &url)?,
     };
     let dest = std::path::absolute(&dest)
@@ -721,9 +744,9 @@ impl Runner for RealRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         sys::new_session(&mut cmd);
-        // Registered until this call ends, whichever way: an interrupt or the death of this
-        // process stops the group while it runs.
-        let (mut child, _registered) = self.guard.spawn(&mut cmd)?;
+        // Registered until the child is reaped, whichever way this call ends: an interrupt or the
+        // death of this process stops the group while it runs.
+        let (mut child, registered) = self.guard.spawn(&mut cmd)?;
         // The child leads its own group, so its process id is the group's.
         let group = child.id();
         let (tx, rx) = mpsc::channel::<(usize, Vec<u8>)>();
@@ -737,14 +760,17 @@ impl Runner for RealRunner {
 
         let deadline = Instant::now() + timeout;
         let mut nap = Duration::from_millis(1);
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
+        // The child is not reaped until the end: an ended child stays a zombie that keeps its pid,
+        // and with it the id of its group, so every kill below hits the child's own group and
+        // never a stranger that was given the id.
+        loop {
+            if sys::exited(group)? {
+                break;
             }
             if Instant::now() >= deadline {
                 sys::kill_group(group);
                 let _ = child.kill();
-                let _ = child.wait();
+                let _ = registered.reap(&mut child);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!("the program ran past {timeout:?} and was killed"),
@@ -752,12 +778,10 @@ impl Runner for RealRunner {
             }
             std::thread::sleep(nap);
             nap = (nap * 2).min(Duration::from_millis(20));
-        };
+        }
         // The signal thread may have killed it: then it, not this thread, ends the run (the
         // fetch must not clean up or report a failure of its own).
         self.guard.defer_to_signal();
-        // The signal thread may have killed it: then it, not this thread, ends the run (the
-        // fetch must not clean up or report a failure of its own).
 
         // Both pipes close when the child and everything it started are gone. A helper that
         // outlived the child holds them open: kill the group, then take what was read.
@@ -780,6 +804,8 @@ impl Runner for RealRunner {
             }
         }
         let [stdout, stderr] = bufs;
+        // Only now, with nothing left to signal, is the child reaped.
+        let status = registered.reap(&mut child)?;
         let code = status
             .code()
             .or_else(|| status.signal().map(|s| 128 + s))
@@ -949,6 +975,44 @@ mod tests {
         let main = std::thread::spawn(move || waiting.defer_to_signal());
         std::thread::sleep(Duration::from_millis(400));
         assert!(!main.is_finished(), "it went on after a shutdown");
+    }
+
+    #[test]
+    fn an_ended_child_stays_listed_and_signalable_until_it_is_reaped() {
+        let guard = Guard::default();
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "exit 3"]);
+        sys::new_session(&mut cmd);
+        let (mut child, registered) = guard.spawn(&mut cmd).expect("spawn");
+        let end = Instant::now() + Duration::from_secs(10);
+        while !sys::exited(child.id()).expect("waitid") {
+            assert!(Instant::now() < end, "the child never ended");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Ended, not reaped: the pid is still the child's, so the guard may still signal its
+        // group (and `try_wait` still has the status to hand over).
+        assert_eq!(guard.running(), 1);
+        // The reap takes it out of the guard first, so nothing signals the group afterwards.
+        let status = registered.reap(&mut child).expect("reap");
+        assert_eq!(status.code(), Some(3));
+        assert_eq!(guard.running(), 0);
+    }
+
+    #[test]
+    fn the_runner_returns_the_exit_code_of_a_child_it_reaped_late() {
+        let r = runner();
+        let (code, out, _) = r
+            .run(
+                Path::new("/bin/sh"),
+                &[os("-c"), os("echo hi; exit 5")],
+                Path::new("/"),
+                &[],
+                Duration::from_secs(10),
+            )
+            .expect("run");
+        assert_eq!(code, 5);
+        assert_eq!(out, b"hi\n");
+        assert_eq!(r.guard.running(), 0, "the child is still listed");
     }
 
     #[test]

@@ -164,6 +164,38 @@ pub fn kill_group(pgid: u32) {
     unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
+/// Whether the child `pid` has ended, without reaping it (`waitid(2)` with `WNOWAIT`): an ended
+/// child stays a zombie, so its pid, which is also the id of the group it leads, cannot be given to
+/// another process. The caller can signal the group until it reaps the child (`Child::wait`), and
+/// must not after. `Child::try_wait` reaps at once, which is why it is not used for this.
+///
+/// An error is a pid that is not a child of this process.
+pub fn exited(pid: u32) -> io::Result<bool> {
+    let id = libc::id_t::from(pid);
+    loop {
+        // SAFETY: an all-zero `siginfo_t` is a valid value; `waitid` fills it in, and with
+        // `WNOHANG` leaves it alone when no child is ready, which is why its `si_pid` starts at 0.
+        let mut info: libc::siginfo_t = unsafe { MaybeUninit::zeroed().assume_init() };
+        // SAFETY: `info` is a writable `siginfo_t`; the other arguments are plain integers.
+        let rc = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                id,
+                &raw mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if rc == 0 {
+            // SAFETY: `info` was zeroed and `waitid` returned 0, so the field is readable.
+            return Ok(unsafe { info.si_pid() } != 0);
+        }
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EINTR) {
+            return Err(e);
+        }
+    }
+}
+
 /// The write end of the pipe `on_signal` reports on, or -1 before `catch_termination` ran.
 static SIGNAL_PIPE: AtomicI32 = AtomicI32::new(-1);
 
@@ -185,22 +217,62 @@ extern "C" fn on_signal(sig: libc::c_int) {
     }
 }
 
-/// The address of the calling thread's `errno`.
+/// The address of the calling thread's `errno`. The C library names this call differently per
+/// system, so each family has its own definition below and an unlisted target does not build
+/// (a handler that cannot keep `errno` intact must not be built by guess).
 ///
 /// # Safety
 /// Only meaningful on the thread that calls it.
-#[cfg(target_os = "linux")]
+#[cfg(any(
+    all(target_os = "linux", not(target_os = "android")),
+    target_os = "emscripten",
+    target_os = "hurd",
+    target_os = "l4re",
+    target_os = "fuchsia",
+    target_os = "redox",
+    target_os = "dragonfly"
+))]
 unsafe fn errno_slot() -> *mut libc::c_int {
     unsafe { libc::__errno_location() }
 }
 
-/// The address of the calling thread's `errno`.
+/// See the first `errno_slot`: Android, Cygwin, NetBSD and OpenBSD call it `__errno`.
 ///
 /// # Safety
 /// Only meaningful on the thread that calls it.
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(
+    target_os = "android",
+    target_os = "cygwin",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+unsafe fn errno_slot() -> *mut libc::c_int {
+    unsafe { libc::__errno() }
+}
+
+/// See the first `errno_slot`: the Apple systems and FreeBSD call it `__error`.
+///
+/// # Safety
+/// Only meaningful on the thread that calls it.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd"
+))]
 unsafe fn errno_slot() -> *mut libc::c_int {
     unsafe { libc::__error() }
+}
+
+/// See the first `errno_slot`: Solaris and illumos call it `___errno`.
+///
+/// # Safety
+/// Only meaningful on the thread that calls it.
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+unsafe fn errno_slot() -> *mut libc::c_int {
+    unsafe { libc::___errno() }
 }
 
 /// Makes `SIGINT`, `SIGTERM` and `SIGHUP` stop ending the process: each one is written as one
@@ -388,6 +460,47 @@ mod tests {
         let mut byte = [0u8; 1];
         pipe.read_exact(&mut byte).expect("still installed");
         assert_eq!(i32::from(byte[0]), libc::SIGTERM);
+    }
+
+    #[test]
+    fn exited_sees_an_ended_child_without_reaping_it() {
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "exit 7"]);
+        let mut child = cmd.spawn().expect("spawn sh");
+        let start = std::time::Instant::now();
+        while !exited(child.id()).expect("waitid") {
+            assert!(start.elapsed().as_secs() < 30, "the child never ended");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        // Asking again changes nothing: the child is still there to be reaped, with its status.
+        assert!(exited(child.id()).expect("waitid"));
+        let status = child.try_wait().expect("try_wait").expect("not reaped yet");
+        assert_eq!(status.code(), Some(7));
+    }
+
+    #[test]
+    fn exited_is_false_while_the_child_runs_and_an_error_for_a_stranger() {
+        let mut cmd = std::process::Command::new("sleep");
+        cmd.arg("30");
+        let mut child = cmd.spawn().expect("spawn sleep");
+        assert!(!exited(child.id()).expect("waitid"));
+        child.kill().expect("kill");
+        child.wait().expect("wait");
+        // Reaped: the pid is no child of ours any more.
+        assert!(exited(child.id()).is_err());
+    }
+
+    #[test]
+    fn errno_slot_is_the_errno_of_the_calling_thread() {
+        // SAFETY: the slot belongs to this thread and is read and written on it only.
+        unsafe { *errno_slot() = libc::ENOENT };
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ENOENT)
+        );
+        // SAFETY: as above.
+        unsafe { *errno_slot() = libc::EPERM };
+        assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EPERM));
     }
 
     #[test]
