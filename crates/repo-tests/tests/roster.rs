@@ -57,12 +57,12 @@ mod budget {
     /// preloaded SKILL.md, per agent.
     pub const BUDGET: [(&str, usize); 11] = [
         ("researcher", 89267),
-        ("architect", 23738),
+        ("architect", 24131), // +393 credential path rule (owner, 2026-11-28)
         ("implementer", 26561),
-        ("debugger", 22293),
+        ("debugger", 22686),     // +393 credential path rule (owner, 2026-11-28)
         ("reviewer", 17815),     // GC-13 16672, plus the Shell section
-        ("scout", 7284),         // GC-13 5944, plus the Shell section
-        ("docs-writer", 75475),  // +humanizer rewrite pass (owner, 2026-11-28)
+        ("scout", 7677), // GC-13 5944, plus the Shell section; +393 credential path rule (owner, 2026-11-28)
+        ("docs-writer", 75475), // +humanizer rewrite pass (owner, 2026-11-28)
         ("ui-designer", 148488), // +avoid-ai-design rubric (owner, 2026-11-28)
         ("ui-reviewer", 65986),
         ("product-planner", 145072), // +humanizer rewrite pass (owner, 2026-11-28)
@@ -851,6 +851,8 @@ mod roster_test {
             "TaskStop each one and say none remain",
             "Durations come only from timestamps you read.",
             "never pastes settings JSON or permission-mode strings",
+            "Credentials you fetch or generate (browser, dashboard, CLI): save them as `KEY=value` lines in `~/.config/<project>/<service>.env`.",
+            "Make the folder mode 700 and the file 600. Never put them in the repo, a commit, a log or your output; your report names only the path and the keys.",
             "Type commands plainly; never type `atl` yourself (it is added for you), except `atl bypass <cmd>` when a result is unusable.",
         ] {
             assert!(shell.contains(needle), "Shell lacks {needle:?}");

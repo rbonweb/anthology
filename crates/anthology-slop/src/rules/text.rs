@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use regex::{Match, Regex};
 
-use crate::{Hit, Span, View, excerpt};
+use crate::{Hit, MASK, Span, View, excerpt};
 
 const AI_VOCAB: &str = "text.ai-vocab";
 const STOCK_PHRASE: &str = "text.stock-phrase";
@@ -118,14 +118,21 @@ static TAPESTRY_BEFORE: LazyLock<Regex> =
 static GROUNDBREAKING_AFTER: LazyLock<Regex> =
     LazyLock::new(|| re(r"(?i)^\s+(?:ceremony|ceremonies)\b"));
 
+/// A machine that lifts things, as the subject of `elevate` (the elevator elevates the car).
+static ELEVATE_SUBJECT: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)\b(?:elevators?|lifts?|hoists?|cranes?)\s+$"));
+
+/// A merge that leaves no seam, as in merging two sorted lists.
+static SEAMLESS_MERGE: LazyLock<Regex> = LazyLock::new(|| re(r"(?i)^\s+(?:merges?|merging)\b"));
+
 /// True when the stock word is used for what it literally means.
 fn is_literal_use(text: &str, m: &Match<'_>) -> bool {
     let word = m.as_str().to_ascii_lowercase();
     let next = after(text, m.end(), AFTER);
     if word.starts_with("seamless") {
-        SEAMLESS_BEFORE.is_match(next)
+        SEAMLESS_BEFORE.is_match(next) || (word == "seamless" && SEAMLESS_MERGE.is_match(next))
     } else if word.starts_with("elevat") {
-        ELEVATE_OBJECT.is_match(next)
+        ELEVATE_OBJECT.is_match(next) || ELEVATE_SUBJECT.is_match(before(text, m.start(), BEFORE))
     } else if word.starts_with("tapestr") {
         TAPESTRY_AFTER.is_match(next) || TAPESTRY_BEFORE.is_match(before(text, m.start(), BEFORE))
     } else if word.starts_with("groundbreaking") {
@@ -135,10 +142,84 @@ fn is_literal_use(text: &str, m: &Match<'_>) -> bool {
     }
 }
 
+/// How far the Title Case check reads on each side of a capitalized word.
+const LINE_WINDOW: usize = 120;
+
+/// A capital and then at least one lower-case letter: `Tapestry`, not `TAPESTRY` or `tapestry`.
+fn is_capitalized(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next().is_some_and(char::is_uppercase) && chars.any(char::is_lowercase)
+}
+
+/// True when nothing but markup and opening punctuation stands between byte `at` and the start
+/// of the text, the start of a line or the end of a sentence.
+fn starts_a_sentence(text: &str, at: usize) -> bool {
+    let mask = char::from(MASK);
+    for c in text[..at].chars().rev() {
+        match c {
+            '\n' | '.' | '!' | '?' | ':' => return true,
+            ' ' | '\t' | '"' | '\'' | '\u{201c}' | '\u{2018}' | '(' | '[' | '*' | '_' | '#'
+            | '>' | '|' | '+' | '-' => {}
+            c if c == mask => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// The whole text of a link: `[Delve]`, or `[Delve` before a masked `](url)`.
+fn is_link_text(text: &str, m: &Match<'_>) -> bool {
+    let bytes = text.as_bytes();
+    m.start() > 0
+        && bytes[m.start() - 1] == b'['
+        && matches!(bytes.get(m.end()), Some(&b']') | Some(&MASK))
+}
+
+/// A capitalized word or a version number right after the hit: `Unleash Edge`, `Tapestry 5`.
+static NAME_AFTER: LazyLock<Regex> =
+    LazyLock::new(|| re(r"^[ \t]+(?:\p{Lu}|v?\d+(?:\.\d+)*(?:$|[\s,;:)!?]|\.(?:$|\s)))"));
+
+/// A word of three letters or more, for the Title Case check.
+static TITLE_WORD: LazyLock<Regex> = LazyLock::new(|| re(r"\p{L}[\p{L}\p{N}'’-]{2,}"));
+
+/// True when at least two thirds of the other words near the hit on its line are capitalized,
+/// as in a heading (`The Seamless Way To Ship`): there a capital says nothing about a name.
+fn on_a_title_case_line(text: &str, m: &Match<'_>) -> bool {
+    let lead = before(text, m.start(), LINE_WINDOW);
+    let lead = lead.rfind('\n').map_or(lead, |i| &lead[i + 1..]);
+    let tail = after(text, m.end(), LINE_WINDOW);
+    let tail = tail.find('\n').map_or(tail, |i| &tail[..i]);
+    let (mut words, mut capitals) = (0, 0);
+    for part in [lead, tail] {
+        for word in TITLE_WORD.find_iter(part) {
+            words += 1;
+            if word.as_str().chars().next().is_some_and(char::is_uppercase) {
+                capitals += 1;
+            }
+        }
+    }
+    words >= 2 && capitals * 3 >= words * 2
+}
+
+/// True when a capitalized stock word is a name (Apache Tapestry, the Unleash server, a link to
+/// Delve): link text, a capital in mid-sentence, or a name or version right after it, outside a
+/// Title Case line.
+fn is_proper_noun(text: &str, m: &Match<'_>) -> bool {
+    if !is_capitalized(m.as_str()) {
+        return false;
+    }
+    if is_link_text(text, m) {
+        return true;
+    }
+    let named =
+        !starts_a_sentence(text, m.start()) || NAME_AFTER.is_match(after(text, m.end(), AFTER));
+    named && !on_a_title_case_line(text, m)
+}
+
 pub(crate) fn ai_vocab(view: &View) -> Vec<Hit> {
     AI_VOCAB_WORDS
         .find_iter(&view.text)
-        .filter(|m| !is_literal_use(&view.text, m))
+        .filter(|m| !is_literal_use(&view.text, m) && !is_proper_noun(&view.text, m))
         .map(|m| hit(AI_VOCAB, view, span_of(&m)))
         .collect()
 }
@@ -208,10 +289,34 @@ static CONTRASTS: LazyLock<[Regex; 5]> = LazyLock::new(|| {
     .map(re)
 });
 
+/// A second clause that states a fact rather than renaming the thing: optional adverbs, then a
+/// past participle ("it is also read on reload", "it is set by the installer").
+static FACTUAL_CLAUSE: LazyLock<Regex> = LazyLock::new(|| {
+    re(concat!(
+        r"(?i)^\s+(?:(?:also|still|then|now|only|always|usually|often|never|already)\s+)*",
+        r"(?:[a-z]*[a-df-z]ed|set|read|run|built|made|kept|done|shown|written|given|taken|known|",
+        r"left|found|sent|put|held|bound|cut|shut|split|hidden|chosen|driven|broken|drawn|thrown|",
+        r"seen|begun|bought|brought|caught|sold|told|paid|said|lost|meant|spent|stuck|spun)\b",
+    ))
+});
+
+/// The forms whose second clause is a bare "it is" (1 to 3); forms 4 and 5 end on `about`.
+const BARE_SECOND_CLAUSE: usize = 3;
+
 pub(crate) fn not_x_but_y(view: &View) -> Vec<Hit> {
+    let text = &view.text;
     let mut spans: Vec<Span> = CONTRASTS
         .iter()
-        .flat_map(|pattern| pattern.find_iter(&view.text).map(|m| span_of(&m)))
+        .enumerate()
+        .flat_map(|(form, pattern)| {
+            pattern
+                .find_iter(text)
+                .filter(move |m| {
+                    form >= BARE_SECOND_CLAUSE
+                        || !FACTUAL_CLAUSE.is_match(after(text, m.end(), AFTER + 20))
+                })
+                .map(|m| span_of(&m))
+        })
         .collect();
     spans.sort();
     // Two forms can match the same sentence: keep the earlier match.
@@ -244,8 +349,48 @@ static HYPE_PHRASES: LazyLock<Regex> = LazyLock::new(|| {
     ])
 });
 
+/// How far back "to the next level" looks for the verb of its sentence.
+const SENTENCE: usize = 200;
+
+/// A step down a structure, right before "to the next level" (descends, goes down, recurses).
+static DESCENT_BEFORE: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)\b(?:descend(?:s|ed|ing)?|go(?:es|ing)?\s+down|mov(?:e|es|ed|ing)|recurs(?:e|es|ed|ing))\s+$",
+    )
+});
+
+/// The verbs of the slogan: take, bring, elevate, push, kick or boost something to the next level.
+static LIFT_VERB: LazyLock<Regex> = LazyLock::new(|| {
+    re(
+        r"(?i)\b(?:take|takes|taking|took|bring|brings|bringing|brought|elevat(?:e|es|ed|ing)|push(?:es|ed|ing)?|kick(?:s|ed|ing)?|boost(?:s|ed|ing)?)\b",
+    )
+});
+
+/// A version as what is said goodbye to: a release that goes away, not a pain point.
+static VERSION_AFTER: LazyLock<Regex> =
+    LazyLock::new(|| re(r"(?i)^\s+(?:the\s+)?(?:v\d|version\s+\d|\d)"));
+
+/// True when a hype phrase is used literally: a walk to the next level of a tree, or a goodbye
+/// to an old version.
+fn is_plain_hype(text: &str, m: &Match<'_>) -> bool {
+    let phrase = m.as_str().to_ascii_lowercase();
+    if phrase.starts_with("to") {
+        let lead = before(text, m.start(), SENTENCE);
+        let sentence = lead.rfind(['.', '!', '?']).map_or(lead, |i| &lead[i + 1..]);
+        DESCENT_BEFORE.is_match(before(text, m.start(), BEFORE)) || !LIFT_VERB.is_match(sentence)
+    } else if phrase.starts_with("say") {
+        VERSION_AFTER.is_match(after(text, m.end(), AFTER))
+    } else {
+        false
+    }
+}
+
 pub(crate) fn hype_cta(view: &View) -> Vec<Hit> {
-    matches(HYPE_CTA, view, &HYPE_PHRASES)
+    HYPE_PHRASES
+        .find_iter(&view.text)
+        .filter(|m| !is_plain_hype(&view.text, m))
+        .map(|m| hit(HYPE_CTA, view, span_of(&m)))
+        .collect()
 }
 
 #[cfg(test)]
@@ -427,6 +572,103 @@ mod tests {
         );
         assert_none_flagged(chat_residue, &["Feel free to open an issue."]);
         assert_none_flagged(hype_cta, &["Feel free to open an issue."]);
+    }
+
+    /// Each finding of a Markdown doc as `rule excerpt`, read through the real mask.
+    fn markdown_findings(doc: &str) -> Vec<String> {
+        crate::check_all(crate::Kind::Markdown, doc)
+            .into_iter()
+            .map(|f| format!("{} {}", f.rule, f.excerpt))
+            .collect()
+    }
+
+    #[test]
+    fn review_proper_nouns_and_technical_phrases_pass() {
+        // the allow examples of the pre-release review, item 3, as a Markdown file reads them
+        let mut wrong = Vec::new();
+        for doc in [
+            "[Delve](https://github.com/go-delve/delve) is the Go debugger",
+            "Apache Tapestry",
+            "the Unleash server",
+            "descends to the next level of the tree",
+            "is not only read at start. It is also read on reload",
+            "This is not the default, it is set by the installer",
+            "Say goodbye to the v1 config: it is removed in 2.0",
+        ] {
+            let got = markdown_findings(doc);
+            if !got.is_empty() {
+                wrong.push(format!("{doc:?}: {got:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
+    #[test]
+    fn chat_residue_in_a_file_stays_a_tell() {
+        // lead ruling: the closing line of a chat answer is slop when it lands in a file
+        assert_eq!(
+            markdown_findings("Thanks for reading. Let me know if you have any questions."),
+            ["text.chat-residue Let me know if you have any"]
+        );
+    }
+
+    #[test]
+    fn ai_vocab_skips_proper_nouns() {
+        assert_none_flagged(
+            ai_vocab,
+            &[
+                "Apache Tapestry",
+                "the Unleash server",
+                "Start the Unleash server before the SDK connects.",
+                "Unleash Edge proxies the API for the clients.",
+                "Tapestry 5 renders each page from a plain Java class.",
+                "Tapestry v5.4 renders each page.",
+                "MediaPipe Holistic tracks the body and the face in one pass.",
+                "The Synergy client shares one keyboard between two computers.",
+                "[Delve] is the Go debugger.",
+                "Step through the handler with [Delve](/dlv) and set a breakpoint.",
+            ],
+        );
+    }
+
+    #[test]
+    fn ai_vocab_still_flags_capitalized_tells() {
+        assert_each_flagged(
+            ai_vocab,
+            &[
+                // a Title Case line is a heading, not a name
+                ("Elevate Your Workflow", "Elevate"),
+                ("Unleash Your Potential", "Unleash"),
+                ("The Seamless Way To Ship Faster", "Seamless"),
+                // the start of a sentence, a list item, a heading, bold text
+                ("Done. Seamless sync is on.", "Seamless"),
+                ("- Seamless sync across devices", "Seamless"),
+                ("## Seamless sync", "Seamless"),
+                ("**Seamless** sync for teams.", "Seamless"),
+                // shouting is not a name, and link text in lower case is prose
+                ("We DELVE into caching.", "DELVE"),
+                ("Learn about [seamless sync](/docs).", "seamless"),
+            ],
+        );
+    }
+
+    #[test]
+    fn ai_vocab_skips_technical_literal_uses() {
+        assert_none_flagged(
+            ai_vocab,
+            &[
+                "The elevator elevates the car to the top floor in eight seconds.",
+                "A seamless merge of two sorted lists runs in linear time.",
+            ],
+        );
+        assert_each_flagged(
+            ai_vocab,
+            &[
+                ("The new logo elevates the car brand.", "elevates"),
+                ("A seamless handover for your team.", "seamless"),
+                ("Your tools seamlessly merge.", "seamlessly"),
+            ],
+        );
     }
 
     #[test]
@@ -787,6 +1029,41 @@ mod tests {
     }
 
     #[test]
+    fn not_x_but_y_skips_a_factual_second_clause() {
+        assert_none_flagged(
+            not_x_but_y,
+            &[
+                "The config is not only read at start. It is also read on reload.",
+                "This is not the default, it is set by the installer.",
+                "That's not a typo, it is spelled that way in the spec.",
+                "It's not an error, it's logged as a warning.",
+                "The lock file isn't only read by the CLI; it is also checked by CI.",
+            ],
+        );
+    }
+
+    #[test]
+    fn not_x_but_y_still_flags_a_reframing() {
+        assert_each_flagged(
+            not_x_but_y,
+            &[
+                (
+                    "It's not a tool, it's also a platform.",
+                    "It's not a tool, it's",
+                ),
+                (
+                    "It's not about speed, it's trust.",
+                    "It's not about speed, it's",
+                ),
+                (
+                    "The cache isn't just a store. It's still a layer.",
+                    "isn't just a store. It's",
+                ),
+            ],
+        );
+    }
+
+    #[test]
     fn not_x_but_y_reports_one_hit_for_overlapping_forms() {
         // forms 1 and 3 both match here: the earlier one is kept
         let hits = found(
@@ -863,6 +1140,42 @@ mod tests {
                 "Revolution in the cache.",
                 "Join thousands.",
                 "Take your time.",
+            ],
+        );
+    }
+
+    #[test]
+    fn hype_cta_skips_tree_levels_and_versions() {
+        assert_none_flagged(
+            hype_cta,
+            &[
+                "The walker descends to the next level of the tree.",
+                "The cursor moves to the next level of the outline when you press Tab.",
+                "The parser takes one token and recurses to the next level of the grammar.",
+                "Press Tab to go down to the next level.",
+                // no slogan verb in the sentence; the one before it does not count
+                "Indent the item to the next level of the list.",
+                "Take a backup. Indent the item to the next level of the list.",
+                "Say goodbye to the v1 config: it is removed in 2.0.",
+                "Say goodbye to version 1 of the API.",
+            ],
+        );
+    }
+
+    #[test]
+    fn hype_cta_still_flags_the_marketing_uses() {
+        assert_each_flagged(
+            hype_cta,
+            &[
+                ("Bring your docs to the next level.", "to the next level"),
+                ("We take testing to the next level.", "to the next level"),
+                ("Elevate your team to the next level.", "to the next level"),
+                ("Push your builds to the next level.", "to the next level"),
+                (
+                    "Say goodbye to the hassle of manual deploys.",
+                    "Say goodbye to",
+                ),
+                ("Say goodbye to the old way of shipping.", "Say goodbye to"),
             ],
         );
     }
