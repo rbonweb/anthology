@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use anthology_pycompat::json::Value;
 use regex::Regex;
 
-use super::agent::{clip, name_of};
+use super::agent::{clip, name_of, text_of};
 use crate::files::line_of;
 use crate::{FileCtx, Finding, Group, Severity, jsonc};
 
@@ -130,10 +130,22 @@ fn describe(rule: &str) -> (&'static str, &'static str) {
 }
 
 pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
-    let Some(text) = f.text else {
-        return;
-    };
     let name = name_of(f.path);
+    let known = matches!(
+        name,
+        "package-lock.json"
+            | "npm-shrinkwrap.json"
+            | "yarn.lock"
+            | "pnpm-lock.yaml"
+            | "pip.conf"
+            | "go.mod"
+    ) || (name.starts_with("requirements") && name.ends_with(".txt"));
+    if !known {
+        return;
+    }
+    // A known name is read whatever its bytes are: invalid UTF-8 or a NUL must not skip the file.
+    let text = text_of(f);
+    let text: &str = &text;
     let mut tally = Tally::default();
     match name {
         "package-lock.json" | "npm-shrinkwrap.json" => {
@@ -830,17 +842,40 @@ mod tests {
         assert!(run("go.sum", "replace a => b\n").is_empty());
     }
 
-    #[test]
-    fn a_file_that_is_not_text_gives_nothing() {
+    fn run_bytes(path: &str, bytes: &[u8]) -> Vec<Finding> {
         let f = FileCtx {
-            path: "package-lock.json",
-            bytes: &[0, 1],
+            path,
+            bytes,
             text: None,
             kind: FileKind::Binary,
             truncated: false,
         };
         let mut out = Vec::new();
         check(&f, &mut out);
-        assert!(out.is_empty());
+        out
+    }
+
+    #[test]
+    fn a_file_with_no_lockfile_name_gives_nothing_even_if_it_is_not_text() {
+        assert!(run_bytes("blob.bin", &[0, 1]).is_empty());
+        assert!(run_bytes("package-lock.json", &[0, 1]).is_empty());
+    }
+
+    #[test]
+    fn a_stray_invalid_byte_or_nul_does_not_hide_a_lockfile_host() {
+        let lock = npm_lock(&[(
+            "node_modules/foo",
+            "http://example.invalid/foo/-/foo-1.0.0.tgz",
+        )]);
+        let mut with_ff = lock.clone().into_bytes();
+        with_ff.splice(2..2, [0xff]);
+        only(&run_bytes("package-lock.json", &with_ff), "deps.lock-http");
+        let mut with_nul = lock.into_bytes();
+        with_nul.splice(2..2, [0u8]);
+        only(&run_bytes("package-lock.json", &with_nul), "deps.lock-http");
+        let req = b"\xff\n--index-url https://example.invalid/simple\n";
+        only(&run_bytes("requirements.txt", req), "deps.pip-index");
+        let go = b"\xff\nreplace a => ../a\n";
+        only(&run_bytes("go.mod", go), "deps.go-replace");
     }
 }
