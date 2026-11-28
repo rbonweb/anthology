@@ -399,6 +399,32 @@ fn url_mode_with_a_local_bare_repo_over_file_is_refused() {
 }
 
 #[test]
+fn into_with_a_parent_step_is_refused_and_touches_nothing() {
+    let sb = Sandbox::new();
+    let repo = sb.path().join("remote");
+    source_repo(&repo);
+    let bin = sb.path().join("bin");
+    fake_ssh(&bin);
+    // `missing` is not there, so `missing/../keep` does not resolve and looks like a new folder;
+    // it names `keep`, which is, and an interrupt would have removed it.
+    let keep = sb.path().join("keep");
+    std::fs::create_dir(&keep).expect("make keep");
+    std::fs::write(keep.join("mine.txt"), "mine").expect("write");
+    let into = sb.path().join("missing").join("..").join("keep");
+    let out = sb.run(
+        &["--into", into.to_str().expect("utf-8"), &ssh_url(&repo)],
+        &[&bin],
+    );
+    one_line_error(&out);
+    assert!(out.stderr.contains("`..`"), "{}", out.stderr);
+    assert!(!sb.path().join("missing").exists());
+    assert_eq!(
+        std::fs::read_to_string(keep.join("mine.txt")).expect("read"),
+        "mine"
+    );
+}
+
+#[test]
 fn url_mode_end_to_end() {
     let sb = Sandbox::new();
     let repo = sb.path().join("remote");
