@@ -283,11 +283,11 @@ mod lead_extras {
                 ("debugger", 22293),
                 ("reviewer", 17815), // GC-13 16672, plus the Shell section
                 ("scout", 7284),     // GC-13 5944, plus the Shell section
-                ("docs-writer", 31686),
-                ("ui-designer", 128097),
+                ("docs-writer", 75475),
+                ("ui-designer", 148488),
                 ("ui-reviewer", 65986),
-                ("product-planner", 102779),
-                ("marketer", 54384),
+                ("product-planner", 145072),
+                ("marketer", 96668),
             ]
         );
     }

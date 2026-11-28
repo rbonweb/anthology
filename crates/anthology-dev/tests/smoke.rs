@@ -64,7 +64,7 @@ type RosterRow = (
     &'static [&'static str],
     &'static [&'static str],
 );
-const UI_KNOWLEDGE: [&str; 10] = [
+const UI_KNOWLEDGE: [&str; 11] = [
     "frontend-design",
     "design-taste-frontend",
     "ui-taste",
@@ -74,6 +74,7 @@ const UI_KNOWLEDGE: [&str; 10] = [
     "ds/design-systems",
     "ds/interaction-design",
     "ds/design-elevation",
+    "avoid-ai-design",
     "website-clone",
 ];
 const EXPECTED_ROSTER: [RosterRow; 11] = [
@@ -129,7 +130,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "sonnet",
         true,
         &[],
-        &["documentation", "ds/ux-writing"],
+        &["documentation", "ds/ux-writing", "humanizer"],
     ),
     ("ui-designer", "sonnet", true, &[], &UI_KNOWLEDGE),
     (
@@ -142,6 +143,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
             "web-review",
             "ds/design-critique",
             "ds/accessibility-audit",
+            "avoid-ai-design",
         ],
     ),
     (
@@ -156,6 +158,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
             "product-brainstorming",
             "ds/ux-strategy",
             "ds/design-ops",
+            "humanizer",
         ],
     ),
     (
@@ -168,6 +171,7 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
             "campaign-plan",
             "content-creation",
             "email-sequence",
+            "humanizer",
         ],
     ),
 ];
