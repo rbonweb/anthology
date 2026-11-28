@@ -718,7 +718,7 @@ mod roster_case_tests {
                 assert!(has_case(&cases, &format!("knowledge-{agent}")), "{agent}");
             }
         }
-        assert_eq!(startup.len(), 11);
+        assert_eq!(startup.len(), 12);
         let mut found: Vec<&str> = cases
             .iter()
             .filter_map(|(n, _)| n.strip_prefix("knowledge-"))

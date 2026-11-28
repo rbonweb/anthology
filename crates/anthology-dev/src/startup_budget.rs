@@ -28,18 +28,19 @@ pub const SUPERPOWERS: &str = "plugins/anthology-superpowers";
 
 /// Startup budget in bytes, per agent (plan GC-13, verbatim): the size measured when the roster
 /// landed, times 1.15, rounded up. Growth fails the roster test on purpose.
-pub const BUDGET: [(&str, u64); 11] = [
+pub const BUDGET: [(&str, u64); 12] = [
     ("researcher", 89267),       // measured 77623
     ("architect", 24131), // measured 20532, +126 atl rule, +393 credential path rule (owner, 2026-11-28)
     ("implementer", 26561), // measured 23096 (karpathy-guidelines)
     ("debugger", 22686), // measured 19275 (karpathy-guidelines), +126 atl rule, +393 credential path rule (owner, 2026-11-28)
-    ("reviewer", 17815), // measured 14497 (karpathy-guidelines), +1143 Shell
+    ("reviewer", 37538), // measured 32641: always + largest conditional (copy-editing), copy plan 2026-11-28
     ("scout", 7677), // measured 5168, +1143 Shell, +71 wait and memory rules, +126 atl, +393 credential path rule (owner, 2026-11-28)
-    ("docs-writer", 75475), // measured 27283, +184 wait, map and memory rules, +126 atl; +humanizer rewrite pass (owner, 2026-11-28)
-    ("ui-designer", 148488), // measured 111388; +avoid-ai-design rubric (owner, 2026-11-28)
-    ("ui-reviewer", 65986), // measured 57379
+    ("docs-writer", 117281), // measured 101983: always + largest conditional (ux-microcopy), copy plan 2026-11-28
+    ("ui-designer", 179165), // measured 155795: always + largest conditional (ux-microcopy), copy plan 2026-11-28
+    ("ui-reviewer", 65986),  // measured 57379
     ("product-planner", 145072), // measured 89373; +humanizer rewrite pass (owner, 2026-11-28)
-    ("marketer", 96668),    // measured 47290; +humanizer rewrite pass (owner, 2026-11-28)
+    ("marketer", 96668), // measured 47290; +humanizer rewrite pass (owner, 2026-11-28); copy plan 2026-11-28 measures 96252 (always + largest conditional, ai-seo), within it
+    ("blog-writer", 110502), // measured 96088: always + largest conditional (blog-cluster), copy plan 2026-11-28
 ];
 
 /// What follows the closing backtick of the last path on a conditional Startup line.

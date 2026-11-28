@@ -23,7 +23,7 @@ fn knowledge_sources_are_the_32_vendored_knowledge_targets() {
         .into_iter()
         .filter(|e| text(e, "target").starts_with("plugins/anthology/knowledge/"))
         .collect();
-    assert_eq!(knowledge.len(), 32);
+    assert_eq!(knowledge.len(), 56);
 }
 
 /// test_repo_layout `test_every_source_has_a_target_and_a_license`.

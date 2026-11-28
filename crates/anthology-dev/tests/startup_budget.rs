@@ -378,13 +378,14 @@ mod lead_extras {
                 ("architect", 24131), // +393 credential path rule (owner, 2026-11-28)
                 ("implementer", 26561),
                 ("debugger", 22686), // +393 credential path rule (owner, 2026-11-28)
-                ("reviewer", 17815), // GC-13 16672, plus the Shell section
+                ("reviewer", 37538), // measured 32641, copy plan 2026-11-28
                 ("scout", 7677), // GC-13 5944, plus the Shell section; +393 credential path rule (owner, 2026-11-28)
-                ("docs-writer", 75475),
-                ("ui-designer", 148488),
+                ("docs-writer", 117281),
+                ("ui-designer", 179165),
                 ("ui-reviewer", 65986),
                 ("product-planner", 145072),
                 ("marketer", 96668),
+                ("blog-writer", 110502),
             ]
         );
     }

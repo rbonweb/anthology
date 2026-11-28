@@ -77,7 +77,7 @@ const UI_KNOWLEDGE: [&str; 10] = [
     "ds/design-elevation",
     "avoid-ai-design",
 ];
-const EXPECTED_ROSTER: [RosterRow; 11] = [
+const EXPECTED_ROSTER: [RosterRow; 12] = [
     (
         "researcher",
         "opus",
@@ -161,13 +161,14 @@ const EXPECTED_ROSTER: [RosterRow; 11] = [
         "sonnet",
         false,
         &[],
-        &[
-            "seo-audit",
-            "campaign-plan",
-            "content-creation",
-            "email-sequence",
-            "humanizer",
-        ],
+        &["humanizer", "product-marketing"],
+    ),
+    (
+        "blog-writer",
+        "sonnet",
+        false,
+        &[],
+        &["humanizer", "blog-write", "blog-factcheck"],
     ),
 ];
 

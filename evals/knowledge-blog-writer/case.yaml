@@ -1,0 +1,68 @@
+schema_version: "1.0"
+name: knowledge-blog-writer
+description: 'anthology:blog-writer reads its Startup knowledge, in order, before its first Glob.'
+tags: [knowledge-read, probe-u1]
+plugins:
+  - "../../plugins/anthology"
+  - "../../plugins/anthology-guardrails"
+  - "../../plugins/anthology-superpowers"
+execution:
+  prompt: 'Run the anthology:blog-writer agent with exactly this prompt: ''Startup check only: do your Startup reading, then use Glob once to list *.md files in the current folder, then reply DONE.'' Do not use any tool yourself other than Agent. Then report the agent''s reply.'
+  max_turns: 12
+  timeout_seconds: 600
+  model: sonnet
+  allowed_tools: [Agent, Read, Glob]
+runs: 1
+graders:
+  - name: dispatched
+    type: tool_used
+    tool: Agent
+    input_match: '"anthology:blog-writer"'
+  - name: main-dispatches-first
+    type: tool_order
+    before: Agent
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-caveman
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/caveman/SKILL\.md'
+  - name: order-caveman
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: read-humanizer
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/humanizer/SKILL\.md'
+  - name: order-humanizer
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-caveman-humanizer
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/caveman/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
+  - name: read-blog-write
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/blog-write/SKILL\.md'
+  - name: order-blog-write
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/blog-write/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-humanizer-blog-write
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/humanizer/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/blog-write/SKILL\.md'}
+  - name: read-blog-factcheck
+    type: tool_used
+    tool: Read
+    input_match: 'knowledge/blog-factcheck/SKILL\.md'
+  - name: order-blog-factcheck
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/blog-factcheck/SKILL\.md'}
+    after: {tool: Glob, input_match: '\*\.md'}
+  - name: inorder-blog-write-blog-factcheck
+    type: tool_order
+    before: {tool: Read, input_match: 'knowledge/blog-write/SKILL\.md'}
+    after: {tool: Read, input_match: 'knowledge/blog-factcheck/SKILL\.md'}

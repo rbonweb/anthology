@@ -24,7 +24,7 @@ pub const AUTH_VARS: [&str; 3] = [
 ];
 pub const CLAUDE_TIMEOUT: u64 = 300;
 pub const NO_AUTH: &str = "no API credentials (set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN)";
-pub const EXPECTED_AGENTS: usize = 11;
+pub const EXPECTED_AGENTS: usize = 12;
 pub const MARKER: &str = "smoke-unpushed-marker";
 pub const ATL_RAW_GIT: &str = "create/copy files and use";
 pub const GUARD_G1: &str = "anthology-guardrails (G1)";
