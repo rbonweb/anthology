@@ -1,5 +1,6 @@
 //! Payload rules: content that does not match its name, executables, blobs, decode-and-run (Task 4).
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use regex::Regex;
@@ -86,15 +87,27 @@ fn archive_format(b: &[u8]) -> Option<&'static str> {
     files::magic(b).filter(|m| matches!(*m, "zip" | "gzip" | "xz" | "7z"))
 }
 
-/// The file's text, even when the text cap cut a multi-byte character at its end.
-fn utf8_text<'a>(f: &FileCtx<'a>) -> Option<&'a str> {
-    match std::str::from_utf8(f.bytes) {
-        Ok(s) => Some(s),
-        Err(e) if f.truncated && e.error_len().is_none() => {
-            std::str::from_utf8(&f.bytes[..e.valid_up_to()]).ok()
-        }
-        Err(_) => None,
-    }
+/// The file's bytes as text, lossily, without the half character the text cap may leave at the end.
+/// A stray byte or a NUL must not hide a program in a font.
+fn lossy_text<'a>(f: &FileCtx<'a>) -> Cow<'a, str> {
+    let bytes = match std::str::from_utf8(f.bytes) {
+        Err(e) if f.truncated && e.error_len().is_none() => &f.bytes[..e.valid_up_to()],
+        _ => f.bytes,
+    };
+    String::from_utf8_lossy(bytes)
+}
+
+/// Text, not a real font or image that spells a word by chance: at most 5% of the characters are
+/// invalid bytes or control characters.
+fn mostly_text(text: &str) -> bool {
+    let total = text.chars().count();
+    let noise = text
+        .chars()
+        .filter(|c| {
+            *c == '\u{FFFD}' || (c.is_control() && !matches!(c, '\t' | '\n' | '\r' | '\u{c}'))
+        })
+        .count();
+    noise * 20 <= total
 }
 
 fn content_mismatch(f: &FileCtx, ext: &str, exe: Option<&str>, out: &mut Vec<Finding>) {
@@ -114,10 +127,13 @@ fn content_mismatch(f: &FileCtx, ext: &str, exe: Option<&str>, out: &mut Vec<Fin
         out.push(rule(format!("{format} program header"), 0));
         return;
     }
-    let Some(text) = utf8_text(f) else { return };
+    let text = lossy_text(f);
+    if !mostly_text(&text) {
+        return;
+    }
     let first = PROGRAM_TEXT.iter().filter_map(|m| text.find(m)).min();
     if let Some(at) = first {
-        out.push(rule(excerpt(text, at, 200), line_at(text, at)));
+        out.push(rule(excerpt(&text, at, 200), line_at(&text, at)));
     }
 }
 
@@ -419,6 +435,43 @@ mod tests {
         );
         // A code file is allowed to say `function`.
         assert!(code("a.js", Lang::Js, "function go() {}").is_empty());
+    }
+
+    #[test]
+    fn a_stray_byte_or_a_nul_does_not_hide_a_program_in_a_font() {
+        let js = b"const cp = require('child_process');\n// \xff pad\ncp.exec('id');\n".to_vec();
+        let v = run("assets/fa-solid.woff2", FileKind::Data, &js);
+        assert_eq!(one(&v, "payload.content-mismatch").severity, Severity::High);
+        let nul = b"const cp = require('child_process');\n// \0 pad\ncp.exec('id');\n".to_vec();
+        let v = run("assets/fa-solid.woff2", FileKind::Binary, &nul);
+        assert_eq!(one(&v, "payload.content-mismatch").severity, Severity::High);
+        // The same content as lossy text from the walk gives the same answer.
+        let lossy = String::from_utf8_lossy(&js).into_owned();
+        let f = FileCtx {
+            path: "a.ttf",
+            bytes: &js,
+            text: Some(&lossy),
+            kind: FileKind::Data,
+            truncated: false,
+        };
+        let mut out = Vec::new();
+        check(&f, &mut out);
+        assert_eq!(
+            one(&out, "payload.content-mismatch").severity,
+            Severity::High
+        );
+    }
+
+    #[test]
+    fn real_binary_font_data_that_spells_a_word_is_not_a_mismatch() {
+        // A binary font by chance holds the bytes of "function": the rest is not text.
+        let mut font = b"wOF2\x00\x01\x00\x00".to_vec();
+        for i in 0..400u32 {
+            font.push((i.wrapping_mul(131) % 251) as u8 | 0x80);
+            font.push(0);
+        }
+        font.extend_from_slice(b"function");
+        assert!(run("a.woff2", FileKind::Binary, &font).is_empty());
     }
 
     #[test]
