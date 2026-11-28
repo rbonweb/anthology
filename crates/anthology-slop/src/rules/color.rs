@@ -56,8 +56,25 @@ pub(crate) fn hsl(c: Rgba) -> (f64, f64, f64) {
 
 /// h in 228..=300, s >= 40, 15 < l < 90.
 pub(crate) fn is_violet(c: Rgba) -> bool {
-    let (h, s, l) = hsl(c);
-    (228.0..=300.0).contains(&h) && s >= 40.0 && l > 15.0 && l < 90.0
+    is_chromatic(c) && (228.0..=300.0).contains(&hsl(c).0)
+}
+
+/// s >= 40 and 15 < l < 90: a colour with a hue to speak of, not a grey, a near-white or a
+/// near-black.
+pub(crate) fn is_chromatic(c: Rgba) -> bool {
+    let (_, s, l) = hsl(c);
+    s >= 40.0 && l > 15.0 && l < 90.0
+}
+
+/// Violet, indigo, purple or pink-violet: chromatic, h in 228..=330.
+pub(crate) fn is_violet_family(c: Rgba) -> bool {
+    is_chromatic(c) && (228.0..=330.0).contains(&hsl(c).0)
+}
+
+/// The colours a violet is paired with in the stock gradient: chromatic, h in 190..=345 (blue
+/// through pink).
+pub(crate) fn is_blue_to_pink(c: Rgba) -> bool {
+    is_chromatic(c) && (190.0..=345.0).contains(&hsl(c).0)
 }
 
 /// Every colour written in `s`, in order. Text that is not a valid colour is skipped.
@@ -298,6 +315,37 @@ mod tests {
         assert!(violet("hsl(260 50% 20%)") && !violet("hsl(260 50% 10%)"));
         assert!(violet("hsl(260 50% 85%)") && !violet("hsl(260 50% 95%)"));
         assert!(!violet("#808080"), "a grey has no hue");
+    }
+
+    #[test]
+    fn chromatic_means_saturated_and_neither_near_white_nor_near_black() {
+        let chromatic = |s: &str| is_chromatic(parse_color(s).unwrap());
+        assert!(chromatic("#3b82f6") && chromatic("#22c55e") && chromatic("#f97316"));
+        assert!(!chromatic("#ffffff") && !chromatic("#000000") && !chromatic("#808080"));
+        assert!(!chromatic("#23272a"), "a near-black has no hue to speak of");
+        assert!(!chromatic("hsl(260 30% 50%)") && !chromatic("hsl(260 50% 95%)"));
+    }
+
+    #[test]
+    fn the_violet_family_runs_from_indigo_to_pink_violet() {
+        let family = |s: &str| is_violet_family(parse_color(s).unwrap());
+        assert!(family("#6366f1") && family("#a855f7") && family("#d946ef"));
+        assert!(family("hsl(230 80% 50%)") && family("hsl(328 80% 50%)"));
+        assert!(!family("hsl(226 80% 50%)") && !family("hsl(334 80% 50%)"));
+        assert!(
+            !family("#3b82f6") && !family("#ec4899"),
+            "blue and hot pink are outside"
+        );
+        assert!(!family("hsl(270 20% 50%)"), "a grey-purple is no colour");
+    }
+
+    #[test]
+    fn blue_to_pink_is_the_partner_range_of_a_violet() {
+        let partner = |s: &str| is_blue_to_pink(parse_color(s).unwrap());
+        assert!(partner("#3b82f6") && partner("#6366f1") && partner("#ec4899"));
+        assert!(partner("hsl(192 80% 50%)") && partner("hsl(343 80% 50%)"));
+        assert!(!partner("hsl(186 80% 50%)") && !partner("hsl(348 80% 50%)"));
+        assert!(!partner("#22c55e") && !partner("#f97316") && !partner("#ffffff"));
     }
 
     #[test]

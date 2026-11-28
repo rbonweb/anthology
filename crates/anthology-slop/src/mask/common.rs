@@ -1,12 +1,14 @@
 //! Helpers every kind view uses: blanking, ignore regions, waiver comments, quotes and URLs.
 
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::LazyLock;
 
 use regex::Regex;
 use regex::bytes::Regex as BytesRegex;
 
 use super::{MASK, Waiver};
-use crate::{Span, line_of, rule};
+use crate::{Span, rule};
 
 /// A whole-line ignore-region marker in any comment style.
 static MARKER: LazyLock<Regex> = LazyLock::new(|| {
@@ -41,6 +43,98 @@ fn is_continuation(b: u8) -> bool {
     b & 0xC0 == 0x80
 }
 
+/// Where every line of one document starts, so a byte offset becomes a line number by binary
+/// search instead of a scan from the start of the document.
+pub(crate) struct LineIndex {
+    /// Address and length of the document this index was built for.
+    addr: usize,
+    len: usize,
+    /// `starts[i]` is the offset of 1-based line `i + 1`.
+    starts: Vec<usize>,
+}
+
+impl LineIndex {
+    pub(crate) fn new(doc: &str) -> LineIndex {
+        let mut starts = vec![0];
+        starts.extend(
+            doc.bytes()
+                .enumerate()
+                .filter(|&(_, b)| b == b'\n')
+                .map(|(i, _)| i + 1),
+        );
+        LineIndex {
+            addr: doc.as_ptr() as usize,
+            len: doc.len(),
+            starts,
+        }
+    }
+
+    /// The 1-based line of byte `at`; an offset past the end counts as the end.
+    pub(crate) fn line_of(&self, at: usize) -> usize {
+        let at = at.min(self.len);
+        self.starts.partition_point(|&start| start <= at)
+    }
+
+    /// The bytes of 1-based line `line`, without its newline, at least one byte wide so an empty
+    /// line can still be touched by a span that covers its newline. A line past the end sits
+    /// just after the last byte.
+    pub(crate) fn line_span(&self, line: usize) -> Span {
+        let i = line.saturating_sub(1);
+        let Some(&start) = self.starts.get(i) else {
+            return Span {
+                start: self.len,
+                end: self.len + 1,
+            };
+        };
+        let end = self.starts.get(i + 1).map_or(self.len, |&next| next - 1);
+        Span {
+            start,
+            end: end.max(start + 1),
+        }
+    }
+
+    fn is_for(&self, doc: &str) -> bool {
+        self.addr == doc.as_ptr() as usize && self.len == doc.len()
+    }
+}
+
+thread_local! {
+    /// The index of the document being checked, set by `IndexScope` so the mask code, which is
+    /// handed only `doc`, finds the lines of a large document without scanning it again.
+    static CURRENT: RefCell<Option<Rc<LineIndex>>> = const { RefCell::new(None) };
+}
+
+/// The index a live `IndexScope` holds for this very document, if there is one.
+pub(crate) fn scoped_index(doc: &str) -> Option<Rc<LineIndex>> {
+    CURRENT.with_borrow(|current| current.as_ref().filter(|i| i.is_for(doc)).cloned())
+}
+
+/// The index of `doc`: the scoped one, else a new one.
+pub(crate) fn index_for(doc: &str) -> Rc<LineIndex> {
+    scoped_index(doc).unwrap_or_else(|| Rc::new(LineIndex::new(doc)))
+}
+
+/// While it lives, `index_for` hands out one shared index of the document. The document is
+/// borrowed for as long as the scope matters, so the index cannot go stale.
+pub(crate) struct IndexScope {
+    previous: Option<Rc<LineIndex>>,
+}
+
+impl IndexScope {
+    pub(crate) fn enter(doc: &str) -> IndexScope {
+        let index = index_for(doc);
+        let previous = CURRENT.with_borrow_mut(|current| current.replace(index));
+        IndexScope { previous }
+    }
+}
+
+impl Drop for IndexScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        CURRENT.with_borrow_mut(|current| *current = previous);
+    }
+}
+
 /// Every byte of `span` but `b'\n'` becomes MASK. The span is widened to whole characters, so
 /// the buffer stays UTF-8.
 pub(crate) fn blank(buf: &mut [u8], span: Span) {
@@ -66,6 +160,7 @@ pub(crate) fn regions(doc: &str) -> (Vec<Span>, Vec<Waiver>) {
     let mut spans = Vec::new();
     let mut waivers = Vec::new();
     let mut open: Option<usize> = None;
+    let index = index_for(doc);
     for caps in MARKER.captures_iter(doc) {
         let (Some(whole), Some(which)) = (caps.get(0), caps.get(1)) else {
             continue;
@@ -78,7 +173,7 @@ pub(crate) fn regions(doc: &str) -> (Vec<Span>, Vec<Waiver>) {
                     .and_then(|c| c.get(1))
                     .map_or("", |m| m.as_str());
                 waivers.push(Waiver {
-                    line: line_of(doc, whole.start()),
+                    line: index.line_of(whole.start()),
                     rule: None,
                     reason: reason.to_string(),
                     valid: true,
@@ -120,7 +215,7 @@ pub(crate) fn comment_waivers(doc: &str, comment: Span) -> Vec<Waiver> {
         {
             let reason = caps.get(2).map_or("", |m| m.as_str()).trim();
             out.push(Waiver {
-                line: line_of(doc, offset + whole.start()),
+                line: index_for(doc).line_of(offset + whole.start()),
                 rule: Some(known.id),
                 reason: reason.to_string(),
                 valid: reason.chars().count() >= MIN_REASON,
