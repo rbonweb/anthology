@@ -740,6 +740,39 @@ fn check_reports_findings_and_exits_1() {
     assert_eq!(run.stdout, line("repo/docs/a.md", TELL));
 }
 
+// The cwd is what the OS reports (on macOS `/private/var/...`), so a path given through a link to
+// the same folder (`/var/...`) shares no prefix with it. It must still be shown from the cwd.
+#[cfg(unix)]
+#[test]
+fn check_shows_an_absolute_path_through_a_link_from_the_cwd() {
+    let fx = Fx::new();
+    let real = std::fs::canonicalize(&fx.base).unwrap().join("work");
+    std::fs::create_dir_all(real.join("repo/.git")).unwrap();
+    fx.write(&real.join("repo/docs/a.md"), TELL.as_bytes());
+    // `link` is a sibling of the cwd that leads into it
+    let link = real.with_file_name("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let line = |shown: &str| {
+        let f = anthology_slop::check_all(Kind::Markdown, TELL);
+        format!("{}\n", report::check_line(shown, &f[0]))
+    };
+    // the cwd is the real folder, the path comes through the link
+    let run = fx.check(&[s(&link.join("repo/docs/a.md"))], &real);
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(run.stdout, line("repo/docs/a.md"));
+    // `--root` is the link, the path is the real one
+    let run = fx.check(
+        &["--root", s(&link), s(&real.join("repo/docs/a.md"))],
+        &real,
+    );
+    assert_eq!(run.code, 1, "{}", run.stderr);
+    assert_eq!(run.stdout, line("repo/docs/a.md"));
+    // a file that is itself a link keeps its own name
+    std::os::unix::fs::symlink(real.join("repo/docs/a.md"), real.join("repo/docs/l.md")).unwrap();
+    let run = fx.check(&[s(&link.join("repo/docs/l.md"))], &real);
+    assert_eq!(run.stdout, line("repo/docs/l.md"));
+}
+
 #[test]
 fn check_skips_nested_clones_and_shows_paths_from_the_root() {
     // review-2 M8: `check .` walked an ignored clone and showed its files from the clone's root
