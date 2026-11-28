@@ -37,7 +37,7 @@ For what the product is and why it is built this way, read the [README](README.m
 | `ci/` | Pinned Docker images, the pinned Claude Code, and one script per CI job in `ci/jobs/` |
 | `.github/workflows/` | `ci.yml`, `evals.yml`, `upstream-watch.yml`, `fuzz.yml`, `atl-release.yml`, `anthology-release.yml` |
 
-`skills/` holds only the three user commands. Every knowledge folder must be read by at least one agent, or linked from one it reads, and a test enforces it.
+`skills/` holds only the four user commands. Every knowledge folder must be read by at least one agent, or linked from one it reads, and a test enforces it.
 
 ## Development setup
 
