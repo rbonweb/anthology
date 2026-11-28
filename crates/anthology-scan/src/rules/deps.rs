@@ -9,7 +9,8 @@ use std::sync::LazyLock;
 use anthology_pycompat::json::Value;
 use regex::Regex;
 
-use super::agent::{clip, line_at, name_of};
+use super::agent::{clip, name_of};
+use crate::files::line_of;
 use crate::{FileCtx, Finding, Group, Severity, jsonc};
 
 /// The registries a lockfile may name without a finding.
@@ -81,7 +82,7 @@ impl Tally {
                 group: Group::Deps,
                 rule: hit.rule.to_string(),
                 path: path.to_string(),
-                line: hit.at.map_or(0, |at| line_at(text, at)),
+                line: hit.at.map_or(0, |at| line_of(text, at)),
                 why: why.to_string(),
                 seen: hit.seen,
                 action: action.to_string(),

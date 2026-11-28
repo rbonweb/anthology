@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use regex::Regex;
 
 use super::hidden::{Hits, Rule, cached, excerpt, is_script, line_at, new_finding, report};
-use crate::{FileCtx, FileKind, Finding, Group, Severity};
+use crate::{FileCtx, FileKind, Finding, Group, Severity, files};
 
 /// Extensions of media and fonts: files a build or a browser reads as bytes, never as text.
 const MEDIA: [&str; 16] = [
@@ -79,38 +79,11 @@ fn in_generated_folder(path: &str) -> bool {
 
 /// The name of the program format `b` starts with: ELF, Mach-O or a Windows PE file.
 fn executable_format(b: &[u8]) -> Option<&'static str> {
-    if b.starts_with(b"\x7fELF") {
-        return Some("ELF");
-    }
-    const MACH_O: [&[u8]; 4] = [
-        b"\xfe\xed\xfa\xce",
-        b"\xfe\xed\xfa\xcf",
-        b"\xce\xfa\xed\xfe",
-        b"\xcf\xfa\xed\xfe",
-    ];
-    if MACH_O.iter().any(|magic| b.starts_with(magic)) {
-        return Some("Mach-O");
-    }
-    if b.starts_with(b"MZ") {
-        let at = u32::from_le_bytes(b.get(0x3C..0x40)?.try_into().ok()?) as usize;
-        if b.get(at..at.checked_add(4)?) == Some(&b"PE\0\0"[..]) {
-            return Some("PE");
-        }
-    }
-    None
+    files::magic(b).filter(|m| matches!(*m, "ELF" | "Mach-O" | "PE"))
 }
 
 fn archive_format(b: &[u8]) -> Option<&'static str> {
-    const ARCHIVES: [(&[u8], &str); 4] = [
-        (b"PK\x03\x04", "zip"),
-        (b"\x1f\x8b", "gzip"),
-        (b"\xfd7zXZ", "xz"),
-        (b"7z\xbc\xaf", "7z"),
-    ];
-    ARCHIVES
-        .iter()
-        .find(|(magic, _)| b.starts_with(magic))
-        .map(|(_, name)| *name)
+    files::magic(b).filter(|m| matches!(*m, "zip" | "gzip" | "xz" | "7z"))
 }
 
 /// The file's text, even when the text cap cut a multi-byte character at its end.

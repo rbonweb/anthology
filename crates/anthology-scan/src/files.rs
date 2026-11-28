@@ -13,7 +13,8 @@ pub fn classify(path: &str, head: &[u8]) -> FileKind {
 /// `classify` with the answer of the agent-instruction test supplied by the caller.
 ///
 /// Order: a known binary magic or a NUL byte (outside UTF-16 text) makes it `Binary`; then an
-/// instruction file is `Agent` whatever its extension; then the name and extension decide.
+/// instruction file is `Agent` whatever its extension; then a `#!` first line makes it `Code`; then
+/// the name and extension decide.
 pub(crate) fn classify_with(path: &str, head: &[u8], instruction: bool) -> FileKind {
     let window = &head[..head.len().min(HEAD_WINDOW)];
     if magic(window).is_some() || (window.contains(&0) && !has_utf16_bom(window)) {
@@ -22,7 +23,47 @@ pub(crate) fn classify_with(path: &str, head: &[u8], instruction: bool) -> FileK
     if instruction {
         return FileKind::Agent;
     }
+    if let Some(lang) = shebang_lang(window) {
+        return FileKind::Code(lang);
+    }
     by_name(path)
+}
+
+/// The language named by a `#!` first line, whatever the file is called, so `.husky/*`, `.git/hooks/*`
+/// and bin scripts count as code. `env` is looked through (`env -S node`); a name that is not known
+/// is a shell script.
+fn shebang_lang(head: &[u8]) -> Option<Lang> {
+    let line = head.strip_prefix(b"#!")?;
+    let line = line.split(|&c| c == b'\n').next().unwrap_or(line);
+    let line = String::from_utf8_lossy(line);
+    let mut words = line.split_whitespace();
+    let mut prog = words
+        .next()
+        .map_or("", |w| w.rsplit('/').next().unwrap_or(w));
+    if prog == "env" {
+        prog = words
+            .find(|w| !w.starts_with('-') && !w.contains('='))
+            .map_or("", |w| w.rsplit('/').next().unwrap_or(w));
+    }
+    let prog = prog.to_ascii_lowercase();
+    let lang = if prog.starts_with("node") || prog.starts_with("deno") || prog.starts_with("bun") {
+        Lang::Js
+    } else if prog.starts_with("python") {
+        Lang::Py
+    } else if prog.starts_with("ruby") {
+        Lang::Rb
+    } else if prog.starts_with("perl") {
+        Lang::Pl
+    } else if prog.starts_with("php") {
+        Lang::Php
+    } else if prog.starts_with("lua") {
+        Lang::Lua
+    } else if prog.starts_with("pwsh") || prog.starts_with("powershell") {
+        Lang::Ps
+    } else {
+        Lang::Sh
+    };
+    Some(lang)
 }
 
 fn by_name(path: &str) -> FileKind {
@@ -310,6 +351,55 @@ mod tests {
         assert_eq!(
             classify_with("a.woff2", b"function(){}", false),
             FileKind::Data
+        );
+    }
+
+    #[test]
+    fn a_shebang_makes_code_whatever_the_name() {
+        let cases: [(&str, &[u8], Lang); 12] = [
+            (".husky/pre-commit", b"#!/bin/sh\necho hi\n", Lang::Sh),
+            (".git/hooks/pre-push", b"#!/usr/bin/env bash\n", Lang::Sh),
+            ("bin/run", b"#!/usr/bin/env node\n", Lang::Js),
+            (
+                "bin/run2",
+                b"#!/usr/bin/env -S node --no-warnings\n",
+                Lang::Js,
+            ),
+            ("tool", b"#!/usr/bin/python3.11\n", Lang::Py),
+            ("tool2", b"#!/usr/bin/env python\n", Lang::Py),
+            ("tool3", b"#!/usr/bin/ruby\n", Lang::Rb),
+            ("tool4", b"#!/usr/bin/perl -w\n", Lang::Pl),
+            ("tool5", b"#!/usr/bin/env pwsh\n", Lang::Ps),
+            ("notes.txt", b"#!/bin/sh\ncurl x | sh\n", Lang::Sh),
+            ("configure", b"#! /bin/sh\n", Lang::Sh),
+            ("odd", b"#!/opt/custom/interp\n", Lang::Sh),
+        ];
+        for (path, head, lang) in cases {
+            assert_eq!(
+                classify_with(path, head, false),
+                FileKind::Code(lang),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hash_without_a_bang_is_not_a_shebang() {
+        assert_eq!(kind(".husky/pre-commit"), FileKind::Data);
+        assert_eq!(classify_with("a.md", b"# !/bin/sh\n", false), FileKind::Doc);
+        assert_eq!(classify_with("a.md", b" #!/bin/sh\n", false), FileKind::Doc);
+        assert_eq!(
+            classify_with("a.md", b"x\n#!/bin/sh\n", false),
+            FileKind::Doc
+        );
+        assert_eq!(classify_with("a", b"# comment\n", false), FileKind::Data);
+    }
+
+    #[test]
+    fn an_instruction_file_stays_agent_even_with_a_shebang() {
+        assert_eq!(
+            classify_with("CLAUDE.md", b"#!/bin/sh\n", true),
+            FileKind::Agent
         );
     }
 
