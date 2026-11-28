@@ -160,6 +160,7 @@ If a Bash call is blocked with "(setup)", the guard binary is missing. The block
    else (often the shell profile), and `/anthology:setup` shows where. Tell the user to restart the
    session so the new permissions and the ATL hook take effect. `legacy_rtk` says what was deleted
    of the old tool's leftovers (a `warnings` entry names anything that could not be deleted).
+7. Ask whether to run a malicious-code check of this repo now. Say first: "Claude Code is already open in this repo, so its hooks, env settings and MCP servers may have run. The check still reads install scripts, editor tasks and hidden code, which have not run yet. For a repo you did not write, the safest check runs before opening Claude Code in it: /anthology:check-repo <path> from a session in another folder." If yes, invoke the skill `anthology:check-repo` with `--opened '<abs repo path>'` (the same path as `--cwd`, or the current repo).
 
 ## Remove (`/anthology:setup remove`)
 
