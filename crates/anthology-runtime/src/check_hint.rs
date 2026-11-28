@@ -4,7 +4,8 @@
 //! [`surfaces`] looks at five files at the repo top and nothing else: it never runs anything the
 //! repo holds, and reads each file up to [`READ_LIMIT`] bytes through the same non-blocking open
 //! the settings reads use (a FIFO or device is skipped, a link to a regular file is read as the
-//! file). A file over the limit, not valid JSON where JSON is expected, or nested past the repo
+//! file). A file over the limit counts as a surface without being read, so padding a file does
+//! not hide it. A file that is not valid JSON where JSON is expected, or is nested past the repo
 //! JSON depth, is not a surface. `.envrc` is only looked for, never opened. This is a hint, not
 //! a scan: the check itself is `anthology check-repo`.
 
@@ -50,13 +51,25 @@ pub fn surfaces(top: &Path) -> Vec<&'static str> {
     if settings_runs_code(top, ".claude/settings.local.json") {
         out.push(SETTINGS_LOCAL);
     }
-    let servers = json_at(top, ".mcp.json")
-        .and_then(|v| v.as_object().and_then(|o| o.get("mcpServers")).map(filled));
-    if servers == Some(true) {
+    let servers = match probe(top, ".mcp.json") {
+        Probe::Text(t) => compat::loads_bounded(&t).is_some_and(|v| {
+            v.as_object()
+                .and_then(|o| o.get("mcpServers"))
+                .is_some_and(filled)
+        }),
+        Probe::Oversize => true,
+        Probe::Skip => false,
+    };
+    if servers {
         out.push(MCP);
     }
     // `tasks.json` is JSONC (comments are allowed), so a strict parse would miss real files.
-    if text_at(top, ".vscode/tasks.json").is_some_and(|t| t.contains("\"folderOpen\"")) {
+    let task = match probe(top, ".vscode/tasks.json") {
+        Probe::Text(t) => t.contains("\"folderOpen\""),
+        Probe::Oversize => true,
+        Probe::Skip => false,
+    };
+    if task {
         out.push(TASK);
     }
     // Only its presence counts, so it is not opened.
@@ -66,22 +79,41 @@ pub fn surfaces(top: &Path) -> Vec<&'static str> {
     out
 }
 
-/// The text of `top/rel` when it is a regular file within [`READ_LIMIT`].
-fn text_at(top: &Path, rel: &str) -> Option<String> {
-    match compat::open_read(&top.join(rel), Some(READ_LIMIT)) {
-        Opened::Bytes(raw) => Some(compat::decode_text(&raw)),
-        Opened::Absent | Opened::Refused => None,
+/// What reading `top/rel` gave.
+enum Probe {
+    /// A regular file within [`READ_LIMIT`]: its text.
+    Text(String),
+    /// A regular file over [`READ_LIMIT`]. It is never read or parsed, but a repo must not hide
+    /// a surface by padding the file, so it counts as one.
+    Oversize,
+    /// Absent, not a regular file (a FIFO or device is never opened), or unreadable.
+    Skip,
+}
+
+fn probe(top: &Path, rel: &str) -> Probe {
+    let path = top.join(rel);
+    match compat::open_read(&path, Some(READ_LIMIT)) {
+        Opened::Bytes(raw) => Probe::Text(compat::decode_text(&raw)),
+        Opened::Absent => Probe::Skip,
+        Opened::Refused => {
+            // The size comes from the metadata of the file the path names, not from reading it.
+            match std::fs::metadata(&path) {
+                Ok(m) if m.is_file() && m.len() > READ_LIMIT => Probe::Oversize,
+                _ => Probe::Skip,
+            }
+        }
     }
 }
 
-/// `top/rel` as strict JSON.
-fn json_at(top: &Path, rel: &str) -> Option<Value> {
-    compat::loads_bounded(&text_at(top, rel)?)
-}
-
-/// Whether a Claude Code settings file at `top/rel` sets hooks, env, or a helper command.
+/// Whether a Claude Code settings file at `top/rel` sets hooks, env, or a helper command. An
+/// oversize file does.
 fn settings_runs_code(top: &Path, rel: &str) -> bool {
-    let Some(value) = json_at(top, rel) else {
+    let text = match probe(top, rel) {
+        Probe::Text(t) => t,
+        Probe::Oversize => return true,
+        Probe::Skip => return false,
+    };
+    let Some(value) = compat::loads_bounded(&text) else {
         return false;
     };
     let Some(settings) = value.as_object() else {

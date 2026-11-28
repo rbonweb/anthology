@@ -3574,23 +3574,66 @@ mod check_hint_test {
     }
 
     #[test]
-    fn a_surface_that_is_not_a_regular_file_or_is_too_big_is_skipped() {
+    fn a_surface_that_is_not_a_regular_file_is_skipped_and_a_link_is_read() {
         let f = Fx::new();
         let dir = repo(&f, "odd");
         // a folder where a file belongs
         fs::create_dir_all(dir.join(".envrc")).unwrap();
         fs::create_dir_all(dir.join(".mcp.json")).unwrap();
-        assert!(check_hint::surfaces(&dir).is_empty());
-        // a file past the 256 KiB read cap is not read at all
-        let pad = " ".repeat(256 * 1024);
-        put(&dir, ".claude/settings.json", &format!("{HOOKS}{pad}"));
+        fs::create_dir_all(dir.join(".vscode/tasks.json")).unwrap();
+        fs::create_dir_all(dir.join(".claude/settings.json")).unwrap();
         assert!(check_hint::surfaces(&dir).is_empty());
         // a link to a file elsewhere is read as the file
+        fs::remove_dir(dir.join(".claude/settings.json")).unwrap();
         let outside = f.tmp().join("outside.json");
         write(&outside, HOOKS, None);
-        fs::remove_file(dir.join(".claude/settings.json")).unwrap();
         symlink(&outside, dir.join(".claude/settings.json")).unwrap();
         assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS]);
+    }
+
+    #[test]
+    fn a_file_over_the_read_cap_counts_without_being_parsed() {
+        let f = Fx::new();
+        let dir = repo(&f, "padded");
+        let cap = check_hint::READ_LIMIT as usize;
+        // Not JSON and nothing in it: if it were read, it would be no surface. Only its size counts.
+        let junk = "x".repeat(cap + 1);
+        for (rel, label) in [
+            (".claude/settings.json", SETTINGS),
+            (".claude/settings.local.json", LOCAL),
+            (".mcp.json", MCP),
+            (".vscode/tasks.json", TASK),
+        ] {
+            put(&dir, rel, &junk);
+            assert!(check_hint::surfaces(&dir).contains(&label), "{rel}");
+            fs::remove_file(dir.join(rel)).unwrap();
+            assert!(check_hint::surfaces(&dir).is_empty(), "{rel}");
+        }
+        // Padding a real hooks file past the cap does not hide it either.
+        put(
+            &dir,
+            ".claude/settings.json",
+            &format!("{HOOKS}{}", " ".repeat(cap)),
+        );
+        assert_eq!(check_hint::surfaces(&dir), vec![SETTINGS]);
+        // A file of exactly the cap is read, so a clean one is no surface.
+        let clean = r#"{"permissions": {}}"#;
+        put(
+            &dir,
+            ".claude/settings.json",
+            &format!("{clean}{}", " ".repeat(cap - clean.len())),
+        );
+        assert_eq!(
+            fs::metadata(dir.join(".claude/settings.json"))
+                .unwrap()
+                .len(),
+            cap as u64
+        );
+        assert!(check_hint::surfaces(&dir).is_empty());
+        // A folder is no file, whatever its size.
+        fs::remove_file(dir.join(".claude/settings.json")).unwrap();
+        fs::create_dir_all(dir.join(".claude/settings.json")).unwrap();
+        assert!(check_hint::surfaces(&dir).is_empty());
     }
 
     #[test]
