@@ -4,6 +4,10 @@
 //! None of it is proof of bad intent, so each is LOW; it is a place to look. The scan itself never
 //! reads these files to configure a tool (the tool runner passes its own config).
 
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use super::agent::{clip, name_of};
 use crate::files::line_of;
 use crate::{FileCtx, Finding, Group, Severity};
@@ -19,13 +23,13 @@ const CONFIG_NAMES: &[&str] = &[
 ];
 
 /// Inline markers that silence a scanner on one line. Split so this source does not carry them.
-/// zizmor reads its comment with or without the space and has no flag to turn that off.
-const INLINE_MARKERS: [&str; 4] = [
-    concat!("gitleaks", ":allow"),
-    concat!("no", "semgrep"),
-    concat!("zizmor", ": ignore"),
-    concat!("zizmor", ":ignore"),
-];
+const INLINE_MARKERS: [&str; 2] = [concat!("gitleaks", ":allow"), concat!("no", "semgrep")];
+
+/// zizmor reads its ignore comment with any whitespace after the colon and has no flag to turn
+/// that off.
+static ZIZMOR_MARKER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!("zizmor", r":\s*ignore")).expect("the zizmor pattern compiles")
+});
 
 /// Whether `path` is a scanner config or ignore file.
 fn is_scanner_config(path: &str) -> bool {
@@ -61,6 +65,10 @@ pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
             count += 1;
             first = Some(first.map_or(at, |p| p.min(at)));
         }
+    }
+    for m in ZIZMOR_MARKER.find_iter(text) {
+        count += 1;
+        first = Some(first.map_or(m.start(), |p| p.min(m.start())));
     }
     let Some(at) = first else {
         return;
@@ -107,6 +115,9 @@ mod tests {
     const NO_SEMGREP: &str = concat!("no", "semgrep");
     const ZIZMOR_IGNORE: &str = concat!("zizmor", ": ignore");
     const ZIZMOR_IGNORE_COMPACT: &str = concat!("zizmor", ":ignore");
+    /// Other spacings zizmor reads: any run of whitespace after the colon.
+    const ZIZMOR_IGNORE_WIDE: &str = concat!("zizmor", ":   ignore");
+    const ZIZMOR_IGNORE_TAB: &str = concat!("zizmor", ":\tignore");
 
     #[test]
     fn scanner_config_files_are_low() {
@@ -170,7 +181,12 @@ mod tests {
 
     #[test]
     fn a_zizmor_ignore_comment_in_a_workflow_is_low() {
-        for marker in [ZIZMOR_IGNORE, ZIZMOR_IGNORE_COMPACT] {
+        for marker in [
+            ZIZMOR_IGNORE,
+            ZIZMOR_IGNORE_COMPACT,
+            ZIZMOR_IGNORE_WIDE,
+            ZIZMOR_IGNORE_TAB,
+        ] {
             let text = format!(
                 "jobs:\n  build:\n    steps:\n      - run: echo ${{{{ github.event.issue.title }}}}  # {marker}[template-injection]\n      - run: echo ${{{{ github.head_ref }}}}  # {marker}\n"
             );
@@ -202,6 +218,8 @@ mod tests {
             NO_SEMGREP,
             ZIZMOR_IGNORE,
             ZIZMOR_IGNORE_COMPACT,
+            ZIZMOR_IGNORE_WIDE,
+            ZIZMOR_IGNORE_TAB,
         ] {
             let out = run("notes.txt", &format!("a\nb {marker}\n"));
             assert_eq!(out.len(), 1, "{marker}");
