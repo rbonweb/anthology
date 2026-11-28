@@ -4,7 +4,9 @@
 //   - `tool.call` refuses the main loop's Edit, Write and NotebookEdit, says why, names the agent
 //     to hand the change to (the project's own matching agent when one fits, else ours), and lets
 //     through the lead's own notes (memory, plans, `.superpowers/`), files that are not project
-//     code (the Claude config folder; anything outside every git repo) and a tiny fix: one Edit,
+//     code (the Claude config folder; anything outside every git repo; a file in the repo that git
+//     ignores and does not track, which only the main checkout holds and no agent in a worktree can
+//     write: `isLocalSetup`, never anything under `.git`) and a tiny fix: one Edit,
 //     at most 3 per turn, all in one file, counted only when the edit succeeded. How tiny depends
 //     on the risk: 5 lines and about 2 KB; a small config file 15 lines; a pure deletion 30 lines
 //     and 4 KB.
@@ -23,7 +25,7 @@
 // This is a workflow rule, not a safety boundary: every hook fails open, and a Bash write
 // (`sed -i`, a redirect) is not seen. ANTHOLOGY_DELEGATION=0 (or ANTHOLOGY_MODS=0) turns it off.
 import type { EngineInterface, On, PromptComposeSection } from 'claude-code'
-import { modsOff, runAnthology } from './util.ts'
+import { modsOff, onAbsolutePath, runAnthology } from './util.ts'
 
 // Two values in `$.state`, declared in types/anthology.d.ts. `delegation`: the file the lead
 // edited this turn and how many edits it has used. `coordinator`: whether the prompt carries the
@@ -45,6 +47,8 @@ const CONFIG_FILE = /\.(json|jsonc|json5|ya?ml|toml|ini|cfg|conf|env|properties|
 const CI_FILE = /(^|\/)(\.github|\.gitlab|\.circleci|\.buildkite|\.azure-pipelines|\.drone|\.woodpecker)\/|(^|\/)(\.gitlab-ci|\.travis|azure-pipelines|bitbucket-pipelines|\.drone|appveyor|cloudbuild)\.ya?ml$/i
 /** Folders looked at on the way up from a file to see whether a `.git` is there. */
 const MAX_WALK = 64
+const GIT_TIMEOUT_MS = 5000
+const MAX_GITS = 3
 
 // Steady text (the prompt cache holds), 400 characters at most.
 const COORDINATOR: PromptComposeSection = {
@@ -226,6 +230,74 @@ async function isOutsideProject($: EngineInterface, file: string): Promise<boole
   return !(await inGitRepo($, path))
 }
 
+/**
+ * The nearest folder at or above the folder of `path` that holds a `.git`; undefined when there is
+ * none, the walk gives out or the check cannot run (unlike `inGitRepo`, unknown is not an answer).
+ */
+async function repoOf($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    let dir = path.slice(0, path.lastIndexOf('/'))
+    for (let depth = 0; depth < MAX_WALK; depth++) {
+      if (await $.fs.exists(`${dir}/.git`)) return dir === '' ? '/' : dir
+      if (dir === '') return undefined
+      dir = dir.slice(0, dir.lastIndexOf('/'))
+    }
+  } catch {
+    // unknown
+  }
+  return undefined
+}
+
+/**
+ * The exit code of one `git` call in `cwd`, or undefined when no git on the absolute PATH entries
+ * could run it. Only those entries are looked at, so a repo cannot plant a `git` that runs here
+ * (the same rule `afterwork.ts` follows); `core.fsmonitor` is off because a repo's own config
+ * would otherwise start a program. A git that cannot start is passed over for the next, a few at most.
+ */
+async function gitExit($: EngineInterface, cwd: string, args: readonly string[]): Promise<number | undefined> {
+  const git = await onAbsolutePath($, 'git')
+  for (const bin of git.bins.slice(0, MAX_GITS)) {
+    try {
+      const run = await $.process.run([bin, '-c', 'core.fsmonitor=false', '--no-optional-locks', ...args], {
+        cwd,
+        timeoutMs: GIT_TIMEOUT_MS,
+        env: { PATH: git.path },
+      })
+      return run.exitCode
+    } catch {
+      // cannot start, or timed out: the next one
+    }
+  }
+  return undefined
+}
+
+/**
+ * Local setup: a file in the repo that git ignores and does not track, such as `.env.<name>.local`.
+ * It is never part of the work product and only the main checkout holds it, which no agent in a
+ * worktree may write to, so the lead makes it. Git decides, never a name: `check-ignore` says the
+ * file is ignored (a tracked file never is) and `ls-files --error-unmatch` says it is not in the
+ * index (exit 1; any other exit is git failing). Nothing under `.git` ever counts, and neither does
+ * a symbolic link, which a write would follow to some other file. Any failure is "no", so the
+ * file is handed off as before.
+ */
+async function isLocalSetup($: EngineInterface, file: string): Promise<boolean> {
+  try {
+    const path = await resolvePath($, file)
+    if (path === undefined || path.split('/').some(part => part.toLowerCase() === '.git')) return false
+    const top = await repoOf($, path)
+    if (top === undefined) return false
+    try {
+      if ((await $.fs.stat(path)).isLink) return false
+    } catch {
+      // no such file yet: a Write makes it
+    }
+    if ((await gitExit($, top, ['check-ignore', '-q', '--', path])) !== 0) return false
+    return (await gitExit($, top, ['ls-files', '--error-unmatch', '--', path])) === 1
+  } catch {
+    return false
+  }
+}
+
 function field(e: object, name: string): string {
   const v = (e as { readonly [k: string]: unknown })[name]
   return typeof v === 'string' ? v : ''
@@ -321,7 +393,7 @@ async function refusal($: EngineInterface, file: string, why: string): Promise<s
     `anthology: the lead hands off making and changing (${why}). ` +
     `Dispatch the project's own matching agent when one fits, else ${agent}${bug}, with this change. ` +
     `Inline only: an Edit of at most ${MAX_EDIT_LINES} lines (${MAX_CONFIG_LINES} in a config file, ${MAX_DELETE_LINES} for a pure deletion) ` +
-    `in one file, at most ${MAX_EDITS_PER_TURN} per turn. Files outside a git repo and the Claude config folder are yours. ` +
+    `in one file, at most ${MAX_EDITS_PER_TURN} per turn. Files outside a git repo, the Claude config folder and files in the repo that git ignores and does not track (a gitignored and untracked file is local setup no agent can reach) are yours. ` +
     `Set ANTHOLOGY_DELEGATION=0, or "delegation": false in .claude/anthology.json of a repo approved in /anthology:setup, to turn this off.${rule}`
   )
 }
@@ -353,6 +425,7 @@ export function registerDelegation(on: On): void {
     const file = field(e, e.tool === 'NotebookEdit' ? 'notebook_path' : 'file_path')
     if ((await isLeadNote($, file)) || (await isOutsideProject($, file))) return next(e)
     if (!(await canDispatch($))) return next(e)
+    if (await isLocalSetup($, file)) return next(e)
     const why = e.tool === 'Edit' ? whyNotTiny(e, file) : `a ${e.tool} is never an inline fix`
     if (why !== undefined) return { deny: await refusal($, file, why) }
     const busy = await reserveTinyFix($, file)
