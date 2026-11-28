@@ -12,15 +12,23 @@ pub fn classify(path: &str, head: &[u8]) -> FileKind {
 
 /// `classify` with the answer of the agent-instruction test supplied by the caller.
 ///
-/// Order, name first: an instruction file is `Agent` whatever its bytes; a `#!` first line makes it
-/// `Code`; a code, config or known auto-run name stays `Code` or `Config` even with a NUL byte or a
-/// binary magic in it, because the tool that runs it reads it anyway (a stray byte must not turn it
-/// into a file the rules skip). Any other name is `Binary` on a known magic or a NUL byte (outside
-/// UTF-16 text), and otherwise `Doc` or `Data`.
+/// Order, name first: an instruction file is `Agent` whatever its bytes, unless it has a code
+/// extension or a `#!` first line (a script under `.claude/commands` is code, and the orchestrator
+/// still lists it as an instruction); a `#!` first line makes any other file `Code`; a code, config
+/// or known auto-run name stays `Code` or `Config` even with a NUL byte or a binary magic in it,
+/// because the tool that runs it reads it anyway (a stray byte must not turn it into a file the
+/// rules skip). Any other name is `Binary` on a known magic or a NUL byte (outside UTF-16 text), and
+/// otherwise `Doc` or `Data`.
 pub(crate) fn classify_with(path: &str, head: &[u8], instruction: bool) -> FileKind {
     let window = &head[..head.len().min(HEAD_WINDOW)];
     if instruction {
-        return FileKind::Agent;
+        if let Some(lang) = shebang_lang(window) {
+            return FileKind::Code(lang);
+        }
+        return match by_extension(path) {
+            kind @ FileKind::Code(_) => kind,
+            _ => FileKind::Agent,
+        };
     }
     if let Some(lang) = shebang_lang(window) {
         return FileKind::Code(lang);
@@ -94,6 +102,31 @@ pub(crate) fn is_autorun_name(path: &str) -> bool {
     )
 }
 
+/// Whether a flaw in the encoding of the file at `path` is HIGH: the file is JSON that a strict
+/// parser reads for what runs (`package.json`, `tasks.json`, `settings.json`, `.mcp.json`,
+/// `devcontainer.json`, `*.code-workspace`), or is under `.claude`. A parser can stop at a bad byte
+/// where the scan reads on. Any other file (a Makefile, `configure`, `setup.py`, a project file) is
+/// read by tools that go on past a bad byte, and the rules ran on its lossy text, so nothing is
+/// hidden: its flaw is MEDIUM.
+pub(crate) fn is_strict_json_name(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    let mut parts: Vec<&str> = lower.split('/').collect();
+    let base = parts.pop().unwrap_or("");
+    parts.contains(&".claude")
+        || matches!(
+            base,
+            "package.json"
+                | "tasks.json"
+                | "settings.json"
+                | "settings.local.json"
+                | ".mcp.json"
+                | "mcp.json"
+                | ".devcontainer.json"
+                | "devcontainer.json"
+        )
+        || base.ends_with(".code-workspace")
+}
+
 /// The language named by a `#!` first line, whatever the file is called, so `.husky/*`, `.git/hooks/*`
 /// and bin scripts count as code. `env` is looked through (`env -S node`); a name that is not known
 /// is a shell script.
@@ -110,8 +143,15 @@ fn shebang_lang(head: &[u8]) -> Option<Lang> {
             .find(|w| !w.starts_with('-') && !w.contains('='))
             .map_or("", |w| w.rsplit('/').next().unwrap_or(w));
     }
+    Some(lang_of_program(prog))
+}
+
+/// The language of the program `prog` (a name or a path), as the file it runs: a name that is not
+/// known is a shell script.
+pub(crate) fn lang_of_program(prog: &str) -> Lang {
+    let prog = prog.rsplit(['/', '\\']).next().unwrap_or(prog);
     let prog = prog.to_ascii_lowercase();
-    let lang = if prog.starts_with("node") || prog.starts_with("deno") || prog.starts_with("bun") {
+    if prog.starts_with("node") || prog.starts_with("deno") || prog.starts_with("bun") {
         Lang::Js
     } else if prog.starts_with("python") {
         Lang::Py
@@ -127,8 +167,20 @@ fn shebang_lang(head: &[u8]) -> Option<Lang> {
         Lang::Ps
     } else {
         Lang::Sh
-    };
-    Some(lang)
+    }
+}
+
+/// The kind a file has when a command runs it: code in the language of its extension, else the
+/// language of a `#!` first line in `head`, else `fallback` (the interpreter of the command, or a
+/// shell script).
+pub(crate) fn code_kind_of_run(path: &str, head: &[u8], fallback: Lang) -> FileKind {
+    if let Some(lang) = shebang_lang(&head[..head.len().min(HEAD_WINDOW)]) {
+        return FileKind::Code(lang);
+    }
+    match by_extension(path) {
+        kind @ FileKind::Code(_) => kind,
+        _ => FileKind::Code(fallback),
+    }
 }
 
 fn by_name(path: &str) -> FileKind {
@@ -504,11 +556,83 @@ mod tests {
     }
 
     #[test]
-    fn an_instruction_file_stays_agent_even_with_a_shebang() {
+    fn an_instruction_file_is_agent_unless_it_is_code_by_extension_or_shebang() {
+        // N5: a script in an instruction folder is code, so the content rules read it as code.
+        let cases = [
+            ("CLAUDE.md", &b"read this\n"[..], FileKind::Agent),
+            (".claude/commands/x.md", b"# hi\0\n", FileKind::Agent),
+            ("CLAUDE.md", b"#!/bin/sh\necho\n", FileKind::Code(Lang::Sh)),
+            (
+                ".claude/commands/run",
+                b"#!/usr/bin/env python3\n",
+                FileKind::Code(Lang::Py),
+            ),
+            (
+                ".claude/skills/x/scripts/a.py",
+                b"print(1)\n",
+                FileKind::Code(Lang::Py),
+            ),
+            (
+                ".claude/agents/hook.SH",
+                b"echo\n",
+                FileKind::Code(Lang::Sh),
+            ),
+            (".cursor/rules/tool.js", b"//\n", FileKind::Code(Lang::Js)),
+        ];
+        for (path, bytes, want) in cases {
+            assert_eq!(classify_with(path, bytes, true), want, "{path}");
+        }
+    }
+
+    #[test]
+    fn only_json_and_the_agent_folder_are_strict_names() {
+        for p in [
+            "package.json",
+            "a/package.json",
+            ".vscode/tasks.json",
+            ".vscode/settings.json",
+            ".mcp.json",
+            ".devcontainer/devcontainer.json",
+            "devcontainer.json",
+            "x.code-workspace",
+            ".claude/commands/x.md",
+            ".Claude/settings.local.json",
+            "PACKAGE.JSON",
+        ] {
+            assert!(is_strict_json_name(p), "{p}");
+        }
+        for p in [
+            "Makefile",
+            "configure",
+            "a.m4",
+            "setup.py",
+            "x.csproj",
+            ".husky/pre-commit",
+            ".npmrc",
+            "CLAUDE.md",
+            ".envrc",
+            "build.rs",
+        ] {
+            assert!(!is_strict_json_name(p), "{p}");
+        }
+    }
+
+    #[test]
+    fn a_file_a_command_runs_is_code_by_extension_then_shebang_then_the_interpreter() {
         assert_eq!(
-            classify_with("CLAUDE.md", b"#!/bin/sh\n", true),
-            FileKind::Agent
+            code_kind_of_run("notes.txt", b"echo\n", Lang::Js),
+            FileKind::Code(Lang::Js)
         );
+        assert_eq!(
+            code_kind_of_run("tool.py", b"echo\n", Lang::Sh),
+            FileKind::Code(Lang::Py)
+        );
+        assert_eq!(
+            code_kind_of_run("bin/tool", b"#!/usr/bin/env ruby\n", Lang::Sh),
+            FileKind::Code(Lang::Rb)
+        );
+        assert_eq!(lang_of_program("/usr/bin/python3.11"), Lang::Py);
+        assert_eq!(lang_of_program("bash"), Lang::Sh);
     }
 
     #[test]

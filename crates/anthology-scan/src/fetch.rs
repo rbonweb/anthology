@@ -292,6 +292,17 @@ pub fn fetch_with_notes(
     if let Some(rev) = &p.rev {
         validate_rev(rev)?;
     }
+    // `new/../old` does not resolve while `new` is missing, so the check below would take it for a
+    // folder that is not there; made later, it could name a folder that is. No `..` is accepted.
+    if p.dest
+        .components()
+        .any(|c| c == std::path::Component::ParentDir)
+    {
+        return Err(format!(
+            "{} has a `..` in it: the quarantine folder must be given without it",
+            p.dest.display()
+        ));
+    }
     // Absolute, so `-C <dest>` means the same folder whatever the working folder of git is.
     let dest = std::path::absolute(&p.dest)
         .map_err(|e| format!("cannot resolve {}: {e}", p.dest.display()))?;
@@ -1179,6 +1190,26 @@ mod tests {
             "mine"
         );
         assert!(r.calls().is_empty());
+    }
+
+    #[test]
+    fn a_dest_with_a_parent_step_is_refused_before_anything_is_made() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keep = tmp.path().join("keep");
+        std::fs::create_dir(&keep).unwrap();
+        std::fs::write(keep.join("keep.txt"), "mine").unwrap();
+        // `missing` does not exist, so `missing/../keep` does not resolve: it looks new, and it
+        // names a folder that is there.
+        let dest = tmp.path().join("missing").join("..").join("keep");
+        let r = Fake::new(&["git"], git_ok);
+        let err = fetch(&plan(&dest), &r, Duration::from_secs(120)).unwrap_err();
+        assert!(err.contains(".."), "{err}");
+        assert!(r.calls().is_empty());
+        assert!(!tmp.path().join("missing").exists());
+        assert_eq!(
+            std::fs::read_to_string(keep.join("keep.txt")).unwrap(),
+            "mine"
+        );
     }
 
     #[test]
