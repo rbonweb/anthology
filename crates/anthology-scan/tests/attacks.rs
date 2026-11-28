@@ -1950,5 +1950,13 @@ fn r4_a_terminal_profile_name_with_an_equals_sign_does_not_hide_its_program() {
         ".vscode/settings.json",
         Severity::High,
     );
+    // `seen` is the target path alone; the key it came from is in `why`.
+    assert!(
+        s.findings
+            .iter()
+            .any(|f| f.rule == "autorun.vscode-program" && f.seen.ends_with("tools/sh.sh")),
+        "seen is not the program path; findings:\n{}",
+        list(&s)
+    );
     expect_exit(&s, 1);
 }
