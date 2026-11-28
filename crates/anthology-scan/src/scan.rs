@@ -52,6 +52,9 @@ pub(crate) struct Hooks {
     pub files_run: fn(&str) -> Vec<String>,
     pub npm_run_target: fn(&str) -> Option<String>,
     pub severity: fn(Trigger, Shape, Option<Severity>) -> Severity,
+    /// Called with the name of each phase of the orchestrator as it starts, inside the phase's
+    /// panic guard: a test makes it panic to check that the scan survives.
+    pub probe: fn(&str),
 }
 
 pub(crate) const REAL: Hooks = Hooks {
@@ -69,6 +72,7 @@ pub(crate) const REAL: Hooks = Hooks {
     files_run: shape::files_run,
     npm_run_target: shape::npm_run_target,
     severity: shape::severity,
+    probe: |_| {},
 };
 
 fn check_all(f: &FileCtx, out: &mut Vec<Finding>) {
@@ -150,19 +154,28 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     let mut derived: Vec<Finding> = Vec::new();
     let all_paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
 
-    let unresolved: HashSet<&str> = tree.unresolved_links().iter().map(String::as_str).collect();
-    for entry in entries {
-        if let EntryKind::Symlink { target } = &entry.kind {
-            if let Some(why) = symlink_escape(&entry.path, target) {
-                derived.push(symlink_finding(entry, target, why));
-            } else if unresolved.contains(entry.path.as_str()) {
-                derived.push(unresolved_finding(entry, target));
+    guard(
+        hooks,
+        "links",
+        "checking links and git folders",
+        &mut scan.errors,
+        || {
+            let unresolved: HashSet<&str> =
+                tree.unresolved_links().iter().map(String::as_str).collect();
+            for entry in entries {
+                if let EntryKind::Symlink { target } = &entry.kind {
+                    if let Some(why) = symlink_escape(&entry.path, target) {
+                        derived.push(symlink_finding(entry, target, why));
+                    } else if unresolved.contains(entry.path.as_str()) {
+                        derived.push(unresolved_finding(entry, target));
+                    }
+                }
             }
-        }
-    }
-    for (path, target) in tree.gitdir_outside() {
-        derived.push(gitdir_finding(path, target));
-    }
+            for (path, target) in tree.gitdir_outside() {
+                derived.push(gitdir_finding(path, target));
+            }
+        },
+    );
 
     // A link at a settings or agent path that resolved inside the root is read as its target.
     let files_at: Vec<usize> = entries
@@ -223,9 +236,17 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         files: &known,
         dirs: &folders,
     };
+    // One expansion per surface, in surface order; a surface whose expansion failed reaches nothing.
     let mut expanded: Vec<Expanded> = Vec::with_capacity(surfaces.len());
     for s in &surfaces {
-        let ex = reach.expand(&s.dir, &s.command);
+        let ex = guard(
+            hooks,
+            "reach",
+            "following an auto-run command to its files",
+            &mut scan.errors,
+            || reach.expand(&s.dir, &s.command),
+        )
+        .unwrap_or_default();
         for (path, lang) in &ex.files {
             run_by_command.entry(path.clone()).or_insert(*lang);
             reached.insert(path.clone());
@@ -235,13 +256,21 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         }
         expanded.push(ex);
     }
-    second_pass(
-        tree,
+    guard(
         hooks,
-        &run_by_command,
-        &kinds,
-        &mut content,
-        &mut yara_findings,
+        "second-pass",
+        "reading the files a command runs as code",
+        &mut scan.errors,
+        || {
+            second_pass(
+                tree,
+                hooks,
+                &run_by_command,
+                &kinds,
+                &mut content,
+                &mut yara_findings,
+            );
+        },
     );
     for entry in entries {
         if matches!(base_name(&entry.path), "setup.py" | "build.rs") {
@@ -272,29 +301,68 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         }
         content.push(f);
     }
-    let raise_errors =
-        raise_file_findings(tree, hooks, &reached, &run_by_command, &kinds, &mut content);
-    scan.errors.extend(raise_errors);
+    let raised = guard(
+        hooks,
+        "raise-file",
+        "raising the capped findings of reached code files",
+        &mut scan.errors,
+        || raise_file_findings(tree, hooks, &reached, &run_by_command, &kinds, &mut content),
+    );
+    scan.errors.extend(raised.unwrap_or_default());
     let surface_paths: HashSet<&str> = surfaces.iter().map(|s| s.path.as_str()).collect();
-    derived.extend(case_twin_findings(&all_paths, &|p| {
-        surface_paths.contains(p)
-            || reached.contains(p)
-            || files::is_autorun_name(p)
-            || (hooks.is_instruction)(p)
-    }));
-    (hooks.raise_twins)(&all_paths, &mut content);
-    (hooks.raise_reached)(&mut content, &|path| reached.contains(path));
-    (hooks.entry_findings)(&all_paths, &mut content);
-    for (path, kind, text) in &filter_texts {
-        let ctx = FileCtx {
-            path,
-            bytes: text.as_bytes(),
-            text: Some(text),
-            kind: kind.unwrap_or(FileKind::Data),
-            truncated: false,
-        };
-        (hooks.raise_filters)(&ctx, &mut content);
-    }
+    guard(
+        hooks,
+        "case-twins",
+        "checking for names that differ only in case",
+        &mut scan.errors,
+        || {
+            derived.extend(case_twin_findings(&all_paths, &|p| {
+                surface_paths.contains(p)
+                    || reached.contains(p)
+                    || files::is_autorun_name(p)
+                    || (hooks.is_instruction)(p)
+            }));
+        },
+    );
+    guard(
+        hooks,
+        "raise-twins",
+        "checking for look-alike names",
+        &mut scan.errors,
+        || (hooks.raise_twins)(&all_paths, &mut content),
+    );
+    guard(
+        hooks,
+        "raise-reached",
+        "raising the findings of reached files",
+        &mut scan.errors,
+        || (hooks.raise_reached)(&mut content, &|path| reached.contains(path)),
+    );
+    guard(
+        hooks,
+        "entry-findings",
+        "rating paths by their names",
+        &mut scan.errors,
+        || (hooks.entry_findings)(&all_paths, &mut content),
+    );
+    guard(
+        hooks,
+        "raise-filters",
+        "checking git filters",
+        &mut scan.errors,
+        || {
+            for (path, kind, text) in &filter_texts {
+                let ctx = FileCtx {
+                    path,
+                    bytes: text.as_bytes(),
+                    text: Some(text),
+                    kind: kind.unwrap_or(FileKind::Data),
+                    truncated: false,
+                };
+                (hooks.raise_filters)(&ctx, &mut content);
+            }
+        },
+    );
 
     let mut worst: HashMap<&str, Severity> = HashMap::new();
     for f in &content {
@@ -302,7 +370,14 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         *at = (*at).max(f.severity);
     }
     for (s, ex) in surfaces.iter().zip(&expanded) {
-        derived.push(chain_finding(s, hooks, ex, &worst));
+        let found = guard(
+            hooks,
+            "chain",
+            "rating auto-run commands",
+            &mut scan.errors,
+            || chain_finding(s, hooks, ex, &worst),
+        );
+        derived.extend(found);
     }
 
     content.extend(derived);
@@ -316,13 +391,45 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
             .then_with(|| a.rule.cmp(&b.rule))
     });
 
-    scan.about = about(tree);
+    scan.about = guard(
+        hooks,
+        "about",
+        "reading the project summary",
+        &mut scan.errors,
+        || about(tree),
+    )
+    .unwrap_or_default();
     scan.skipped = tree.skipped().to_vec();
     scan.skipped.extend(cut_notes);
     scan.errors.splice(0..0, tree.errors().iter().cloned());
     scan.partial = tree.partial() || !scan.errors.is_empty();
     scan.scan_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     scan
+}
+
+/// Runs one phase of the orchestrator behind a panic guard. A panic (a bug a hostile repo provoked,
+/// or an injected one) becomes one line in `errors` saying `what` failed, which makes the scan
+/// partial; the findings of the other phases still come out. `None` when the phase panicked.
+fn guard<T>(
+    hooks: &Hooks,
+    phase: &str,
+    what: &str,
+    errors: &mut Vec<String>,
+    run: impl FnOnce() -> T,
+) -> Option<T> {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        (hooks.probe)(phase);
+        run()
+    })) {
+        Ok(done) => Some(done),
+        Err(_) => {
+            let line = format!("{what} failed; the scan is incomplete");
+            if !errors.contains(&line) {
+                errors.push(line);
+            }
+            None
+        }
+    }
 }
 
 /// Lines for `errors` about code, config and agent files cut at the text cap: the scan is partial
@@ -1484,6 +1591,7 @@ mod tests {
             files_run: |_| Vec::new(),
             npm_run_target: |_| None,
             severity: |_, _, _| Severity::Info,
+            probe: |_| {},
         }
     }
 
@@ -3015,6 +3123,170 @@ mod tests {
             Severity::High,
             "a chain that never reaches a file"
         );
+    }
+
+    #[test]
+    fn hostile_links_and_placeholders_never_panic_the_scan() {
+        // Every shape of link a hostile repo can hold: the scan returns, with the link rated.
+        let tmp = tempfile::tempdir().unwrap();
+        let hostile: [(&str, &[u8]); 10] = [
+            (".claude/settings.json", b"../docs/loop-a"),
+            ("docs/loop-a", b"../docs/loop-b"),
+            ("docs/loop-b", b"loop-a"),
+            (".claude/settings.local.json", b""),
+            (".cursor/mcp.json", b"\xff\xfe\0\0\xff"),
+            (".vscode/tasks.json", b"/etc/passwd"),
+            (".vscode/settings.json", b".."),
+            (".codex/config.toml", b"../../../../../../../../x"),
+            (".husky/pre-commit", b"."),
+            (".github/copilot-instructions.md", b"\n\n  \n"),
+        ];
+        let mut modes: Vec<(String, u32)> = Vec::new();
+        for (path, body) in hostile {
+            write(tmp.path(), path, body);
+            modes.push((path.to_string(), 0o120_000));
+        }
+        // A placeholder with a target as long as the read allows, and one that names itself.
+        write(tmp.path(), ".claude/long.json", &[b'a'; 8192]);
+        modes.push((".claude/long.json".to_string(), 0o120_000));
+        write(tmp.path(), ".claude/self.json", b"self.json");
+        modes.push((".claude/self.json".to_string(), 0o120_000));
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&modes)).unwrap();
+        let s = crate::scan(&tree);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        assert!(!s.findings.is_empty());
+
+        // The same loops as real links.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join(".claude")).unwrap();
+        symlink("settings.json", tmp.path().join(".claude/settings.json")).unwrap();
+        symlink("b", tmp.path().join(".claude/a")).unwrap();
+        symlink("a", tmp.path().join(".claude/b")).unwrap();
+        symlink("..", tmp.path().join(".claude/up")).unwrap();
+        symlink(".claude", tmp.path().join(".cursor")).unwrap();
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), None).unwrap();
+        let s = crate::scan(&tree);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        assert!(!s.findings.is_empty());
+    }
+
+    thread_local! {
+        /// The phase of the scan at which the test probe panics.
+        static PANIC_AT: std::cell::Cell<&'static str> = const { std::cell::Cell::new("") };
+    }
+
+    fn panicking_probe(phase: &str) {
+        assert!(PANIC_AT.with(std::cell::Cell::get) != phase, "injected");
+    }
+
+    #[test]
+    fn a_panic_in_any_phase_is_an_error_and_the_findings_so_far_are_kept() {
+        let phases = [
+            ("links", "link"),
+            ("reach", "command to its files"),
+            ("second-pass", "as code"),
+            ("raise-file", "capped"),
+            ("case-twins", "case"),
+            ("raise-twins", "look-alike"),
+            ("raise-reached", "findings of reached"),
+            ("entry-findings", "paths by"),
+            ("raise-filters", "filter"),
+            ("chain", "auto-run"),
+            ("about", "summary"),
+        ];
+        for (phase, word) in phases {
+            let tmp = tempfile::tempdir().unwrap();
+            write(tmp.path(), "package.json", b"{}");
+            write(tmp.path(), "a.js", b"filter.x git");
+            write(tmp.path(), "notes.txt", b"echo");
+            let h = Hooks {
+                check: |f, out| {
+                    if f.path == "a.js" {
+                        out.push(finding("stub.kept", f.path, Severity::Medium, 1, 1));
+                    }
+                },
+                surfaces: |f, _| {
+                    if f.path == "package.json" {
+                        open_surface(f.path, "bash notes.txt", "")
+                    } else {
+                        Vec::new()
+                    }
+                },
+                files_run: |c| c.split_whitespace().skip(1).map(str::to_string).collect(),
+                probe: panicking_probe,
+                ..quiet()
+            };
+            PANIC_AT.with(|p| p.set(phase));
+            let s = scan_with(tmp.path(), h);
+            PANIC_AT.with(|p| p.set(""));
+            assert!(s.partial, "{phase}");
+            assert!(
+                s.errors.iter().any(|e| e.contains(word)),
+                "{phase}: {:?}",
+                s.errors
+            );
+            assert_eq!(
+                by_rule(&s, "stub.kept", "a.js").severity,
+                Severity::Medium,
+                "{phase}: the findings so far are reported"
+            );
+            assert_eq!(crate::report::exit_code(&s), 3, "{phase}");
+            // A CRITICAL finding still wins over a partial scan.
+            let critical = Hooks {
+                check: |f, out| {
+                    if f.path == "a.js" {
+                        out.push(finding("stub.kept", f.path, Severity::Critical, 1, 1));
+                    }
+                },
+                ..h
+            };
+            PANIC_AT.with(|p| p.set(phase));
+            let s = scan_with(tmp.path(), critical);
+            PANIC_AT.with(|p| p.set(""));
+            assert_eq!(crate::report::exit_code(&s), 2, "{phase}");
+        }
+    }
+
+    #[test]
+    fn a_panic_in_the_walk_is_an_error_and_the_scan_exits_3_or_2() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.js", b"x");
+        write(tmp.path(), "b/x.js", b"x");
+        write(tmp.path(), "c/y.js", b"x");
+        let walked = |critical: bool| {
+            let tree = DiskTree::open_with(tmp.path(), &WalkOpts::default(), None, &|folder| {
+                assert!(folder != "b", "injected");
+            })
+            .unwrap();
+            assert!(tree.partial());
+            assert!(
+                tree.errors().iter().any(|e| e.contains("walk")),
+                "{:?}",
+                tree.errors()
+            );
+            assert!(tree.entries().iter().any(|e| e.path == "a.js"));
+            let h = if critical {
+                Hooks {
+                    check: |f, out| {
+                        out.push(finding("stub.kept", f.path, Severity::Critical, 1, 1))
+                    },
+                    ..quiet()
+                }
+            } else {
+                Hooks {
+                    check: |f, out| out.push(finding("stub.kept", f.path, Severity::Medium, 1, 1)),
+                    ..quiet()
+                }
+            };
+            let s = run_with(&tree, &h);
+            assert_eq!(by_rule(&s, "stub.kept", "a.js").path, "a.js");
+            s
+        };
+        let s = walked(false);
+        assert!(s.partial);
+        assert!(s.errors.iter().any(|e| e.contains("walk")));
+        assert_eq!(crate::report::exit_code(&s), 3);
+        assert_eq!(crate::report::exit_code(&walked(true)), 2);
     }
 
     // N11: a git folder outside the root.

@@ -162,6 +162,18 @@ impl DiskTree {
         opts: &WalkOpts,
         modes: Option<&[(String, u32)]>,
     ) -> io::Result<DiskTree> {
+        DiskTree::open_with(root, opts, modes, &|_| {})
+    }
+
+    /// `open`, with `probe` called with the path of each folder as the walk starts on it. A panic
+    /// in the walk (a bug the folder's content provoked, or a probe a test makes panic) ends the
+    /// walk with an error noted and the tree partial; the entries found so far stay.
+    pub(crate) fn open_with(
+        root: &Path,
+        opts: &WalkOpts,
+        modes: Option<&[(String, u32)]>,
+        probe: &dyn Fn(&str),
+    ) -> io::Result<DiskTree> {
         let root = fs::canonicalize(root)?;
         if !fs::metadata(&root)?.is_dir() {
             return Err(io::Error::new(
@@ -192,7 +204,14 @@ impl DiskTree {
             .flatten()
             .map(|(path, mode)| (path.as_str(), *mode))
             .collect();
-        tree.walk(&modes, fetched);
+        let walked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tree.walk(&modes, fetched, probe);
+        }));
+        if walked.is_err() {
+            tree.errors
+                .push("the folder walk failed; the tree is incomplete".to_string());
+            tree.walk_partial = true;
+        }
         Ok(tree)
     }
 
@@ -317,7 +336,7 @@ impl DiskTree {
         self.walk_partial || self.budget_spent.load(Ordering::Relaxed)
     }
 
-    fn walk(&mut self, modes: &HashMap<&str, u32>, fetched: bool) {
+    fn walk(&mut self, modes: &HashMap<&str, u32>, fetched: bool, probe: &dyn Fn(&str)) {
         let mut queue = VecDeque::from([Work {
             real: self.root.clone(),
             rel: String::new(),
@@ -331,6 +350,7 @@ impl DiskTree {
             hops,
         }) = queue.pop_front()
         {
+            probe(&rel);
             let Some(mut names) = self.list(&dir, &rel) else {
                 continue;
             };
