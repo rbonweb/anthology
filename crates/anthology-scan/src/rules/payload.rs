@@ -292,19 +292,37 @@ fn decode_exec(f: &FileCtx, text: &str, out: &mut Vec<Finding>) {
             hits.add(*at);
         }
     }
-    let severity = if in_generated_folder(f.path) {
-        Severity::Medium
-    } else {
-        Severity::High
-    };
+    let action =
+        "Decode the data by hand in a sandbox you control and read it before you run this script.";
+    if hits.first.is_some() {
+        let severity = if in_generated_folder(f.path) {
+            Severity::Medium
+        } else {
+            Severity::High
+        };
+        let rule = Rule {
+            group: Group::Payload,
+            id: "payload.decode-exec",
+            severity,
+            why: "The script decodes data and runs it a few lines later: the shape of a hidden payload loader.",
+            action,
+        };
+        out.extend(report(f, text, &hits, &rule));
+        return;
+    }
+    // A decoder and an executor farther apart: the same loader with its calls spread out.
+    let mut far = Hits::default();
+    for at in &executor_at {
+        far.add(*at);
+    }
     let rule = Rule {
         group: Group::Payload,
         id: "payload.decode-exec",
-        severity,
-        why: "The script decodes data and runs it a few lines later: the shape of a hidden payload loader.",
-        action: "Decode the data by hand in a sandbox you control and read it before you run this script.",
+        severity: Severity::Medium,
+        why: "The script decodes data and also runs text, far apart: a payload loader can spread the two calls to avoid notice.",
+        action,
     };
-    out.extend(report(f, text, &hits, &rule));
+    out.extend(report(f, text, &far, &rule));
 }
 
 #[cfg(test)]
@@ -622,10 +640,26 @@ mod tests {
         let near =
             "const s = atob(x);\nre.exec(s);\nisFunction(s);\nast.literal_eval(s);\ntab.eval(s);\n";
         assert!(code("a.js", Lang::Js, near).is_empty());
-        // A decoder and an executor far apart are two separate jobs.
-        let far = format!("const s = atob(x);\n{}eval(y);\n", "// filler\n".repeat(40));
-        assert!(code("a.js", Lang::Js, &far).is_empty());
         assert!(code("a.rs", Lang::Rs, "atob(x); eval(y);").is_empty());
+    }
+
+    #[test]
+    fn a_decoder_and_an_executor_far_apart_in_one_file_are_medium() {
+        // Spreading the two calls apart must not dodge the rule, only lower it.
+        let far = format!("const s = atob(x);\n{}eval(y);\n", "// filler\n".repeat(40));
+        let v = code("a.js", Lang::Js, &far);
+        let f = one(&v, "payload.decode-exec");
+        assert_eq!((f.severity, f.line), (Severity::Medium, 42));
+        // The executor first, the decoder far below.
+        let rev = format!("eval(y);\n{}const s = atob(x);\n", "// filler\n".repeat(40));
+        assert_eq!(
+            one(&code("a.js", Lang::Js, &rev), "payload.decode-exec").severity,
+            Severity::Medium
+        );
+        // One close pair wins over a far one: a single HIGH finding.
+        let both = format!("{far}const t = atob(z);\neval(t);\n");
+        let v = code("a.js", Lang::Js, &both);
+        assert_eq!(one(&v, "payload.decode-exec").severity, Severity::High);
     }
 
     #[test]
