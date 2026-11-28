@@ -321,6 +321,38 @@ fn a_virtual_environment_with_an_absolute_interpreter_link_is_skipped_in_path_mo
 }
 
 #[test]
+fn linux_kernel_headers_that_differ_only_in_case_are_medium() {
+    // The kernel keeps `xt_MARK.h` and `xt_mark.h` side by side. Neither is a surface, an
+    // instruction file or run by a command, so the twin is a lead and not an alarm.
+    let dir = tempfile::tempdir().expect("a temp folder");
+    fs::write(dir.path().join("probe-a"), b"a").expect("a probe");
+    if dir.path().join("PROBE-A").exists() {
+        eprintln!("skipped: this file system does not tell names apart by case");
+        return;
+    }
+    let folder = dir.path().join("include/uapi/linux/netfilter");
+    fs::create_dir_all(&folder).expect("folders");
+    fs::write(
+        folder.join("xt_MARK.h"),
+        "#ifndef _XT_MARK_H_target\n#define _XT_MARK_H_target\n\n#include <linux/netfilter/xt_mark.h>\n\n#endif\n",
+    )
+    .expect("xt_MARK.h");
+    fs::write(
+        folder.join("xt_mark.h"),
+        "#ifndef _XT_MARK_H\n#define _XT_MARK_H\n\nstruct xt_mark_mtinfo1 {\n    unsigned int mark, mask;\n};\n\n#endif\n",
+    )
+    .expect("xt_mark.h");
+    let s = scan_at("kernel-case-twin", dir.path());
+    assert_no_false_alarm("kernel-case-twin", &s);
+    let twin = s
+        .findings
+        .iter()
+        .find(|f| f.rule == "files.case-twin")
+        .unwrap_or_else(|| panic!("no files.case-twin; findings: {:?}", s.findings));
+    assert_eq!(twin.severity, Severity::Medium, "{}", line(twin));
+}
+
+#[test]
 fn a_makefile_in_latin_1_is_medium_and_still_read() {
     let dir = tempfile::tempdir().expect("a temp folder");
     fs::write(
