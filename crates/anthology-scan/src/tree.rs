@@ -1,11 +1,73 @@
 //! The walk of a tree on disk (Task 2): never follows a symlink, never reads outside the root.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use crate::files;
+use crate::rules::agent;
+
+/// Folders whose files a tool reads for settings or instructions. A link at one of these names, or
+/// under one, is resolved when it stays inside the repo.
+const SURFACE_DIRS: &[&str] = &[
+    ".claude",
+    ".cursor",
+    ".codex",
+    ".vscode",
+    ".devcontainer",
+    ".husky",
+    ".github",
+    ".gemini",
+    ".windsurf",
+    ".clinerules",
+    ".zed",
+    ".cargo",
+    ".githooks",
+    ".opencode",
+    ".continue",
+    ".roo",
+];
+
+/// Most links to a folder that one chain of links enters, and most that a walk enters in all: a
+/// loop of links ends there.
+const MAX_LINK_HOPS: u8 = 4;
+const MAX_LINK_DIRS: usize = 64;
+
+/// Folders of a checked-out Python or direnv environment: left out in a folder the user named, like
+/// `node_modules`, because they hold other people's code by the thousand.
+const ENV_DIRS: &[&str] = &[".venv", "venv", ".tox", ".nox", ".direnv"];
+
+/// Whether a link at `path` is one a tool reads for what it runs or what it is told: the path is an
+/// auto-run file or an agent file, or a folder in it is a settings or agent folder.
+fn is_surface_path(path: &str) -> bool {
+    files::is_autorun_name(path)
+        || agent::is_instruction(path)
+        || path
+            .split('/')
+            .any(|part| SURFACE_DIRS.iter().any(|d| part.eq_ignore_ascii_case(d)))
+}
+
+/// A folder of the walk's queue: where it is on disk, its root-relative path, whether the two
+/// differ in more than the root, and how many links to a folder led here.
+struct Work {
+    real: PathBuf,
+    rel: String,
+    odd: bool,
+    hops: u8,
+}
+
+/// A link met by the walk at a settings or agent path.
+struct Linked<'a> {
+    real: &'a Path,
+    meta: &'a fs::Metadata,
+    mode: Option<u32>,
+    odd: bool,
+    hops: u8,
+    fetched: bool,
+}
 
 /// The limits of a walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +126,15 @@ pub struct DiskTree {
     index: HashMap<String, usize>,
     /// The real paths below a name that is not UTF-8, by the lossy path their entries carry.
     odd: HashMap<String, PathBuf>,
+    /// Link entries at a settings or agent path that name a file inside the root: `read` gives
+    /// that file's text under the link's path.
+    linked: HashSet<String>,
+    /// Link entries at a settings or agent path that could not be resolved inside the root.
+    unresolved: Vec<String>,
+    /// `.git` files whose `gitdir:` names a folder outside the root: the `.git` path and the text.
+    gitdir_outside: Vec<(String, String)>,
+    /// Links to a folder that the walk entered.
+    link_dirs: usize,
     skipped: Vec<String>,
     errors: Vec<String>,
     /// Folders queued so far: they count toward `max_files` like entries do.
@@ -102,6 +173,10 @@ impl DiskTree {
             entries: Vec::new(),
             index: HashMap::new(),
             odd: HashMap::new(),
+            linked: HashSet::new(),
+            unresolved: Vec::new(),
+            gitdir_outside: Vec::new(),
+            link_dirs: 0,
             skipped: Vec::new(),
             errors: Vec::new(),
             dirs: 0,
@@ -134,7 +209,8 @@ impl DiskTree {
                 "not an entry of the tree",
             ));
         };
-        if !matches!(self.entries[at].kind, EntryKind::File { .. }) {
+        let file = matches!(self.entries[at].kind, EntryKind::File { .. });
+        if !file && !self.linked.contains(path) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "not a regular file",
@@ -142,6 +218,24 @@ impl DiskTree {
         }
         let real = self.real_of(path).unwrap_or_else(|| self.root.join(path));
         self.read_budgeted(&real, max)
+    }
+
+    /// Whether the link entry `path` names a file inside the root that `read` gives: a link at a
+    /// settings or agent path is read as the file it names.
+    pub fn is_linked(&self, path: &str) -> bool {
+        self.linked.contains(path)
+    }
+
+    /// Link entries at a settings or agent path that could not be resolved inside the root (a
+    /// missing target, a loop, a target that leaves the root).
+    pub fn unresolved_links(&self) -> &[String] {
+        &self.unresolved
+    }
+
+    /// `.git` files whose `gitdir:` names a folder outside the root, as the `.git` path and the
+    /// folder as written.
+    pub fn gitdir_outside(&self) -> &[(String, String)] {
+        &self.gitdir_outside
     }
 
     /// The path on disk behind the entry `path`: the same path under the root, except for an entry
@@ -222,8 +316,19 @@ impl DiskTree {
     }
 
     fn walk(&mut self, modes: &HashMap<&str, u32>, fetched: bool) {
-        let mut queue = VecDeque::from([(self.root.clone(), String::new(), false)]);
-        'walk: while let Some((dir, rel, odd)) = queue.pop_front() {
+        let mut queue = VecDeque::from([Work {
+            real: self.root.clone(),
+            rel: String::new(),
+            odd: false,
+            hops: 0,
+        }]);
+        'walk: while let Some(Work {
+            real: dir,
+            rel,
+            odd,
+            hops,
+        }) = queue.pop_front()
+        {
             let Some(mut names) = self.list(&dir, &rel) else {
                 continue;
             };
@@ -242,16 +347,41 @@ impl DiskTree {
                     }
                 };
                 let mode = modes.get(path.as_str()).copied();
-                let git = name.to_str() == Some(".git");
+                // macOS and Windows read `.GIT` as `.git`, so a folder the user named is matched
+                // without regard to case; the `.git` of a fetch is the one that is exactly `.git`.
+                let git = if fetched {
+                    name.to_str() == Some(".git")
+                } else {
+                    name.to_str()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(".git"))
+                };
+                let is_link =
+                    meta.file_type().is_symlink() || (meta.is_file() && mode == Some(MODE_SYMLINK));
                 let more = if mode == Some(MODE_GITLINK) {
                     self.push(submodule(path), None)
                 } else if git && !fetched {
                     self.git_item(&real, &path, &meta, child_odd)
                 } else if meta.is_dir() {
-                    self.dir(&real, path, git, child_odd, fetched, &mut queue)
+                    let work = Work {
+                        real,
+                        rel: path,
+                        odd: child_odd,
+                        hops,
+                    };
+                    self.dir(work, git, fetched, &mut queue)
                 } else if git && meta.is_file() {
                     // A `.git` file only names a folder: it adds nothing.
                     true
+                } else if is_link && is_surface_path(&path) {
+                    let at = Linked {
+                        real: &real,
+                        meta: &meta,
+                        mode,
+                        odd: child_odd,
+                        hops,
+                        fetched,
+                    };
+                    self.surface_link(&path, &at, &mut queue)
                 } else if let Some(entry) = self.leaf(&real, &path, &meta, mode) {
                     self.push(entry, child_odd.then_some(real))
                 } else {
@@ -310,15 +440,8 @@ impl DiskTree {
 
     /// Handles a folder: queues it or skips it. Returns false when a cap ends the walk. `git` is
     /// true for a folder named `.git` of a fetched tree, which is left out.
-    fn dir(
-        &mut self,
-        real: &Path,
-        path: String,
-        git: bool,
-        odd: bool,
-        fetched: bool,
-        queue: &mut VecDeque<(PathBuf, String, bool)>,
-    ) -> bool {
+    fn dir(&mut self, work: Work, git: bool, fetched: bool, queue: &mut VecDeque<Work>) -> bool {
+        let path = work.rel.as_str();
         if git {
             if path != ".git" {
                 self.skipped.push(format!("{path}/"));
@@ -327,9 +450,11 @@ impl DiskTree {
         }
         let worktrees = path == ".claude/worktrees" || path.ends_with("/.claude/worktrees");
         let node_modules = path == "node_modules" || path.ends_with("/node_modules");
-        // A committed `node_modules` of a fetched repo is repo content, so only a folder the user
-        // named leaves them out.
-        if !fetched && !self.opts.all && (node_modules || worktrees) {
+        let name = path.rsplit('/').next().unwrap_or(path);
+        let environment = ENV_DIRS.iter().any(|d| name.eq_ignore_ascii_case(d));
+        // A committed `node_modules` or Python environment of a fetched repo is repo content, so
+        // only a folder the user named leaves them out.
+        if !fetched && !self.opts.all && (node_modules || worktrees || environment) {
             self.skipped.push(format!("{path}/"));
             return true;
         }
@@ -338,8 +463,72 @@ impl DiskTree {
             return false;
         }
         self.dirs += 1;
-        queue.push_back((real.to_path_buf(), path, odd));
+        queue.push_back(work);
         true
+    }
+
+    /// A link at a settings or agent path (`path`). The link is an entry, and when it resolves
+    /// inside the root it is read: a link to a file as that file's text under the link's path, a
+    /// link to a folder as that folder's files under the link's path, so `.claude -> tools/agent`
+    /// gives `.claude/settings.json`. A link that cannot be resolved inside the root (a missing
+    /// target, a loop, a target outside) is noted for the orchestrator to rate. Returns false when
+    /// a cap ends the walk.
+    fn surface_link(&mut self, path: &str, at: &Linked<'_>, queue: &mut VecDeque<Work>) -> bool {
+        let Some(entry) = self.leaf(at.real, path, at.meta, at.mode) else {
+            return true;
+        };
+        let target = match &entry.kind {
+            EntryKind::Symlink { target } => target.clone(),
+            _ => String::new(),
+        };
+        // A real link resolves through the disk; a file that holds a link's target (a checkout
+        // with `core.symlinks=false`) is read from its own folder.
+        let resolved = if at.meta.file_type().is_symlink() {
+            self.inside(at.real)
+        } else {
+            let base = at.real.parent().unwrap_or(at.real);
+            self.resolve_inside(base, &target)
+        };
+        let found = resolved.and_then(|r| fs::symlink_metadata(&r).ok().map(|m| (r, m)));
+        match found {
+            Some((r, m)) if m.is_file() => {
+                let mut entry = entry;
+                entry.size = m.len();
+                let kept = entry.path.clone();
+                if !self.push(entry, Some(r)) {
+                    return false;
+                }
+                let at_last = self.entries.last().map_or(kept, |e| e.path.clone());
+                self.linked.insert(at_last);
+                true
+            }
+            Some((r, m))
+                if m.is_dir()
+                    && at.hops < MAX_LINK_HOPS
+                    && self.link_dirs < MAX_LINK_DIRS
+                    && !at.real.parent().is_some_and(|here| here.starts_with(&r)) =>
+            {
+                if !self.push(entry, at.odd.then(|| at.real.to_path_buf())) {
+                    return false;
+                }
+                self.link_dirs += 1;
+                let work = Work {
+                    real: r,
+                    rel: path.to_string(),
+                    odd: true,
+                    hops: at.hops + 1,
+                };
+                self.dir(work, false, at.fetched, queue)
+            }
+            _ => {
+                let at_path = entry.path.clone();
+                if !self.push(entry, at.odd.then(|| at.real.to_path_buf())) {
+                    return false;
+                }
+                self.unresolved.push(at_path);
+                true
+            }
+        }
     }
 
     /// A `.git` in a folder the user named (`path` is `.git` or `<dir>/.git`): a folder, a link or
@@ -362,18 +551,28 @@ impl DiskTree {
             };
         }
         if meta.is_file() {
-            // `gitdir: <folder>`: the real git folder, if it is inside the repo.
+            // `gitdir: <folder>`: the real git folder, if it is inside the repo. Git takes the
+            // text after exactly `gitdir: ` up to the trailing line break, spaces included, and
+            // a file that does not start so is not a git file.
             let Ok(bytes) = read_regular(real, LINK_TARGET_MAX) else {
                 return true;
             };
             let text = String::from_utf8_lossy(&bytes);
             let target = text
-                .lines()
-                .next()
-                .and_then(|line| line.strip_prefix("gitdir:"))
-                .map(str::trim);
+                .strip_prefix("gitdir: ")
+                .map(|rest| rest.trim_end_matches(['\n', '\r']));
             let base = real.parent().unwrap_or(real);
-            return match target.and_then(|t| self.resolve_inside(base, t)) {
+            let Some(target) = target else {
+                return true;
+            };
+            if let Ok(canonical) = fs::canonicalize(base.join(target))
+                && !canonical.starts_with(&self.root)
+            {
+                self.gitdir_outside
+                    .push((path.to_string(), target.to_string()));
+                return true;
+            }
+            return match self.resolve_inside(base, target) {
                 Some(dir) if dir.is_dir() => self.git_entries(&dir, path),
                 _ => true,
             };
@@ -585,20 +784,22 @@ mod flags {
     pub const O_NOFOLLOW: i32 = 0x100;
     pub const O_NONBLOCK: i32 = 0x4;
 }
-#[cfg(all(target_os = "linux", any(target_arch = "x86", target_arch = "x86_64")))]
-mod flags {
-    pub const O_NOFOLLOW: i32 = 0o400_000;
-    pub const O_NONBLOCK: i32 = 0o4000;
-}
+// The generic Linux values: x86 and the architectures that take the asm-generic list (riscv64,
+// loongarch64). arm, aarch64 and powerpc move `O_NOFOLLOW` to `0o100000`.
 #[cfg(all(
     target_os = "linux",
     any(
-        target_arch = "aarch64",
-        target_arch = "arm",
+        target_arch = "x86",
+        target_arch = "x86_64",
         target_arch = "riscv64",
         target_arch = "loongarch64"
     )
 ))]
+mod flags {
+    pub const O_NOFOLLOW: i32 = 0o400_000;
+    pub const O_NONBLOCK: i32 = 0o4000;
+}
+#[cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "arm")))]
 mod flags {
     pub const O_NOFOLLOW: i32 = 0o100_000;
     pub const O_NONBLOCK: i32 = 0o4000;
@@ -1249,5 +1450,230 @@ mod tests {
         assert_eq!(p.len(), 1, "{p:?}");
         assert!(p[0].starts_with("odd\u{fffd}name/"), "{p:?}");
         assert_eq!(t.read(p[0], 100).unwrap(), b"inside");
+    }
+
+    #[test]
+    fn a_link_at_a_settings_path_to_a_file_inside_is_read_under_the_link_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "docs/x.json", b"{\"a\":1}");
+        write(tmp.path(), "docs/y.txt", b"plain");
+        fs::create_dir(tmp.path().join(".claude")).unwrap();
+        symlink("../docs/x.json", tmp.path().join(".claude/settings.json")).unwrap();
+        // Not a settings path: stays a link that is never read.
+        symlink("docs/y.txt", tmp.path().join("y-link.txt")).unwrap();
+        let t = open(tmp.path());
+        assert!(t.is_linked(".claude/settings.json"));
+        assert_eq!(t.read(".claude/settings.json", 100).unwrap(), b"{\"a\":1}");
+        assert!(matches!(
+            kind(&t, ".claude/settings.json"),
+            EntryKind::Symlink { .. }
+        ));
+        assert_eq!(
+            t.entries()
+                .iter()
+                .find(|e| e.path == ".claude/settings.json")
+                .unwrap()
+                .size,
+            7
+        );
+        assert!(!t.is_linked("y-link.txt"));
+        assert!(t.read("y-link.txt", 100).is_err());
+        assert!(t.unresolved_links().is_empty());
+    }
+
+    #[test]
+    fn a_link_to_a_folder_at_a_settings_path_gives_the_files_of_the_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "tools/agent/settings.json", b"{}");
+        write(tmp.path(), "tools/agent/hooks/run.sh", b"echo");
+        symlink("tools/agent", tmp.path().join(".claude")).unwrap();
+        let t = open(tmp.path());
+        let p = paths(&t);
+        assert!(p.contains(&".claude"), "{p:?}");
+        assert!(p.contains(&".claude/settings.json"), "{p:?}");
+        assert!(p.contains(&".claude/hooks/run.sh"), "{p:?}");
+        assert_eq!(t.read(".claude/settings.json", 100).unwrap(), b"{}");
+        assert_eq!(t.read(".claude/hooks/run.sh", 100).unwrap(), b"echo");
+        assert!(t.unresolved_links().is_empty());
+        // The target is walked at its own path too.
+        assert!(p.contains(&"tools/agent/settings.json"), "{p:?}");
+    }
+
+    #[test]
+    fn a_settings_link_that_cannot_be_resolved_inside_is_unresolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "outside/x.json", b"{}");
+        write(tmp.path(), "repo/a.txt", b"x");
+        fs::create_dir(tmp.path().join("repo/.claude")).unwrap();
+        symlink("nope.json", tmp.path().join("repo/.claude/settings.json")).unwrap();
+        symlink(
+            "../../outside/x.json",
+            tmp.path().join("repo/.claude/settings.local.json"),
+        )
+        .unwrap();
+        let t = open(&tmp.path().join("repo"));
+        let mut unresolved = t.unresolved_links().to_vec();
+        unresolved.sort();
+        assert_eq!(
+            unresolved,
+            [".claude/settings.json", ".claude/settings.local.json"]
+        );
+        assert!(!t.is_linked(".claude/settings.local.json"));
+        assert!(t.read(".claude/settings.local.json", 100).is_err());
+    }
+
+    #[test]
+    fn a_loop_of_links_at_a_settings_path_ends_and_is_unresolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.txt", b"x");
+        symlink(".", tmp.path().join(".claude")).unwrap();
+        let t = open(tmp.path());
+        assert_eq!(t.unresolved_links(), [".claude"]);
+        assert!(paths(&t).len() < 10, "{:?}", paths(&t));
+        // Two folders that link to each other end at the hop cap.
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("one")).unwrap();
+        fs::create_dir_all(tmp.path().join("two")).unwrap();
+        write(tmp.path(), "one/x.txt", b"x");
+        symlink("../two", tmp.path().join("one/.claude")).unwrap();
+        symlink("../one", tmp.path().join("two/.claude")).unwrap();
+        let t = open(tmp.path());
+        assert!(paths(&t).len() < 40, "{:?}", paths(&t));
+    }
+
+    #[test]
+    fn a_link_in_a_fetched_tree_is_resolved_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "tools/agent/settings.json", b"{}");
+        symlink("tools/agent", tmp.path().join(".claude")).unwrap();
+        // A checkout with `core.symlinks=false` holds the target as the text of a file.
+        write(
+            tmp.path(),
+            ".cursor/rules.json",
+            b"../tools/agent/settings.json",
+        );
+        let modes = vec![(".cursor/rules.json".to_string(), 0o120_000)];
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&modes)).unwrap();
+        assert_eq!(t.read(".claude/settings.json", 100).unwrap(), b"{}");
+        assert!(t.is_linked(".cursor/rules.json"));
+        assert_eq!(t.read(".cursor/rules.json", 100).unwrap(), b"{}");
+    }
+
+    #[test]
+    fn python_environment_folders_are_skipped_in_a_named_folder_and_walked_in_a_fetch() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.py", b"x");
+        for d in [".venv", "venv", ".tox", ".nox", ".direnv", "pkg/.venv"] {
+            write(tmp.path(), &format!("{d}/lib/x.py"), b"x");
+        }
+        symlink("../a.py", tmp.path().join(".venv/lib/link.py")).unwrap();
+        let t = open(tmp.path());
+        assert_eq!(paths(&t), ["a.py"]);
+        let mut skipped = t.skipped().to_vec();
+        skipped.sort();
+        assert_eq!(
+            skipped,
+            [
+                ".direnv/",
+                ".nox/",
+                ".tox/",
+                ".venv/",
+                "pkg/.venv/",
+                "venv/"
+            ]
+        );
+        let all = WalkOpts {
+            all: true,
+            ..WalkOpts::default()
+        };
+        let t = DiskTree::open(tmp.path(), &all, None).unwrap();
+        assert!(paths(&t).contains(&"venv/lib/x.py"));
+        assert!(t.skipped().is_empty());
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&[])).unwrap();
+        for p in [
+            ".venv/lib/x.py",
+            "venv/lib/x.py",
+            ".tox/lib/x.py",
+            ".nox/lib/x.py",
+        ] {
+            assert!(paths(&t).contains(&p), "{p}: {:?}", paths(&t));
+        }
+        assert!(t.skipped().is_empty());
+    }
+
+    #[test]
+    fn a_gitdir_file_is_read_as_git_reads_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "real/config", b"[core]\n");
+        write(tmp.path(), "real /config", b"[core]\n\tpager = x\n");
+        // No space after the colon: git does not take it as a gitdir file.
+        write(tmp.path(), ".git", b"gitdir:real\n");
+        let t = open(tmp.path());
+        assert!(!paths(&t).contains(&".git/config"), "{:?}", paths(&t));
+        // A space that is part of the folder name is kept, and so is a second one.
+        write(tmp.path(), ".git", b"gitdir: real \r\n");
+        let t = open(tmp.path());
+        assert_eq!(
+            t.read(".git/config", 100).unwrap(),
+            b"[core]\n\tpager = x\n"
+        );
+        // Spaces before the folder are part of its name.
+        write(tmp.path(), ".git", b"gitdir:  real\n");
+        let t = open(tmp.path());
+        assert!(!paths(&t).contains(&".git/config"), "{:?}", paths(&t));
+    }
+
+    #[test]
+    fn a_gitdir_outside_the_root_is_noted() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "outside/config", b"SENTINEL");
+        write(tmp.path(), "repo/a.txt", b"x");
+        write(tmp.path(), "repo/.git", b"gitdir: ../outside\n");
+        let t = open(&tmp.path().join("repo"));
+        assert_eq!(
+            t.gitdir_outside(),
+            [(".git".to_string(), "../outside".to_string())]
+        );
+        assert_eq!(paths(&t), ["a.txt"]);
+        // A git folder inside the root is not noted.
+        write(tmp.path(), "repo/real/config", b"[core]\n");
+        write(tmp.path(), "repo/.git", b"gitdir: real\n");
+        let t = open(&tmp.path().join("repo"));
+        assert!(t.gitdir_outside().is_empty());
+    }
+
+    #[test]
+    fn a_git_folder_is_found_without_regard_to_case_in_a_named_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".GIT/config", b"[core]\n");
+        write(tmp.path(), ".GIT/hooks/pre-commit", b"#!/bin/sh\n");
+        let t = open(tmp.path());
+        assert_eq!(paths(&t), [".GIT/config", ".GIT/hooks/pre-commit"]);
+        // In a fetch only the fetch's own `.git` is left out.
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&[])).unwrap();
+        assert!(paths(&t).contains(&".GIT/config"), "{:?}", paths(&t));
+    }
+
+    // N10: the values of the flags differ by architecture; these are the Linux kernel's.
+    #[cfg(all(
+        target_os = "linux",
+        any(
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_arch = "riscv64",
+            target_arch = "loongarch64"
+        )
+    ))]
+    #[test]
+    fn the_generic_linux_flags_are_the_asm_generic_values() {
+        assert_eq!(flags::O_NOFOLLOW, 0o400_000);
+        assert_eq!(flags::O_NONBLOCK, 0o4000);
+    }
+
+    #[cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "arm")))]
+    #[test]
+    fn the_arm_linux_flags_are_the_arm_values() {
+        assert_eq!(flags::O_NOFOLLOW, 0o100_000);
+        assert_eq!(flags::O_NONBLOCK, 0o4000);
     }
 }
