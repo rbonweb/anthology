@@ -83,7 +83,9 @@ fn rows(text: &str) -> Vec<(String, String)> {
     text.lines()
         .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
         .map(|l| {
-            let (url, rev) = l.split_once('\t').unwrap_or_else(|| panic!("no tab: {l:?}"));
+            let (url, rev) = l
+                .split_once('\t')
+                .unwrap_or_else(|| panic!("no tab: {l:?}"));
             (url.to_string(), rev.to_string())
         })
         .collect()
@@ -277,10 +279,7 @@ fn the_corpus_job_scans_each_row_without_tools_at_its_pinned_rev() {
         assert_eq!(words.len(), 8, "{call}");
     }
     // Every row gets its own quarantine folder, outside the job's checkout.
-    let into: Vec<&str> = calls
-        .iter()
-        .map(|c| c.split(' ').nth(6).unwrap())
-        .collect();
+    let into: Vec<&str> = calls.iter().map(|c| c.split(' ').nth(6).unwrap()).collect();
     assert_ne!(into[0], into[1]);
     assert!(
         into.iter()
@@ -360,7 +359,15 @@ fn the_corpus_job_builds_the_release_binary_through_the_test_runner_and_never_ru
         assert!(code.contains(flag), "{flag}");
     }
     // The scanned repos are data: nothing here installs, builds or runs them.
-    for word in ["npm ", "npx ", "make ", "pip ", "cargo run", "bash -c", "eval "] {
+    for word in [
+        "npm ",
+        "npx ",
+        "make ",
+        "pip ",
+        "cargo run",
+        "bash -c",
+        "eval ",
+    ] {
         assert!(!code.contains(word), "{word:?} in {CORPUS_JOB}");
     }
 }
