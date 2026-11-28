@@ -1,6 +1,8 @@
 //! `check-repo`: a scan of a repo tree for malicious code before anyone opens it (plan
 //! `.superpowers/sdd/2026-11-28-check-repo/plan.md`). The crate reads files as data, never follows a
-//! symlink, never runs anything of the repo and reads no environment; `anthology-cli` does that.
+//! symlink and never runs anything of the repo. The scan itself reads no environment; `fetch` and
+//! the optional tools read only `PATH`, `HOME`, `SSH_AUTH_SOCK` and
+//! `OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY`.
 //!
 //! The interface here is frozen by Task 1 of the plan: every module below holds the signatures the
 //! later tasks fill in. A stub returns an empty value until its task lands.
@@ -166,9 +168,10 @@ pub struct Scan {
     pub scan_ms: u64,
 }
 
-/// Scans `tree` (Task 2). The stub finds nothing.
-pub fn scan(_tree: &tree::DiskTree) -> Scan {
-    Scan::default()
+/// Scans `tree`: every file through the rules, then each auto-run surface chained to the files it
+/// runs (Task 2).
+pub fn scan(tree: &tree::DiskTree) -> Scan {
+    scan::run(tree)
 }
 
 #[cfg(test)]
