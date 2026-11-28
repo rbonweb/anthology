@@ -203,7 +203,7 @@ With `--opened`, the opened warning comes before the verdict. After that the hea
 
 1. The verdict.
 2. The counts, on one line: `CRITICAL 0  HIGH 1  MEDIUM 2  LOW 0  INFO 5`.
-3. `target:`, what was checked.
+3. `target:`, the URL as you gave it for a URL scan, or the canonical folder path for a folder scan.
 4. `rev:`, the branch, tag or commit. A URL scan only.
 5. `scanned: N files in N ms`.
 6. `skipped:`, the folders the walk skipped, up to 8 and then `… N more`. It appears only when something was skipped.
@@ -264,7 +264,7 @@ Rules find things. They cannot tell whether a `postinstall` downloads the projec
 
 From the JSON the skill takes:
 
-- an excerpt of 12 lines (up to 1,200 bytes) for every finding at MEDIUM or above;
+- an excerpt of 12 lines (up to 1,200 bytes) for every finding at MEDIUM or above, up to the 200-item triage cap, with CRITICAL and HIGH always included;
 - the start of each agent instruction file, up to 4,000 bytes each and 16 KB in all;
 - `about`, the first paragraph of the README and the description from `package.json`, `pyproject.toml` or `Cargo.toml`.
 
