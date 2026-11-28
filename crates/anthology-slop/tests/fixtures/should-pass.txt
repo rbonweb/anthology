@@ -1,18 +1,46 @@
 To elevate privileges, the installer calls sudo once.
+
+The elevator elevates the car to the top floor in eight seconds.
 %%
 The mill rolls seamless steel pipe in three diameters.
+
+A seamless merge of two sorted lists runs in linear time.
 %%
 Use a seamless texture so the floor tiles repeat without a visible edge.
 %%
 The museum restored a medieval tapestry from the abbey.
+
+Apache Tapestry
+
+Tapestry 5 renders each page from a plain Java class.
 %%
 The groundbreaking ceremony starts at nine.
 %%
 It's not installed by default; it's added by setup.
+
+The config is not only read at start. It is also read on reload.
+
+This is not the default, it is set by the installer.
+
+That's not a typo, it is spelled that way in the spec.
+
+It's not an error, it's logged as a warning.
+
+The lock file isn't only read by the CLI; it is also checked by CI.
 %%
 Tests, builds and end-to-end suites run in containers that mount only the worktree.
 %%
 The `seamless` crate and the `delve` command are names, not prose.
+
+[Delve](https://github.com/go-delve/delve) is the Go debugger
+
+Step through the handler with [Delve](https://github.com/go-delve/delve) and set a breakpoint first.
+
+Start the Unleash server before the SDK connects.
+
+MediaPipe Holistic tracks the body and the face in one pass.
+
+The Synergy client shares one keyboard between two computers.
 %%
 The rule flags "I hope this helps" when it appears outside quotes.
 %%
@@ -35,6 +63,14 @@ Unlock the full potential of your workflow.
 | c | — |
 %%
 Feel free to open an issue when the guard blocks a command you need.
+
+The walker descends to the next level of the tree.
+
+The cursor moves to the next level of the outline when you press Tab.
+
+The parser takes one token and recurses to the next level of the grammar.
+
+Say goodbye to the v1 config: it is removed in 2.0.
 %%
 In summary, the guard blocks installs, launches and profile access.
 %%
