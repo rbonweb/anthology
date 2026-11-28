@@ -3,8 +3,8 @@
 //!
 //! Every tracked UTF-8 file is read except the excluded paths: upstream and generated text
 //! (`vendor/`, the superpowers plugin, the generated knowledge folders, the whole of `atl/` except
-//! the files this fork added), the check-repo scanner crate, and the `.gz` goldens, which only
-//! `golden bless` rewrites. Each line is cut into identifiers, and each identifier into words
+//! the files this fork added), the GuardDog rule files vendored into the check-repo scanner, and
+//! the `.gz` goldens, which only `golden bless` rewrites. Each line is cut into identifiers, and each identifier into words
 //! (`SanitiseProse` is `Sanitise` and `Prose`); a word that is a UK form from the list below fails
 //! the test with its file, line, the word and its US form.
 //!
@@ -31,7 +31,10 @@ const EXCLUDED: [&str; 8] = [
     "vendor/",
     "plugins/anthology-superpowers/",
     "plugins/anthology/knowledge/",
-    "crates/anthology-scan/",
+    // The check-repo scanner's vendored GuardDog rules: upstream text (Apache-2.0, DataDog/guarddog),
+    // kept unchanged so a later sync can diff against it (see `SOURCE` in the folder). The rest of
+    // the scanner crate is ours and is checked.
+    "crates/anthology-scan/rules/guarddog/",
     // The Python test names and rows that `port/ledger` maps to Rust tests.
     "port/python-test-ids.txt",
     "port/python-test-rows.tsv",
@@ -491,7 +494,8 @@ fn the_exclusions_say_what_they_skip() {
         "vendor/sources.json",
         "plugins/anthology-superpowers/skills/x/SKILL.md",
         "plugins/anthology/knowledge/blog/SKILL.md",
-        "crates/anthology-scan/src/lib.rs",
+        "crates/anthology-scan/rules/guarddog/threat-process-cryptomining.yar",
+        "crates/anthology-scan/rules/guarddog/NOTICE",
         "atl/src/core/stream.rs",
         "crates/anthology-guard/tests/data/test_guard_rules.jsonl",
         "crates/anthology-core/tests/golden/x.jsonl.gz",
@@ -505,6 +509,8 @@ fn the_exclusions_say_what_they_skip() {
         "plugins/anthology/agents/architect.md",
         "plugins/anthology/hooks/mods/index.ts",
         "crates/anthology-cli/src/main.rs",
+        "crates/anthology-scan/src/lib.rs",
+        "crates/anthology-scan/NOTICE",
         "DECISIONS.md",
         ".claude/memory/MEMORY.md",
         "port/difftest/divergences/guard.hook.toml",
