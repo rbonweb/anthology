@@ -44,7 +44,8 @@ pub struct Entry {
     pub size: u64,
 }
 
-/// The git modes that change what an entry is.
+/// The git modes that change what an entry is. The modes passed to `open` are octal values, as
+/// `fetch` reads them from `ls-files`; the digits `120000` read as decimal are not a symlink.
 const MODE_SYMLINK: u32 = 0o120_000;
 const MODE_GITLINK: u32 = 0o160_000;
 
@@ -104,7 +105,7 @@ impl DiskTree {
         let modes: HashMap<&str, u32> = modes
             .into_iter()
             .flatten()
-            .map(|(path, mode)| (path.as_str(), git_mode(*mode)))
+            .map(|(path, mode)| (path.as_str(), *mode))
             .collect();
         tree.walk(&modes, fetched);
         Ok(tree)
@@ -412,18 +413,6 @@ fn join(rel: &str, name: &str) -> String {
         name.to_string()
     } else {
         format!("{rel}/{name}")
-    }
-}
-
-/// The mode as the number it is. A caller that read the `ls-files` digits as decimal gets the same
-/// answer for the modes that matter here.
-fn git_mode(mode: u32) -> u32 {
-    match mode {
-        100_644 => 0o100_644,
-        100_755 => 0o100_755,
-        120_000 => MODE_SYMLINK,
-        160_000 => MODE_GITLINK,
-        other => other,
     }
 }
 
@@ -757,6 +746,22 @@ mod tests {
         assert_eq!(kind(&t, "plain.txt"), &EntryKind::File { exec: false });
         assert_eq!(kind(&t, "vendor"), &EntryKind::Submodule);
         assert_eq!(kind(&t, "gone"), &EntryKind::Submodule);
+    }
+
+    #[test]
+    fn modes_are_octal_numbers_never_decimal_digits() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "link", b"../../etc/passwd");
+        fs::create_dir(tmp.path().join("vendor")).unwrap();
+        write(tmp.path(), "vendor/a.txt", b"x");
+        let modes = vec![
+            ("link".to_string(), 120_000),
+            ("vendor".to_string(), 160_000),
+        ];
+        let t = DiskTree::open(tmp.path(), &WalkOpts::default(), Some(&modes)).unwrap();
+        assert!(matches!(kind(&t, "link"), EntryKind::File { .. }));
+        assert!(matches!(kind(&t, "vendor/a.txt"), EntryKind::File { .. }));
+        assert!(!paths(&t).contains(&"vendor"));
     }
 
     #[test]

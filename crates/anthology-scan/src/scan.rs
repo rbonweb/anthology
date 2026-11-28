@@ -30,6 +30,9 @@ pub(crate) struct Hooks {
     pub surfaces: fn(&FileCtx, &mut Vec<Finding>) -> Vec<Surface>,
     pub npm_scripts: fn(&FileCtx) -> Vec<(String, String)>,
     pub yara: fn(&FileCtx) -> Vec<YaraHit>,
+    /// Called once with every path of the tree after the per-file rules ran: raises a name that
+    /// looks like another path's twin from MEDIUM to HIGH.
+    pub raise_twins: fn(&[&str], &mut [Finding]),
     pub is_instruction: fn(&str) -> bool,
     pub classify: fn(&str) -> Shape,
     pub files_run: fn(&str) -> Vec<String>,
@@ -42,6 +45,7 @@ pub(crate) const REAL: Hooks = Hooks {
     surfaces: surfaces_all,
     npm_scripts: autorun::npm_scripts,
     yara: yara_hits,
+    raise_twins: raise_twins_pending,
     is_instruction: agent::is_instruction,
     classify: shape::classify,
     files_run: shape::files_run,
@@ -66,6 +70,10 @@ fn surfaces_all(f: &FileCtx, out: &mut Vec<Finding>) -> Vec<Surface> {
 fn yara_hits(f: &FileCtx) -> Vec<YaraHit> {
     yara::guarddog().eval(f)
 }
+
+/// Stands in for `hidden::raise_homoglyph_twins` (Task 4, PR #346) until that merges. Then `REAL`
+/// points at it and this function goes.
+fn raise_twins_pending(_paths: &[&str], _findings: &mut [Finding]) {}
 
 pub(crate) fn run(tree: &DiskTree) -> Scan {
     run_with(tree, &REAL)
@@ -160,6 +168,8 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         }
         content.push(f);
     }
+    let all_paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+    (hooks.raise_twins)(&all_paths, &mut content);
 
     let mut worst: HashMap<&str, Severity> = HashMap::new();
     for f in &content {
@@ -652,6 +662,7 @@ mod tests {
             surfaces: |_, _| Vec::new(),
             npm_scripts: |_| Vec::new(),
             yara: |_| Vec::new(),
+            raise_twins: |_, _| {},
             is_instruction: |_| false,
             classify: |_| Shape::Plain,
             files_run: |_| Vec::new(),
@@ -1262,6 +1273,35 @@ mod tests {
         assert_eq!(
             by_rule(&s, "autorun.npm-lifecycle", "package.json").severity,
             Severity::Critical
+        );
+    }
+
+    #[test]
+    fn homoglyph_twins_are_raised_once_with_every_path_after_the_rules() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "evil.js", b"x");
+        write(tmp.path(), "other.js", b"x");
+        symlink("evil.js", tmp.path().join("twin.js")).unwrap();
+        let h = Hooks {
+            check: |f, out| out.push(finding("stub.name", f.path, Severity::Medium, 1, 1)),
+            raise_twins: |paths, findings| {
+                CALLS.fetch_add(1, Ordering::Relaxed);
+                // Every entry is a path, links included, and the per-file findings exist already.
+                assert!(paths.contains(&"twin.js") && paths.contains(&"evil.js"));
+                for f in findings.iter_mut().filter(|f| f.path == "evil.js") {
+                    f.severity = Severity::High;
+                }
+            },
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        assert_eq!(CALLS.load(Ordering::Relaxed), 1);
+        assert_eq!(by_rule(&s, "stub.name", "evil.js").severity, Severity::High);
+        assert_eq!(
+            by_rule(&s, "stub.name", "other.js").severity,
+            Severity::Medium
         );
     }
 
