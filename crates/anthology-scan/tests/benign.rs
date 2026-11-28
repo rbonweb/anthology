@@ -313,7 +313,7 @@ fn a_virtual_environment_with_an_absolute_interpreter_link_is_skipped_in_path_mo
         assert_no_false_alarm(&name, &s);
         let skipped = format!("{folder}/");
         assert!(
-            s.skipped.iter().any(|p| *p == skipped),
+            s.skipped.contains(&skipped),
             "{name}: skipped {:?}",
             s.skipped
         );
