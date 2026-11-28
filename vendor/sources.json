@@ -809,6 +809,146 @@
       ]
     },
     {
+      "name": "blog",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "SKILL.md",
+            "references/blog-delivery-contract.md",
+            "references/orchestration-details.md"
+          ]
+        },
+        {
+          "patch": "vendor/patches/blog.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-discourse",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-discourse",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-discourse",
+      "transform": [
+        {
+          "name": "drop-paths",
+          "paths": [
+            "scripts"
+          ]
+        },
+        {
+          "patch": "vendor/patches/blog-discourse.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-brief",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-brief",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-brief",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-brief.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-outline",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-outline",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-outline",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-outline.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-write",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-write",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-write",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-write.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-factcheck",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-factcheck",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-factcheck",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-factcheck.patch"
+        }
+      ]
+    },
+    {
+      "name": "blog-cluster",
+      "repo": "https://github.com/AgriciDaniel/claude-blog",
+      "path": "skills/blog-cluster",
+      "ref": "v2.3.2",
+      "commit": "4f9c2cb8fd17f594e868d6c2ce0e8fb2c971f987",
+      "license": "MIT",
+      "license_file": "LICENSE",
+      "license_extra": [
+        "NOTICE"
+      ],
+      "target": "plugins/anthology/knowledge/blog-cluster",
+      "transform": [
+        {
+          "patch": "vendor/patches/blog-cluster.patch"
+        }
+      ]
+    },
+    {
       "name": "atl",
       "managed_by": "subtree",
       "target": "atl",
