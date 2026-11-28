@@ -7,6 +7,7 @@
 - [Owner session audit findings (2026-11-22)](project-owner-session-audit-2026-11-22.md) — Kinds of Anthology gaps seen in a 2-day multi-agent build session in another project, with counts
 ## reference
 - [Anti-slop design and writing gates (survey 2026-11-28)](reference-anti-slop-prior-art.md) — Which anti-slop skills, linters and hook gates exist, their stars, evidence and offline fitness
+- [Copywriting skills prior art (survey 2026-11-28)](reference-copywriting-skills-prior-art.md) — Open-source copy skills per content type: landing, UI microcopy, blog/SEO, email/social/PR, with star…
 - [Marketing skills prior art (survey 2026-11-28)](reference-marketing-prior-art.md) — Open-source marketing skills, agents and MCP servers for coding agents, with stars, licences, key needs
 - [Website clone prior art (survey 2026-11-28)](reference-website-clone-prior-art.md) — Open-source clone-website skills and design-token extractors, with stars, licences and browser needs
 - [Notch and island apps that answer Claude Code prompts (survey 2026-11-26)](reference-notch-apps-for-claude-code.md) — Which open-source macOS, Windows and Linux apps show sessions and answer appro…
