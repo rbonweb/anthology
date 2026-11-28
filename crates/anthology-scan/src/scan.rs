@@ -33,6 +33,9 @@ pub(crate) struct Hooks {
     /// Called once with every path of the tree after the per-file rules ran: raises a name that
     /// looks like another path's twin from MEDIUM to HIGH.
     pub raise_twins: fn(&[&str], &mut [Finding]),
+    /// Called once with every path of the tree, symlinks and unreadable entries included: adds the
+    /// findings a path alone gives (a git hook).
+    pub entry_findings: fn(&[&str], &mut Vec<Finding>),
     pub is_instruction: fn(&str) -> bool,
     pub classify: fn(&str) -> Shape,
     pub files_run: fn(&str) -> Vec<String>,
@@ -46,6 +49,7 @@ pub(crate) const REAL: Hooks = Hooks {
     npm_scripts: autorun::npm_scripts,
     yara: yara_hits,
     raise_twins: hidden::raise_homoglyph_twins,
+    entry_findings: autorun::entry_findings,
     is_instruction: agent::is_instruction,
     classify: shape::classify,
     files_run: shape::files_run,
@@ -165,6 +169,7 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     }
     let all_paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
     (hooks.raise_twins)(&all_paths, &mut content);
+    (hooks.entry_findings)(&all_paths, &mut content);
 
     let mut worst: HashMap<&str, Severity> = HashMap::new();
     for f in &content {
@@ -658,6 +663,7 @@ mod tests {
             npm_scripts: |_| Vec::new(),
             yara: |_| Vec::new(),
             raise_twins: |_, _| {},
+            entry_findings: |_, _| {},
             is_instruction: |_| false,
             classify: |_| Shape::Plain,
             files_run: |_| Vec::new(),
@@ -987,6 +993,26 @@ mod tests {
         let mut paths: Vec<&str> = s.findings.iter().map(|f| f.path.as_str()).collect();
         paths.sort();
         assert_eq!(paths, [".git/config", ".git/hooks/pre-commit"]);
+    }
+
+    #[test]
+    fn every_git_hook_entry_is_high_even_a_symlink_that_stays_inside_the_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.sh", b"#!/bin/sh\n");
+        write(tmp.path(), ".git/hooks/pre-commit", b"#!/bin/sh\n");
+        write(tmp.path(), ".git/hooks/pre-commit.sample", b"#!/bin/sh\n");
+        symlink("../../a.sh", tmp.path().join(".git/hooks/pre-push")).unwrap();
+        let h = Hooks {
+            entry_findings: autorun::entry_findings,
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        for hook in ["pre-commit", "pre-push"] {
+            let f = by_rule(&s, "autorun.git-hooks", &format!(".git/hooks/{hook}"));
+            assert_eq!(f.severity, Severity::High, "{hook}");
+        }
+        let hooks = s.findings.iter().filter(|f| f.rule == "autorun.git-hooks");
+        assert_eq!(hooks.count(), 2);
     }
 
     fn chain_hooks() -> Hooks {
