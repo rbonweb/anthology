@@ -246,9 +246,11 @@ Read this before the first task of a large or long build (many tasks, several ag
 - A clone or like-X brief starts with the reference capture (BrowserOS, 1440
   and 390). Why: a checkout built from memory was rebuilt.
 - Keep a banned-names list (owner, legal entity, upstream brands) in a `user`
-  note (personal memory), and paste it into every UI brief and review. Why:
-  forks and stores leaked upstream and owner names, and project memory is
-  committed.
+  note (personal memory): `user-banned-names.md` for every repo,
+  `user-banned-names--<repo>.md` for one repo, one `- name` per line. Paste it
+  into every UI brief and review. The commit check reads these notes and
+  refuses a commit that holds a name. Why: forks and stores leaked upstream and
+  owner names, and project memory is committed.
 - A UI task's one review is ui-reviewer on the PR head, rendered, while CI
   runs, before merge. When the owner wants less review, shrink it to the
   measured pass, never skip it; only an explicit owner "skip review" skips

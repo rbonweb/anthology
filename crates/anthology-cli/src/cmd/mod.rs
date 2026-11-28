@@ -12,6 +12,7 @@ pub mod hook;
 pub mod mem;
 pub mod memory;
 pub mod perm;
+pub mod privacy;
 pub mod setup;
 pub mod slop;
 pub mod switch;
@@ -70,6 +71,7 @@ commands:
   perm classify
   switch routing_guide|delegation <folder>
   slop hook|check|rules
+  privacy hook
   --version
 ";
 
@@ -107,6 +109,7 @@ pub fn dispatch(args: &[OsString], stdin: &mut dyn Read) -> Output {
         Some("perm") => perm::run(rest, stdin),
         Some("switch") => switch::run(rest, stdin),
         Some("slop") => slop::run(rest, stdin),
+        Some("privacy") => privacy::run(rest, stdin),
         _ => Output::usage(&format!("unknown command: {}", first.to_string_lossy())),
     }
 }
