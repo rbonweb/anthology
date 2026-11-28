@@ -139,14 +139,18 @@ static STRUCTURE_LINE: LazyLock<Regex> = LazyLock::new(|| {
 /// A line that starts with a label and then a dash. Group 1 is the dash after a list item's
 /// label: a bold term (`- **Install** — ...`, also linked, `- **[git](git/)** — ...`, and after a
 /// task-list box) or a code span (masked), alone or with a colon and a short value
-/// (`- **Concise**: 4/10 — ...`). Group 2 is the dash after a date (`2026-11-28`) or a version
-/// (`v1.2.3`, `[1.2.3]`), with or without a list marker, as in a changelog.
+/// (`- **Concise**: 4/10 — ...`); a list marker is not needed (`**Term** — definition`).
+/// Group 2 is the dash after a date (`2026-11-28`), a version (`v1.2.3`, `[1.2.3]`) or a clock
+/// time (`13:55`, `13:55:02`, `9:05 am`, `13:55 UTC`), with or without a list marker, as in a
+/// changelog or an incident timeline.
 static LEAD_DASH: LazyLock<Regex> = LazyLock::new(|| {
     let marker = r"(?:[-*+]|\d{1,9}[.)])[ \t]+";
     Regex::new(&format!(
-        "^[ \\t]*(?:{marker}(?:\\[[ xX]\\][ \\t]+)?(?:\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|\\x01+)\
+        "^[ \\t]*(?:(?:{marker}(?:\\[[ xX]\\][ \\t]+)?)?\
+         (?:\\*\\*[^*\\n]+\\*\\*|__[^_\\n]+__|\\x01+)\
          (?::[^\\u{{2014}}\\u{{2013}}\\n.;!?]{{0,40}})?[ \\t]*([\\u{{2014}}\\u{{2013}}])\
-         |(?:{marker})?(?:\\d{{4}}[-/.]\\d{{1,2}}[-/.]\\d{{1,2}}|\\[?v?\\d+(?:\\.\\d+)+\\]?)\
+         |(?:{marker})?(?:\\d{{4}}[-/.]\\d{{1,2}}[-/.]\\d{{1,2}}|\\[?v?\\d+(?:\\.\\d+)+\\]?\
+         |\\d{{1,2}}:\\d{{2}}(?::\\d{{2}})?(?:[ \\t]?(?:[aApP]\\.?[mM]\\.?|[A-Z]{{2,4}}))?)\
          [ \\t]*([\\u{{2014}}\\u{{2013}}]))"
     ))
     .expect("lead dash pattern")
@@ -294,8 +298,25 @@ fn takes_an_object(text: &str, end: usize) -> bool {
         .any(|word| next.eq_ignore_ascii_case(word))
 }
 
-/// Lists of three words of four letters or more ("plans, specs and roadmaps"), inside one clause
-/// and not followed by an object.
+/// Words that open a clause, which a comma then ends: "when relevant, navigation and motion".
+const CLAUSE_OPENERS: [&str; 6] = ["when", "if", "where", "as", "once", "unless"];
+
+/// True when the word before `start` (on the same line) opens a clause, so the first of the
+/// three words ends that clause and does not start a list.
+fn follows_a_clause_opener(text: &str, start: usize) -> bool {
+    let before = text[..start].trim_end_matches([' ', '\t']);
+    let word = before
+        .rsplit(|c: char| !c.is_alphabetic())
+        .next()
+        .unwrap_or("");
+    before.len() < start
+        && CLAUSE_OPENERS
+            .iter()
+            .any(|opener| word.eq_ignore_ascii_case(opener))
+}
+
+/// Lists of three words of four letters or more ("plans, specs and roadmaps"), inside one clause,
+/// not after a clause opener and not followed by an object.
 pub(crate) fn triad(view: &View, new: &[Span]) -> Vec<Hit> {
     let new = merged(new);
     let text = &view.text;
@@ -306,7 +327,10 @@ pub(crate) fn triad(view: &View, new: &[Span]) -> Vec<Hit> {
             start: m.start(),
             end: m.end(),
         };
-        if touches(&new, span) && !takes_an_object(text, m.end()) {
+        if touches(&new, span)
+            && !takes_an_object(text, m.end())
+            && !follows_a_clause_opener(text, m.start())
+        {
             count += 1;
             first.get_or_insert(span);
         }
@@ -903,10 +927,11 @@ mod tests {
     }
 
     #[test]
-    fn a_list_label_is_not_a_plain_item_or_a_bare_line() {
+    fn a_plain_item_or_a_plain_term_is_not_a_label() {
         for line in [
             format!("- Install {DASH} put it in place."),
-            format!("**Install** {DASH} put it in place."),
+            format!("Install {DASH} put it in place."),
+            format!("**Install** put it {DASH} in place."),
             format!("- **Install** put it {DASH} in place."),
             // two dashes after a label are skipped, the third is counted
             format!("- **Install** {DASH} put it {DASH} in place {DASH} now."),
@@ -916,6 +941,60 @@ mod tests {
                 "word ".repeat(10).trim_end()
             ),
             format!("- **Note**: it is done. Then {DASH} in place."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert_eq!(dashes(&doc).len(), 1, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_bold_or_code_label_needs_no_list_marker() {
+        let mask = char::from(MASK);
+        // a glossary: 8 entries, about 180 words
+        let glossary = (1..=8)
+            .map(|n| format!("**Entry {n}** {DASH} one block of tracked time.\n"))
+            .collect::<String>();
+        let doc = format!("{glossary}\n{}", filler(120));
+        assert!(dashes(&doc).is_empty());
+        for line in [
+            format!("__Entry__ {DASH} one block of tracked time."),
+            format!("{mask}{mask}{mask}{mask} {DASH} one block of tracked time."),
+            format!("**Entry**: short {DASH} one block {DASH} of tracked time."),
+            format!("  **Entry** {DASH} one block of tracked time."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert!(dashes(&doc).is_empty(), "{line:?}");
+        }
+        // the third dash of a line still counts
+        let line = format!("**A** {DASH} b {DASH} c {DASH} d.");
+        let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+        assert_eq!(dashes(&doc).len(), 1);
+    }
+
+    #[test]
+    fn a_leading_clock_time_is_a_label_like_a_date() {
+        // an incident timeline: 7 lines, 181 words
+        let timeline = (13..20)
+            .map(|h| format!("- {h}:55 {DASH} Config change merged and deployed.\n"))
+            .collect::<String>();
+        let doc = format!("{timeline}\n{}", filler(139));
+        assert!(dashes(&doc).is_empty());
+        for line in [
+            format!("- 13:55 UTC {DASH} Config change merged."),
+            format!("13:55 {DASH} Config change merged."),
+            format!("* 9:05 am {DASH} Config change merged."),
+            format!("1. 9:05 P.M. {DASH} Config change merged."),
+            format!("- 13:55:02 {DASH} Config change merged."),
+            format!("- 13:55 CEST {DASH} Config change merged."),
+        ] {
+            let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
+            assert!(dashes(&doc).is_empty(), "{line:?}");
+        }
+        // only the dash after the time: a second one counts, and so does a time mid-line
+        for line in [
+            format!("- 13:55 {DASH} Config change {DASH} merged."),
+            format!("- Merged at 13:55 {DASH} again."),
+            format!("- 13:55 deploy {DASH} again."),
         ] {
             let doc = format!("{}\n\n{}", [line.as_str(); 3].join("\n"), filler(177));
             assert_eq!(dashes(&doc).len(), 1, "{line:?}");
@@ -1045,6 +1124,30 @@ mod tests {
         let doc = format!(
             "{} {}",
             ["Plans, specs and roadmaps go first."; 3].join(" "),
+            filler(300)
+        );
+        assert_eq!(triads(&doc).len(), 1);
+    }
+
+    #[test]
+    fn a_triad_that_starts_after_a_clause_opener_is_not_a_list() {
+        // "when relevant, navigation and motion": the comma ends the clause that "when" opens
+        for opener in ["when", "If", "where", "as", "Once", "unless"] {
+            let shape = format!("Use it {opener} relevant, navigation and motion.");
+            let doc = format!("{} {}", [shape.as_str(); 3].join(" "), filler(300));
+            assert!(triads(&doc).is_empty(), "{opener}");
+        }
+        // the control: any other word before the list leaves it a list
+        let doc = format!(
+            "{} {}",
+            ["Use it for relevant, navigation and motion."; 3].join(" "),
+            filler(300)
+        );
+        assert_eq!(triads(&doc).len(), 1);
+        // and so does a list at the start of the text
+        let doc = format!(
+            "{} {}",
+            ["Relevant, navigation and motion."; 3].join(" "),
             filler(300)
         );
         assert_eq!(triads(&doc).len(), 1);
