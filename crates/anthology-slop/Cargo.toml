@@ -1,0 +1,18 @@
+[package]
+name = "anthology-slop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The slop gate: masking, rules, Edit replay and messages (no env reads)"
+
+[lints]
+workspace = true
+
+[dependencies]
+regex.workspace = true
+
+[dev-dependencies]
+# paths.rs: repo_root_finds_a_git_folder_or_file (a temp tree).
+tempfile.workspace = true
