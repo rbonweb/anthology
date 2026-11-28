@@ -4,6 +4,10 @@
 //! None of it is proof of bad intent, so each is LOW; it is a place to look. The scan itself never
 //! reads these files to configure a tool (the tool runner passes its own config).
 
+use std::sync::LazyLock;
+
+use regex::Regex;
+
 use super::agent::{clip, name_of};
 use crate::files::line_of;
 use crate::{FileCtx, Finding, Group, Severity};
@@ -20,6 +24,12 @@ const CONFIG_NAMES: &[&str] = &[
 
 /// Inline markers that silence a scanner on one line. Split so this source does not carry them.
 const INLINE_MARKERS: [&str; 2] = [concat!("gitleaks", ":allow"), concat!("no", "semgrep")];
+
+/// zizmor reads its ignore comment with any whitespace after the colon and has no flag to turn
+/// that off.
+static ZIZMOR_MARKER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!("zizmor", r":\s*ignore")).expect("the zizmor pattern compiles")
+});
 
 /// Whether `path` is a scanner config or ignore file.
 fn is_scanner_config(path: &str) -> bool {
@@ -55,6 +65,10 @@ pub(crate) fn check(f: &FileCtx, out: &mut Vec<Finding>) {
             count += 1;
             first = Some(first.map_or(at, |p| p.min(at)));
         }
+    }
+    for m in ZIZMOR_MARKER.find_iter(text) {
+        count += 1;
+        first = Some(first.map_or(m.start(), |p| p.min(m.start())));
     }
     let Some(at) = first else {
         return;
@@ -99,6 +113,11 @@ mod tests {
     /// A suppression marker, split so this source does not carry one.
     const GITLEAKS_ALLOW: &str = concat!("gitleaks", ":allow");
     const NO_SEMGREP: &str = concat!("no", "semgrep");
+    const ZIZMOR_IGNORE: &str = concat!("zizmor", ": ignore");
+    const ZIZMOR_IGNORE_COMPACT: &str = concat!("zizmor", ":ignore");
+    /// Other spacings zizmor reads: any run of whitespace after the colon.
+    const ZIZMOR_IGNORE_WIDE: &str = concat!("zizmor", ":   ignore");
+    const ZIZMOR_IGNORE_TAB: &str = concat!("zizmor", ":\tignore");
 
     #[test]
     fn scanner_config_files_are_low() {
@@ -161,8 +180,47 @@ mod tests {
     }
 
     #[test]
+    fn a_zizmor_ignore_comment_in_a_workflow_is_low() {
+        for marker in [
+            ZIZMOR_IGNORE,
+            ZIZMOR_IGNORE_COMPACT,
+            ZIZMOR_IGNORE_WIDE,
+            ZIZMOR_IGNORE_TAB,
+        ] {
+            let text = format!(
+                "jobs:\n  build:\n    steps:\n      - run: echo ${{{{ github.event.issue.title }}}}  # {marker}[template-injection]\n      - run: echo ${{{{ github.head_ref }}}}  # {marker}\n"
+            );
+            let out = run(".github/workflows/ci.yml", &text);
+            assert_eq!(out.len(), 1, "{marker}");
+            assert_eq!(out[0].rule, "scanner.inline-suppress");
+            assert_eq!(out[0].severity, Severity::Low);
+            assert_eq!(out[0].group, Group::Scanner);
+            assert_eq!(out[0].line, 4);
+            assert_eq!(out[0].count, 2);
+        }
+    }
+
+    #[test]
+    fn mentioning_zizmor_is_not_a_suppression() {
+        for text in [
+            "      - run: pipx run zizmor .\n",
+            "# zizmor checks workflows\n",
+            "# zizmor: config lives in .github\n",
+        ] {
+            assert!(run(".github/workflows/ci.yml", text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
     fn each_inline_marker_alone_is_found() {
-        for marker in [GITLEAKS_ALLOW, NO_SEMGREP] {
+        for marker in [
+            GITLEAKS_ALLOW,
+            NO_SEMGREP,
+            ZIZMOR_IGNORE,
+            ZIZMOR_IGNORE_COMPACT,
+            ZIZMOR_IGNORE_WIDE,
+            ZIZMOR_IGNORE_TAB,
+        ] {
             let out = run("notes.txt", &format!("a\nb {marker}\n"));
             assert_eq!(out.len(), 1, "{marker}");
             assert_eq!(out[0].line, 2);
