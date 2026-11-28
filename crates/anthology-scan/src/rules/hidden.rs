@@ -110,10 +110,20 @@ pub(super) fn in_comment(text: &str, at: usize, lang: Lang) -> bool {
     let line = &text[start..end];
     let upto = at - start;
     let trimmed = line[..upto].trim_start();
-    if trimmed.starts_with('*') || trimmed.starts_with("<!--") {
+    // A line that starts with `*` continues a block comment only where one exists; in Python it
+    // is star-unpacking and in a shell a glob.
+    if (has_block_comments(lang) && trimmed.starts_with('*')) || trimmed.starts_with("<!--") {
         return true;
     }
     comment_opens_before(line, upto, lang)
+}
+
+/// The languages with `//` line comments and `/* */` block comments.
+fn has_block_comments(lang: Lang) -> bool {
+    matches!(
+        lang,
+        Lang::Js | Lang::Php | Lang::Go | Lang::Rs | Lang::Jvm | Lang::Cs | Lang::C | Lang::Swift
+    )
 }
 
 /// Where a lexer of one line stands: in code, in a string opened by a quote, or in a regex
@@ -141,10 +151,7 @@ fn comment_opens_before(line: &str, upto: usize, lang: Lang) -> bool {
         lang,
         Lang::Py | Lang::Sh | Lang::Ps | Lang::Rb | Lang::Pl | Lang::Php
     );
-    let slashes = matches!(
-        lang,
-        Lang::Js | Lang::Php | Lang::Go | Lang::Rs | Lang::Jvm | Lang::Cs | Lang::C | Lang::Swift
-    );
+    let slashes = has_block_comments(lang);
     let regexes = lang == Lang::Js;
     let chars: Vec<(usize, char)> = line.char_indices().collect();
     let mut state = Lex::Code;
@@ -762,6 +769,23 @@ mod tests {
     fn commented(line: &str, lang: Lang) -> bool {
         let at = line.find("NEEDLE").expect("a needle");
         in_comment(line, at, lang)
+    }
+
+    #[test]
+    fn a_line_that_starts_with_a_star_is_a_comment_only_where_a_block_comment_exists() {
+        // N4 variant: a Python star-unpacking line is code, so a credential read on it counts.
+        for (line, lang) in [
+            ("*_, k = 0, open(NEEDLE).read()", Lang::Py),
+            ("  *rest, k = open(NEEDLE).read()", Lang::Py),
+            ("*_ = open(NEEDLE)", Lang::Rb),
+            ("*cmd NEEDLE", Lang::Sh),
+            ("* NEEDLE", Lang::Pl),
+        ] {
+            assert!(!commented(line, lang), "{line}");
+        }
+        for lang in [Lang::Js, Lang::Php, Lang::Go, Lang::Rs, Lang::C, Lang::Jvm] {
+            assert!(commented(" * NEEDLE", lang), "{lang:?}");
+        }
     }
 
     #[test]
