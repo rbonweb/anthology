@@ -326,6 +326,7 @@ ui.glow-orb\tblock\tcss,html,jsx\tdecorative blurred orb (C11)
 ui.effect-library\tblock\tjsx\tstock effect-library component (K10)
 ui.placeholder-media\tblock\tcss,html,jsx\tplaceholder avatar or image service (IM4)
 ui.placeholder-text\tblock\thtml,jsx\tplaceholder copy
+ui.dummy-contact\tblock\thtml,jsx\tdummy phone number or chat link
 ui.five-star-row\tblock\thtml,jsx\tfive-star row (IM5)
 ui.generator-signature\tblock\thtml,jsx\tgenerator signature left in (F1)
 ";

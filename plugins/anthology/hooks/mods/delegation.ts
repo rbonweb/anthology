@@ -127,7 +127,7 @@ async function isInteractive($: EngineInterface): Promise<boolean> {
  * inherits an `sdk-*` entrypoint, but Claude Code recomputes the attended flag for each session.
  * Read through `$.env.get`: `process` does not exist in a mod.
  */
-async function isEmbeddedHost($: EngineInterface): Promise<boolean> {
+export async function isEmbeddedHost($: EngineInterface): Promise<boolean> {
   if ((await $.env.get('ANTHOLOGY_HOST_MODE')) === 'full') return false
   const attended = await $.env.get('CLAUDE_CODE_SESSION_ATTENDED')
   if (attended === '0') return true

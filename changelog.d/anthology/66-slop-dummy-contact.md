@@ -1,0 +1,1 @@
+- Add: the slop gate refuses a dummy phone number or chat link in HTML and JSX (`ui.dummy-contact`): `+00 0000 000000`, `000-000-0000`, `(000) 000-0000`, `wa.me/0000000000`, or a WhatsApp send link whose number starts with 0. Real numbers, time zone offsets such as `+0000` and numbers in comments pass.

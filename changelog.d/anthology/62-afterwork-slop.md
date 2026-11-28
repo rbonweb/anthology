@@ -1,1 +1,0 @@
-- Add: the after-work check lists AI tells and slop waivers in a writer's changes, including files written through the shell.
