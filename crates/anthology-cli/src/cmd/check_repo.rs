@@ -19,6 +19,7 @@
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, PipeWriter, Read, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::process::ExitStatusExt;
@@ -183,19 +184,23 @@ impl Guard {
                 "the run was interrupted",
             ));
         }
-        let mut child = cmd.spawn()?;
-        let group = child.id();
-        let watchdog = match Watchdog::start(group, &st.paths) {
-            Ok(w) => w,
+        // The watchdog first, and the child tells it its group before it runs its program: no
+        // moment in which the child runs and a kill of this process leaves it unwatched.
+        let watchdog = Watchdog::start(&st.paths).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("cannot start the watchdog of a program: {e}"),
+            )
+        })?;
+        watchdog.announce_to(cmd);
+        let child = match cmd.spawn() {
+            Ok(child) => child,
             Err(e) => {
-                sys::kill_group(group);
-                let _ = child.wait();
-                return Err(io::Error::new(
-                    e.kind(),
-                    format!("cannot start the watchdog of a program: {e}"),
-                ));
+                watchdog.finish();
+                return Err(e);
             }
         };
+        let group = child.id();
         st.next += 1;
         let id = st.next;
         st.kids.push(Kid {
@@ -262,28 +267,50 @@ impl Guard {
     }
 }
 
-/// What the watchdog of a child runs: wait for a line from the run (it ended normally, stand
-/// down), or for the pipe to close without one (the run died: stop the group, remove the folders).
-const WATCHDOG: &str = "read -r line && exit 0\nkill -s KILL -- \"-$1\" 2>/dev/null\nshift\n[ \"$#\" -gt 0 ] && rm -rf -- \"$@\"\nexit 0\n";
+/// What the watchdog of a child runs. The first line it reads is the group of the child, written
+/// by the child itself before it runs its program (`sys::announce_group`), or `done` when no child
+/// came; then a line from the run (it ended normally: stand down), or the end of the pipe without
+/// one (the run died: stop the group, remove the folders). The end of the pipe before any group
+/// means the run died before the child existed: only the folders are removed.
+const WATCHDOG: &str = concat!(
+    "if read -r group; then\n",
+    "  case $group in\n",
+    "    done) exit 0 ;;\n",
+    "    ''|*[!0-9]*) group= ;;\n",
+    "  esac\n",
+    "  read -r line && exit 0\n",
+    "else\n",
+    "  group=\n",
+    "fi\n",
+    "[ -n \"$group\" ] && kill -s KILL -- \"-$group\" 2>/dev/null\n",
+    "[ \"$#\" -gt 0 ] && rm -rf -- \"$@\"\n",
+    "exit 0\n",
+);
 
 /// A shell in a session of its own that outlives a run killed by `SIGKILL`, which no handler can
 /// catch, and cleans up: macOS has nothing like `PR_SET_PDEATHSIG`, so the pipe does it. It holds
-/// the read end of a pipe; this process holds the only write end (no child inherits it: pipes are
-/// close-on-exec), so it sees the end of the pipe when this process is gone, whatever the cause.
+/// the read end of a pipe; this process holds the only write end (no child inherits it past its
+/// `exec`: pipes are close-on-exec), so it sees the end of the pipe when this process is gone,
+/// whatever the cause.
+///
+/// It is started before the child it watches, and the child tells it its own group: a run killed
+/// at any moment after the child exists has a watchdog that knows the group. Told by the run after
+/// the start, the group would not be known for as long as the run takes to get from one to the
+/// other, which on a loaded host is long enough for a kill to fall in.
 struct Watchdog {
     child: Child,
     pipe: PipeWriter,
 }
 
 impl Watchdog {
-    /// Watches the process group `group` and the absolute folders `paths`.
-    fn start(group: u32, paths: &[PathBuf]) -> io::Result<Watchdog> {
+    /// Watches the absolute folders `paths`, and the group of the one child that is started with
+    /// `announce_to`.
+    fn start(paths: &[PathBuf]) -> io::Result<Watchdog> {
         let (reader, pipe) = io::pipe()?;
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c")
             .arg(WATCHDOG)
             .arg("anthology-watchdog")
-            .arg(group.to_string())
             .args(paths)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
@@ -294,6 +321,12 @@ impl Watchdog {
         sys::new_session(&mut cmd);
         let child = cmd.spawn()?;
         Ok(Watchdog { child, pipe })
+    }
+
+    /// Makes `cmd`, which must be a session leader (`sys::new_session`), tell this watchdog its
+    /// group before it runs its program.
+    fn announce_to(&self, cmd: &mut Command) {
+        sys::announce_group(cmd, self.pipe.as_raw_fd());
     }
 
     /// The run is over in an orderly way: the watchdog exits and touches nothing.
@@ -864,12 +897,15 @@ mod tests {
         None
     }
 
-    /// A `sleep` that leads its own session, like every child of the runner.
-    fn sleeper() -> std::process::Child {
+    /// A `sleep` that leads its own session, like every child of the runner, under a watchdog of
+    /// `paths` that it announces itself to.
+    fn watched_sleeper(paths: &[PathBuf]) -> (std::process::Child, Watchdog) {
+        let watchdog = Watchdog::start(paths).expect("start the watchdog");
         let mut cmd = Command::new("/bin/sleep");
         cmd.arg("60");
         sys::new_session(&mut cmd);
-        cmd.spawn().expect("spawn sleep")
+        watchdog.announce_to(&mut cmd);
+        (cmd.spawn().expect("spawn sleep"), watchdog)
     }
 
     fn gone(path: &Path) -> bool {
@@ -888,10 +924,9 @@ mod tests {
         let victim = dir.path().join("victim");
         fs::create_dir(&victim).expect("make folder");
         fs::write(victim.join("file"), "x").expect("write");
-        let mut child = sleeper();
-        let watchdog =
-            Watchdog::start(child.id(), std::slice::from_ref(&victim)).expect("start the watchdog");
-        // Closing the pipe without a word is what the death of the parent looks like.
+        let (mut child, watchdog) = watched_sleeper(std::slice::from_ref(&victim));
+        // The parent says nothing: the child told the watchdog its group itself. Closing the pipe
+        // without a word is what the death of the parent looks like.
         drop(watchdog);
         let status = wait_for(&mut child, Duration::from_secs(10)).expect("the group was killed");
         assert_eq!(status.signal(), Some(9));
@@ -899,13 +934,34 @@ mod tests {
     }
 
     #[test]
+    fn a_watchdog_removes_the_paths_when_the_run_dies_before_the_child_exists() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let victim = dir.path().join("victim");
+        fs::create_dir(&victim).expect("make folder");
+        let watchdog = Watchdog::start(std::slice::from_ref(&victim)).expect("start the watchdog");
+        // No child ever announced itself: the group is unknown, the folders still go.
+        drop(watchdog);
+        assert!(gone(&victim), "the watchdog left {}", victim.display());
+    }
+
+    #[test]
+    fn a_watchdog_that_was_finished_before_any_child_came_touches_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keep = dir.path().join("keep");
+        fs::create_dir(&keep).expect("make folder");
+        let watchdog = Watchdog::start(std::slice::from_ref(&keep)).expect("start the watchdog");
+        // A child that failed to start: the run stands the watchdog down.
+        watchdog.finish();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(keep.is_dir(), "the folder was removed");
+    }
+
+    #[test]
     fn a_finished_watchdog_spares_the_group_and_the_paths() {
         let dir = tempfile::tempdir().expect("temp dir");
         let keep = dir.path().join("keep");
         fs::create_dir(&keep).expect("make folder");
-        let mut child = sleeper();
-        let watchdog =
-            Watchdog::start(child.id(), std::slice::from_ref(&keep)).expect("start the watchdog");
+        let (mut child, watchdog) = watched_sleeper(std::slice::from_ref(&keep));
         watchdog.finish();
         std::thread::sleep(Duration::from_millis(500));
         assert!(
