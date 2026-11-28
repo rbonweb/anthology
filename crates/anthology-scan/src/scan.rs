@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
@@ -15,8 +16,6 @@ use crate::{FileCtx, FileKind, Finding, Group, Scan, Severity, Surface, Trigger,
 
 /// How much of a file is read first, to tell a binary from text before the rest is read.
 const HEAD: usize = 8 * 1024;
-/// `.git/config` is read to this size and no further, whatever the text cap.
-const GIT_CONFIG_CAP: usize = 64 * 1024;
 /// How much of a README is read to find its first paragraph.
 const README_READ: usize = 16 * 1024;
 const ABOUT_README_BYTES: usize = 600;
@@ -36,6 +35,9 @@ pub(crate) struct Hooks {
     /// Called once with every path of the tree, symlinks and unreadable entries included: adds the
     /// findings a path alone gives (a git hook).
     pub entry_findings: fn(&[&str], &mut Vec<Finding>),
+    /// Called for each text file that mentions a git filter, once the per-file findings exist:
+    /// raises a `.gitattributes` filter that the file tells you to configure.
+    pub raise_filters: fn(&FileCtx, &mut [Finding]),
     pub is_instruction: fn(&str) -> bool,
     pub classify: fn(&str) -> Shape,
     pub files_run: fn(&str) -> Vec<String>,
@@ -50,6 +52,7 @@ pub(crate) const REAL: Hooks = Hooks {
     yara: yara_hits,
     raise_twins: hidden::raise_homoglyph_twins,
     entry_findings: autorun::entry_findings,
+    raise_filters: autorun::raise_gitattributes_filters,
     is_instruction: agent::is_instruction,
     classify: shape::classify,
     files_run: shape::files_run,
@@ -78,6 +81,17 @@ pub(crate) fn run(tree: &DiskTree) -> Scan {
     run_with(tree, &REAL)
 }
 
+/// How a file longer than the text cap matters. `Must`: an auto-run or agent file, `.git/config` or
+/// a config include target, whose cut-off part could hide what runs, so the scan is partial.
+/// `Maybe`: any other text file, partial only if code that an auto-run command runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Cut {
+    #[default]
+    No,
+    Maybe,
+    Must,
+}
+
 /// What the rules said about one file.
 #[derive(Default)]
 struct FileOut {
@@ -90,6 +104,10 @@ struct FileOut {
     /// The `scripts` of a `package.json`.
     scripts: Vec<(String, String)>,
     error: Option<String>,
+    /// Text longer than the text cap: only its start was read.
+    cut: Cut,
+    /// The text of a file that may tell the reader to set up a git filter (`raise_filters`).
+    filter_text: Option<String>,
 }
 
 pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
@@ -101,6 +119,8 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     let mut yara_findings: Vec<Finding> = Vec::new();
     let mut surfaces: Vec<Surface> = Vec::new();
     let mut scripts: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut cuts: Vec<(&str, Cut, Option<FileKind>)> = Vec::new();
+    let mut filter_texts: Vec<(&str, Option<FileKind>, String)> = Vec::new();
     // Findings the orchestrator makes itself: symlink escapes and one per auto-run surface.
     let mut derived: Vec<Finding> = Vec::new();
 
@@ -135,6 +155,12 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
         if out.kind == Some(FileKind::Agent) {
             scan.instructions.push(entry.path.clone());
         }
+        if out.cut != Cut::No {
+            cuts.push((entry.path.as_str(), out.cut, out.kind));
+        }
+        if let Some(text) = out.filter_text {
+            filter_texts.push((entry.path.as_str(), out.kind, text));
+        }
         content.extend(out.findings);
         yara_findings.extend(out.yara);
         surfaces.extend(out.surfaces);
@@ -146,9 +172,11 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
 
     // The files an auto-run command reaches, and the files that run by being in the tree.
     let mut reached: HashSet<String> = HashSet::new();
+    let mut run_by_command: HashSet<String> = HashSet::new();
     for s in &surfaces {
         for arg in (hooks.files_run)(&s.command) {
             if let Some(path) = join_norm(&s.dir, &arg).filter(|p| !p.is_empty()) {
+                run_by_command.insert(path.clone());
                 reached.insert(path);
             }
         }
@@ -161,6 +189,24 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
             reached.insert(entry.path.clone());
         }
     }
+    // A cut file makes the scan partial only if what lies past the cut could run: an auto-run or
+    // agent file, `.git/config`, an include target, or code that a command runs. Any other cut file
+    // (a bundle, a data file) is an INFO finding and a note, and the exit code does not change.
+    let cap = tree.opts().text_cap;
+    let mut truncated_paths: Vec<&str> = Vec::new();
+    let mut cut_notes: Vec<String> = Vec::new();
+    for (path, cut, kind) in cuts {
+        let code = matches!(kind, Some(FileKind::Code(_)));
+        if cut == Cut::Must || (code && run_by_command.contains(path)) {
+            truncated_paths.push(path);
+        } else {
+            cut_notes.push(format!("{path} (over the text cap; scanned up to the cap)"));
+        }
+        if cut == Cut::Maybe {
+            content.push(cut_finding(path, cap));
+        }
+    }
+    note_truncated(&truncated_paths, cap, &mut scan.errors);
     for mut f in yara_findings {
         if reached.contains(&f.path) && f.severity < Severity::High {
             f.severity = f.severity.up();
@@ -170,6 +216,16 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
     let all_paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
     (hooks.raise_twins)(&all_paths, &mut content);
     (hooks.entry_findings)(&all_paths, &mut content);
+    for (path, kind, text) in &filter_texts {
+        let ctx = FileCtx {
+            path,
+            bytes: text.as_bytes(),
+            text: Some(text),
+            kind: kind.unwrap_or(FileKind::Data),
+            truncated: false,
+        };
+        (hooks.raise_filters)(&ctx, &mut content);
+    }
 
     let mut worst: HashMap<&str, Severity> = HashMap::new();
     for f in &content {
@@ -193,10 +249,27 @@ pub(crate) fn run_with(tree: &DiskTree, hooks: &Hooks) -> Scan {
 
     scan.about = about(tree);
     scan.skipped = tree.skipped().to_vec();
+    scan.skipped.extend(cut_notes);
     scan.errors.splice(0..0, tree.errors().iter().cloned());
     scan.partial = tree.partial() || !scan.errors.is_empty();
     scan.scan_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     scan
+}
+
+/// Lines for `errors` about code, config and agent files cut at the text cap: the scan is partial
+/// then, because what lies past the cap was not read. Ten paths are named, then a count.
+fn note_truncated(paths: &[&str], cap: usize, errors: &mut Vec<String>) {
+    for path in paths.iter().take(10) {
+        errors.push(format!(
+            "{path:?} is longer than the {cap} byte read limit; only its start was scanned"
+        ));
+    }
+    if paths.len() > 10 {
+        errors.push(format!(
+            "{} more files are longer than the read limit",
+            paths.len() - 10
+        ));
+    }
 }
 
 /// Runs `analyze` over the files at `files_at` on up to eight threads; the result is in entry order.
@@ -245,11 +318,7 @@ fn analyze_all(
 /// end of the scan.
 fn analyze(tree: &DiskTree, entry: &Entry, hooks: &Hooks) -> FileOut {
     let path = entry.path.as_str();
-    let cap = if path == ".git/config" {
-        GIT_CONFIG_CAP
-    } else {
-        tree.opts().text_cap
-    };
+    let cap = tree.opts().text_cap;
     let failed = |e: io::Error| FileOut {
         // The read budget ending is reported once, as `partial`.
         error: (e.kind() != io::ErrorKind::QuotaExceeded)
@@ -270,14 +339,17 @@ fn analyze(tree: &DiskTree, entry: &Entry, hooks: &Hooks) -> FileOut {
         };
     }
     let truncated = entry.size > bytes.len() as u64;
-    let text = if kind == FileKind::Binary {
-        None
+    // Every file that is not a binary gets text, lossy where its bytes are not clean: no rule may
+    // be skipped for one bad byte.
+    let (text, flaw) = if kind == FileKind::Binary {
+        (None, None)
     } else {
-        files::decode(if truncated {
+        let (text, flaw) = files::decode_lossy(if truncated {
             files::trim_incomplete(&bytes)
         } else {
             &bytes
-        })
+        });
+        (Some(text), flaw)
     };
     let ctx = FileCtx {
         path,
@@ -286,10 +358,51 @@ fn analyze(tree: &DiskTree, entry: &Entry, hooks: &Hooks) -> FileOut {
         kind,
         truncated,
     };
-    match panic::catch_unwind(AssertUnwindSafe(|| run_rules(&ctx, hooks))) {
+    match panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut out = run_rules(&ctx, hooks);
+        if is_git_config(path)
+            && let Some(text) = ctx.text
+        {
+            let (texts, cut) = included_texts(tree, path, text, cap);
+            if cut {
+                out.cut = Cut::Must;
+            }
+            for included in texts {
+                let part = run_rules(
+                    &FileCtx {
+                        text: Some(&included),
+                        ..ctx
+                    },
+                    hooks,
+                );
+                out.findings.extend(part.findings);
+                out.surfaces.extend(part.surfaces);
+            }
+        }
+        out
+    })) {
         Ok(mut out) => {
             out.scanned = true;
             out.kind = Some(kind);
+            let strict = matches!(kind, FileKind::Code(_) | FileKind::Config | FileKind::Agent);
+            let known = files::is_autorun_name(path);
+            if strict && let Some((what, at)) = flaw {
+                out.findings.push(not_utf8_finding(path, what, at, known));
+            }
+            if kind != FileKind::Binary && truncated {
+                if known || kind == FileKind::Agent {
+                    out.findings.push(truncated_finding(path, bytes.len()));
+                }
+                let must = known || kind == FileKind::Agent || is_git_config(path);
+                out.cut = if must { Cut::Must } else { Cut::Maybe };
+            }
+            // Also a git hook: `raise_filters` lowers the finding of a stock hook stub.
+            if (text.as_deref().is_some_and(|t| t.contains("filter."))
+                && text.as_deref().is_some_and(|t| t.contains("git")))
+                || autorun::is_git_hook(path)
+            {
+                out.filter_text = text;
+            }
             out
         }
         Err(_) => FileOut {
@@ -298,6 +411,138 @@ fn analyze(tree: &DiskTree, entry: &Entry, hooks: &Hooks) -> FileOut {
             )),
             ..FileOut::default()
         },
+    }
+}
+
+/// Whether `path` is a git config file that git reads: `.git/config` or `.git/config.worktree`,
+/// at any depth.
+fn is_git_config(path: &str) -> bool {
+    ["config", "config.worktree"].iter().any(|name| {
+        path.strip_suffix(name)
+            .is_some_and(|d| d.ends_with(".git/"))
+    })
+}
+
+/// The most files one config pulls in by `include`, counting the ones they pull in.
+const MAX_INCLUDES: usize = 16;
+
+/// The text of every file a git config pulls in with `[include]` or `[includeIf]`, found inside the
+/// repo and followed through nested includes (a file is read once, so a loop ends). Git reads an
+/// included file as part of the config, so the rules read it as part of the config too. A target
+/// outside the repo is not read.
+fn included_texts(tree: &DiskTree, path: &str, text: &str, cap: usize) -> (Vec<String>, bool) {
+    let Some(real) = tree.real_of(path) else {
+        return (Vec::new(), false);
+    };
+    let mut cut = false;
+    let mut seen: HashSet<PathBuf> = HashSet::from([real.clone()]);
+    let mut work = vec![(real, text.to_string())];
+    let mut found: Vec<String> = Vec::new();
+    while let Some((file, body)) = work.pop() {
+        let base = file.parent().unwrap_or(&file).to_path_buf();
+        for target in include_targets(&body) {
+            if found.len() >= MAX_INCLUDES {
+                return (found, cut);
+            }
+            let Some(included) = tree.resolve_inside(&base, &target) else {
+                continue;
+            };
+            if !seen.insert(included.clone()) {
+                continue;
+            }
+            let Ok(bytes) = tree.read_real(&included, cap) else {
+                continue;
+            };
+            // A read that fills the cap may have been cut.
+            cut |= bytes.len() >= cap;
+            let (text, _) = files::decode_lossy(files::trim_incomplete(&bytes));
+            work.push((included, text.clone()));
+            found.push(text);
+        }
+    }
+    (found, cut)
+}
+
+/// The `path = ...` values under `[include]` and `[includeIf "..."]` headers of a git config. A
+/// home-relative (`~`) value is left out: it cannot be inside the repo.
+fn include_targets(config: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut in_include = false;
+    for line in config.lines() {
+        let line = line.trim();
+        if let Some(header) = line.strip_prefix('[') {
+            let name = header
+                .split(|c: char| c == ']' || c.is_whitespace())
+                .next()
+                .unwrap_or("");
+            in_include =
+                name.eq_ignore_ascii_case("include") || name.eq_ignore_ascii_case("includeif");
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !in_include || !key.trim().eq_ignore_ascii_case("path") {
+            continue;
+        }
+        let value = value.trim();
+        let value = match value.strip_prefix('"') {
+            Some(rest) => rest.split('"').next().unwrap_or(""),
+            None => value.split([';', '#']).next().unwrap_or("").trim(),
+        };
+        if !value.is_empty() && !value.starts_with('~') {
+            targets.push(value.to_string());
+        }
+    }
+    targets
+}
+
+fn not_utf8_finding(path: &str, what: &str, at: usize, known: bool) -> Finding {
+    Finding {
+        severity: if known { Severity::High } else { Severity::Medium },
+        group: Group::Hidden,
+        rule: "files.not-utf8".to_string(),
+        path: path.to_string(),
+        line: 0,
+        why: "The file is not clean text. A strict reader (a JSON parser, npm, a shell) can stop at the bad byte where a lenient one reads on, so what the tool runs may differ from what a scan of the text sees. The rules ran on a lossy copy."
+            .to_string(),
+        seen: format!("{what} at byte {at}"),
+        action: "Open the file in a hex view and find out why it has the byte before you open, install or build anything here."
+            .to_string(),
+        count: 1,
+    }
+}
+
+/// An oversize file that nothing is known to run: only its first `cap` bytes were scanned.
+fn cut_finding(path: &str, cap: usize) -> Finding {
+    Finding {
+        severity: Severity::Info,
+        group: Group::Hidden,
+        rule: "files.truncated".to_string(),
+        path: path.to_string(),
+        line: 0,
+        why: format!(
+            "The file is longer than the {cap} byte text cap, so only its start was scanned. No auto-run command is known to run it."
+        ),
+        seen: format!("first {cap} bytes read"),
+        action: "Nothing to do unless something runs this file.".to_string(),
+        count: 1,
+    }
+}
+
+fn truncated_finding(path: &str, read: usize) -> Finding {
+    Finding {
+        severity: Severity::High,
+        group: Group::Hidden,
+        rule: "files.truncated".to_string(),
+        path: path.to_string(),
+        line: 0,
+        why: format!(
+            "The file is longer than the {read} byte read limit, and it runs code or steers an agent. Whatever comes after the limit was not scanned; padding is a way to hide it."
+        ),
+        seen: format!("first {read} bytes read"),
+        action: "Read the whole file before you open, install or build anything here.".to_string(),
+        count: 1,
     }
 }
 
@@ -664,6 +909,7 @@ mod tests {
             yara: |_| Vec::new(),
             raise_twins: |_, _| {},
             entry_findings: |_, _| {},
+            raise_filters: |_, _| {},
             is_instruction: |_| false,
             classify: |_| Shape::Plain,
             files_run: |_| Vec::new(),
@@ -898,9 +1144,14 @@ mod tests {
         let s = scan_with(tmp.path(), h);
         assert_eq!(by_rule(&s, "stub.needle", "utf16.txt").line, 3);
         assert_eq!(by_rule(&s, "stub.needle", "crlf.txt").line, 3);
+        assert_eq!(
+            by_rule(&s, "stub.needle", "bad.txt").line,
+            1,
+            "invalid UTF-8 is read lossily, not skipped"
+        );
         assert!(
-            !s.findings.iter().any(|f| f.path == "bad.txt"),
-            "invalid UTF-8 has no text"
+            !s.findings.iter().any(|f| f.rule == "files.not-utf8"),
+            "a doc is not code, config or an agent file"
         );
         assert!(s.errors.is_empty() && !s.partial);
         assert_eq!(s.files, 3);
@@ -947,14 +1198,428 @@ mod tests {
             by_rule(&s, "stub.ctx", "small.js").seen,
             "Code(Js) bytes=2 truncated=false text=2"
         );
-        // `.git/config` is read to 64 KiB, whatever the text cap.
+        // `.git/config` is read to the text cap like any other file.
         assert!(
             by_rule(&s, "stub.ctx", ".git/config")
                 .seen
-                .starts_with("Data bytes=65536 truncated=true"),
+                .starts_with("Config bytes=1001 truncated=true"),
             "{}",
             by_rule(&s, "stub.ctx", ".git/config").seen
         );
+    }
+
+    #[test]
+    fn a_stray_byte_does_not_hide_an_auto_run_file_from_the_rules() {
+        // C1: `"description": "\xff"` next to a postinstall.
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "package.json",
+            b"{\"description\":\"\xff\",\"scripts\":{\"postinstall\":\"x\"}}",
+        );
+        write(tmp.path(), ".vscode/tasks.json", b"// \xff\n{\"tasks\":[]}");
+        write(tmp.path(), ".claude/settings.json", b"{\"hooks\":{}}\0");
+        write(tmp.path(), ".mcp.json", b"{\"a\":\"\xfe\"}");
+        write(tmp.path(), "a.js", b"//\0\nrequire('child_process')\n");
+        write(tmp.path(), "clean.js", b"let a = 1;\n");
+        write(tmp.path(), "notes.txt", b"a \xff b\n");
+        write(tmp.path(), "data.bin", b"\xff\xff\xff");
+        let h = Hooks {
+            check: |f, out| {
+                if let Some(t) = f.text
+                    && (t.contains("postinstall") || t.contains("require") || t.contains("hooks"))
+                {
+                    out.push(finding("stub.saw", f.path, Severity::Low, 1, 1));
+                }
+            },
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        for p in ["package.json", "a.js", ".claude/settings.json"] {
+            by_rule(&s, "stub.saw", p);
+        }
+        for p in [
+            "package.json",
+            ".vscode/tasks.json",
+            ".claude/settings.json",
+            ".mcp.json",
+        ] {
+            let f = by_rule(&s, "files.not-utf8", p);
+            assert_eq!(f.severity, Severity::High, "{p} is a known auto-run name");
+            assert_eq!(f.group, Group::Hidden);
+            assert!(!f.why.is_empty() && !f.action.is_empty() && !f.seen.is_empty());
+        }
+        assert_eq!(
+            by_rule(&s, "files.not-utf8", "a.js").severity,
+            Severity::Medium
+        );
+        assert_eq!(
+            by_rule(&s, "files.not-utf8", "a.js").seen,
+            "NUL byte at byte 2"
+        );
+        let not_flagged = ["clean.js", "notes.txt", "data.bin"];
+        assert!(
+            !s.findings
+                .iter()
+                .any(|f| f.rule == "files.not-utf8" && not_flagged.contains(&f.path.as_str())),
+            "{:#?}",
+            s.findings
+        );
+    }
+
+    #[test]
+    fn a_clean_utf16_auto_run_file_has_no_encoding_finding() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut le = vec![0xff, 0xfe];
+        le.extend(
+            "{\"scripts\":{}}"
+                .encode_utf16()
+                .flat_map(|u| u.to_le_bytes()),
+        );
+        write(tmp.path(), "package.json", &le);
+        let s = scan_with(tmp.path(), quiet());
+        assert!(s.findings.is_empty(), "{:#?}", s.findings);
+    }
+
+    #[test]
+    fn a_truncated_auto_run_or_agent_file_is_high_and_marks_the_scan_partial() {
+        // C2: padding before `"scripts"` must not hide it.
+        let tmp = tempfile::tempdir().unwrap();
+        let pad = |n: usize| {
+            let mut v = vec![b' '; n];
+            v.extend(b"{\"scripts\":{}}");
+            v
+        };
+        write(tmp.path(), "package.json", &pad(3000));
+        write(tmp.path(), "CLAUDE.md", &pad(3000));
+        write(tmp.path(), ".git/config", &pad(3000));
+        write(tmp.path(), "big.js", &pad(3000));
+        write(tmp.path(), "big.txt", &pad(3000));
+        write(tmp.path(), "big.bin", &[0u8; 3000]);
+        write(tmp.path(), "small.json", b"{}");
+        let h = Hooks {
+            is_instruction: |p| p == "CLAUDE.md",
+            ..quiet()
+        };
+        let o = WalkOpts {
+            text_cap: 2000,
+            ..WalkOpts::default()
+        };
+        let s = scan_opts(tmp.path(), o, h);
+        for p in ["package.json", "CLAUDE.md", ".git/config"] {
+            let f = by_rule(&s, "files.truncated", p);
+            assert_eq!(f.severity, Severity::High, "{p}");
+            assert_eq!(f.group, Group::Hidden);
+        }
+        let high: Vec<&str> = s
+            .findings
+            .iter()
+            .filter(|f| f.rule == "files.truncated" && f.severity == Severity::High)
+            .map(|f| f.path.as_str())
+            .collect();
+        assert_eq!(high.len(), 3, "{high:?}: only auto-run and agent files");
+        assert!(s.partial);
+        // Anything else that was cut is INFO and neither partial nor an error.
+        for p in ["big.js", "big.txt"] {
+            assert_eq!(by_rule(&s, "files.truncated", p).severity, Severity::Info);
+        }
+        assert!(
+            !s.errors.iter().any(|e| e.contains("big.")),
+            "{:?}",
+            s.errors
+        );
+        assert!(
+            !s.findings
+                .iter()
+                .any(|f| f.rule == "files.truncated" && f.path == "big.bin"),
+            "a binary is read to its head by design"
+        );
+    }
+
+    fn cut_opts() -> WalkOpts {
+        WalkOpts {
+            text_cap: 2000,
+            ..WalkOpts::default()
+        }
+    }
+
+    fn padded(n: usize) -> Vec<u8> {
+        let mut v = vec![b' '; n];
+        v.extend(b"tail");
+        v
+    }
+
+    #[test]
+    fn an_oversize_file_that_nothing_runs_is_info_listed_and_not_partial() {
+        let tmp = tempfile::tempdir().unwrap();
+        for p in ["dist/bundle.js", "data.json", "notes.txt"] {
+            write(tmp.path(), p, &padded(3000));
+        }
+        write(tmp.path(), "big.bin", &[0u8; 3000]);
+        let h = Hooks {
+            check: |f, out| {
+                out.push(finding(
+                    "stub.len",
+                    f.path,
+                    Severity::Info,
+                    1,
+                    f.bytes.len(),
+                ));
+            },
+            ..quiet()
+        };
+        let s = scan_opts(tmp.path(), cut_opts(), h);
+        assert!(!s.partial, "{:?}", s.errors);
+        assert!(s.errors.is_empty());
+        for p in ["dist/bundle.js", "data.json", "notes.txt"] {
+            let f = by_rule(&s, "files.truncated", p);
+            assert_eq!(f.severity, Severity::Info, "{p}");
+            assert_eq!(
+                by_rule(&s, "stub.len", p).count,
+                2000,
+                "the rules read the first 2000"
+            );
+            let note = format!("{p} (over the text cap; scanned up to the cap)");
+            assert!(s.skipped.contains(&note), "{note}: {:?}", s.skipped);
+        }
+        assert!(!s.skipped.iter().any(|n| n.contains("big.bin")));
+        assert!(
+            s.findings.iter().all(|f| f.severity <= Severity::Info),
+            "{:#?}",
+            s.findings
+        );
+        assert_eq!(crate::report::exit_code(&s), 0);
+    }
+
+    fn reach_hooks() -> Hooks {
+        Hooks {
+            surfaces: |f, _| {
+                if f.path != "package.json" {
+                    return Vec::new();
+                }
+                vec![Surface {
+                    path: f.path.to_string(),
+                    line: 1,
+                    trigger: Trigger::Install,
+                    command: "node dist/bundle.js data.json".to_string(),
+                    rule: "autorun.npm-lifecycle",
+                    floor: Severity::Info,
+                    dir: String::new(),
+                }]
+            },
+            files_run: |c| c.split_whitespace().skip(1).map(str::to_string).collect(),
+            severity: |_, _, _| Severity::Medium,
+            ..quiet()
+        }
+    }
+
+    #[test]
+    fn an_oversize_code_file_that_an_auto_run_command_runs_is_partial() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "package.json", b"{}");
+        write(tmp.path(), "dist/bundle.js", &padded(3000));
+        let s = scan_opts(tmp.path(), cut_opts(), reach_hooks());
+        assert!(s.partial);
+        assert!(
+            s.errors.iter().any(|e| e.contains("dist/bundle.js")),
+            "{:?}",
+            s.errors
+        );
+        assert_eq!(
+            by_rule(&s, "files.truncated", "dist/bundle.js").severity,
+            Severity::Info
+        );
+        assert_eq!(crate::report::exit_code(&s), 3);
+    }
+
+    #[test]
+    fn an_oversize_config_that_a_command_names_is_not_partial() {
+        // Only code that runs counts: `data.json` is named by the command but is not code.
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "package.json", b"{}");
+        write(tmp.path(), "dist/bundle.js", b"ok");
+        write(tmp.path(), "data.json", &padded(3000));
+        let s = scan_opts(tmp.path(), cut_opts(), reach_hooks());
+        assert!(!s.partial, "{:?}", s.errors);
+    }
+
+    #[test]
+    fn a_critical_finding_wins_over_a_partial_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "package.json", b"{}");
+        write(tmp.path(), "dist/bundle.js", &padded(3000));
+        let h = Hooks {
+            check: |f, out| {
+                if f.path == "dist/bundle.js" {
+                    out.push(finding("stub.bad", f.path, Severity::Critical, 1, 1));
+                }
+            },
+            ..reach_hooks()
+        };
+        let s = scan_opts(tmp.path(), cut_opts(), h);
+        assert!(s.partial);
+        assert_eq!(crate::report::exit_code(&s), 2);
+    }
+
+    #[test]
+    fn the_real_scan_of_a_3_mib_bundle_exits_0_unless_postinstall_runs_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let line = b"var a=1;\n";
+        write(tmp.path(), "dist/bundle.js", &line.repeat(350_000));
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), None).unwrap();
+        let s = crate::scan(&tree);
+        assert!(!s.partial, "{:?}", s.errors);
+        assert_eq!(
+            by_rule(&s, "files.truncated", "dist/bundle.js").severity,
+            Severity::Info
+        );
+        assert_eq!(crate::report::exit_code(&s), 0);
+
+        write(
+            tmp.path(),
+            "package.json",
+            br#"{"name":"x","scripts":{"postinstall":"node dist/bundle.js"}}"#,
+        );
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), None).unwrap();
+        let s = crate::scan(&tree);
+        assert!(s.partial);
+        assert_eq!(crate::report::exit_code(&s), 3);
+    }
+
+    #[test]
+    fn a_git_config_include_cut_at_the_cap_is_partial() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".git/config",
+            b"[include]\n\tpath = extra.cfg\n",
+        );
+        write(tmp.path(), ".git/extra.cfg", &padded(3000));
+        let s = scan_opts(tmp.path(), cut_opts(), quiet());
+        assert!(s.partial);
+        assert!(
+            s.errors.iter().any(|e| e.contains(".git/config")),
+            "{:?}",
+            s.errors
+        );
+    }
+
+    #[test]
+    fn a_git_config_longer_than_the_old_64_kib_cap_is_read_in_full() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = "# pad\n".repeat(20_000).into_bytes();
+        cfg.extend(b"[core]\n\tfsmonitor = x\n");
+        write(tmp.path(), ".git/config", &cfg);
+        let h = Hooks {
+            check: |f, out| {
+                if f.text.is_some_and(|t| t.contains("fsmonitor")) {
+                    out.push(finding("stub.fsmonitor", f.path, Severity::High, 1, 1));
+                }
+            },
+            ..quiet()
+        };
+        let s = scan_with(tmp.path(), h);
+        by_rule(&s, "stub.fsmonitor", ".git/config");
+        assert!(!s.findings.iter().any(|f| f.rule == "files.truncated"));
+        assert!(!s.partial);
+    }
+
+    fn pager_hooks() -> Hooks {
+        Hooks {
+            check: |f, out| {
+                if f.text.is_some_and(|t| t.contains("pager = evil")) {
+                    out.push(finding("stub.pager", f.path, Severity::High, 1, 1));
+                }
+            },
+            ..quiet()
+        }
+    }
+
+    #[test]
+    fn a_git_config_include_inside_the_repo_is_read_as_part_of_the_config() {
+        // I2: `[include] path = ...` pulls a file in; git reads it as config.
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            ".git/config",
+            b"[include]\n\tpath = extra.cfg\n[includeIf \"gitdir:/x/\"]\n\tpath = ../ci/more.cfg\n",
+        );
+        write(tmp.path(), ".git/extra.cfg", b"[core]\n\tpager = evil\n");
+        write(tmp.path(), "ci/more.cfg", b"[core]\n\tsshCommand = x\n");
+        let s = scan_with(tmp.path(), pager_hooks());
+        let f = by_rule(&s, "stub.pager", ".git/config");
+        assert_eq!(f.severity, Severity::High);
+    }
+
+    #[test]
+    fn includes_that_leave_the_repo_or_loop_are_not_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "outside/x.cfg", b"[core]\n\tpager = evil\n");
+        write(
+            tmp.path(),
+            "repo/.git/config",
+            b"[include]\n\tpath = ../../outside/x.cfg\n\tpath = ~/x.cfg\n\tpath = loop.cfg\n",
+        );
+        write(
+            tmp.path(),
+            "repo/.git/loop.cfg",
+            b"[include]\n\tpath = loop.cfg\n\tpath = config\n",
+        );
+        let s = scan_with(&tmp.path().join("repo"), pager_hooks());
+        assert!(
+            !s.findings.iter().any(|f| f.rule == "stub.pager"),
+            "{:#?}",
+            s.findings
+        );
+    }
+
+    #[test]
+    fn a_nested_include_is_followed_one_file_at_a_time() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".git/config", b"[include]\n\tpath = a.cfg\n");
+        write(tmp.path(), ".git/a.cfg", b"[include]\n\tpath = b.cfg\n");
+        write(tmp.path(), ".git/b.cfg", b"[core]\n\tpager = evil\n");
+        let s = scan_with(tmp.path(), pager_hooks());
+        by_rule(&s, "stub.pager", ".git/config");
+    }
+
+    #[test]
+    fn the_include_targets_of_a_config_are_read_by_header_and_key() {
+        let cfg = "[core]\n\tpath = no\n[include]\n\tpath = \"a b.cfg\"\n\tPATH = c.cfg ; note\n\tother = no\n[includeIf \"gitdir:x\"]\n\tpath = d.cfg\n[remote \"o\"]\n\tpath = no\n";
+        assert_eq!(include_targets(cfg), ["a b.cfg", "c.cfg", "d.cfg"]);
+    }
+
+    #[test]
+    fn a_gitattributes_filter_that_another_file_configures_is_raised_by_the_real_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), ".gitattributes", b"*.dat filter=scrub\n");
+        write(
+            tmp.path(),
+            "README.md",
+            b"Run: git config filter.scrub.smudge ./scrub.sh\n",
+        );
+        let tree = DiskTree::open(tmp.path(), &WalkOpts::default(), None).unwrap();
+        let s = crate::scan(&tree);
+        assert_eq!(
+            by_rule(&s, "autorun.gitattributes-filter", ".gitattributes").severity,
+            Severity::High
+        );
+    }
+
+    #[test]
+    fn the_raise_filters_hook_gets_only_files_that_mention_a_filter() {
+        use std::sync::Mutex;
+        static SEEN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+        let tmp = tempfile::tempdir().unwrap();
+        write(tmp.path(), "a.md", b"git config filter.x.clean y\n");
+        write(tmp.path(), "b.md", b"nothing here\n");
+        write(tmp.path(), "c.md", b"filter. but no g-i-t\n");
+        let h = Hooks {
+            raise_filters: |f, _| SEEN.lock().unwrap().push(f.path.to_string()),
+            ..quiet()
+        };
+        scan_with(tmp.path(), h);
+        assert_eq!(*SEEN.lock().unwrap(), ["a.md"]);
     }
 
     #[test]

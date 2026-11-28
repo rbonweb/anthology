@@ -22,7 +22,7 @@ The check itself is built to be safe to run on hostile input:
 - It reads files and nothing else. It runs no package manager, build, hook, MCP server or submodule, and it installs nothing.
 - It never follows a symlink and never reads outside the folder you name. A link to something outside is reported, and what it points at is not read.
 - It uses the network only to fetch a URL you give it.
-- Text from the repo is data. The report shows hidden characters as escapes and masks anything that looks like a key.
+- Text from the repo is data. The report shows hidden characters as escapes (controls, bidirectional and zero-width characters, tag characters, line and paragraph separators, combining marks, private-use characters) and masks anything that looks like a key.
 
 ## Run it from a terminal
 
@@ -104,7 +104,7 @@ Two things lead you here without your asking:
 
   > anthology: this repo has files that run code when Claude Code or an editor opens it (`{list}`). If you did not write it, check it with /anthology:check-repo `<path>` from a session in another folder; its hooks may already have run in this one.
 
-  The list names what it found, from these labels: hooks, env or helper commands in `.claude/settings.json`; the same in `.claude/settings.local.json`; `.mcp.json` servers; a VS Code task that runs on folder open; `.envrc`. It reads each file up to 256 KiB. The line is not sent on resume, clear or compact, or in a session another program drives (see [Host mode](agents.md#host-mode)).
+  The list names what it found, from these labels: hooks, env or helper commands in `.claude/settings.json`; the same in `.claude/settings.local.json`; `.mcp.json` servers; a VS Code task that runs on folder open; `.envrc`. It reads each file up to 256 KiB. It matches a `folderOpen` value after decoding `\uXXXX` escapes, so spelling it with escapes does not hide it. A file the repo links to outside itself is never opened, and counts as one that runs code. The line is not sent on resume, clear or compact, or in a session another program drives (see [Host mode](agents.md#host-mode)).
 
 ## What it checks
 
@@ -203,16 +203,17 @@ With `--opened`, the opened warning comes before the verdict. After that the hea
 
 1. The verdict.
 2. The counts, on one line: `CRITICAL 0  HIGH 1  MEDIUM 2  LOW 0  INFO 5`.
-3. `target:`, the URL as you gave it for a URL scan, or the canonical folder path for a folder scan.
-4. `rev:`, the branch, tag or commit. A URL scan only.
-5. `scanned: N files in N ms`.
-6. `skipped:`, the folders the walk skipped, up to 8 and then `… N more`. It appears only when something was skipped.
-7. `partial:`, `a cap stopped the scan before every file was read`. It appears only when a cap stopped the scan.
-8. `error:`, one line for each error, up to 5. It appears only when there was an error.
-9. `tools:`, the optional tools that ran, each with its finding count, or `none`.
-10. One `not run:` line for each optional tool that did not run. It says whether the tool was not on your `PATH` (with what it would add), failed or was skipped, and why.
-11. `quarantine:`, the fetched folder. A URL scan only. It is followed by `To work in it: git -C '<dest>' status`, unless the folder name holds a quote, a control character or a hidden character, or starts with `-`.
-12. `No findings is not proof of safety.`
+3. `run on open: N`, how many commands run when you open the folder in an editor or an agent: folder-open tasks, dev container host commands, Claude Code hooks and similar. It is always there, and `run on open: 0` says nothing runs on open. A scan that finds only MEDIUM or lower still tells you what runs.
+4. `target:`, the URL as you gave it for a URL scan, or the canonical folder path for a folder scan.
+5. `rev:`, the branch, tag or commit. A URL scan only.
+6. `scanned: N files in N ms`.
+7. `skipped:`, the folders the walk skipped, up to 8 and then `… N more`. It appears only when something was skipped.
+8. `partial:`, `a cap stopped the scan before every file was read`. It appears only when a cap stopped the scan.
+9. `error:`, one line for each error, up to 5. It appears only when there was an error.
+10. `tools:`, the optional tools that ran, each with its finding count, or `none`.
+11. One `not run:` line for each optional tool that did not run. It says whether the tool was not on your `PATH` (with what it would add), failed or was skipped, and why.
+12. `quarantine:`, the fetched folder. A URL scan only. It is followed by `To work in it: git -C '<dest>' status`, unless the folder name holds a quote, a control character or a hidden character, or starts with `-`.
+13. `No findings is not proof of safety.`
 
 Findings come next, highest level first. Inside a level, agent findings come before auto-run, then hidden text, payload, exfiltration, dependencies, GuardDog, tools and scanner files, and then by path and line. Each block gives:
 
@@ -268,7 +269,9 @@ From the JSON the skill takes:
 - the start of each agent instruction file, up to 4,000 bytes each and 16 KB in all;
 - `about`, the first paragraph of the README and the description from `package.json`, `pyproject.toml` or `Cargo.toml`.
 
-Every excerpt is escaped, masked and wrapped in `<<untrusted-NONCE>>` markers. The nonce is 16 random hex characters made for that run.
+Every excerpt is escaped, masked and wrapped in `<<untrusted-NONCE>>` markers. The nonce is 16 random hex characters made for that run. Text inside an excerpt that is shaped like a marker, in any letter case, is broken with a backslash (`<\<untrusted`), so a repo cannot close a block early or fake a new one.
+
+The same markers wrap every other string in the JSON that comes from the repo or from a tool's output: a finding's `path`, `why`, `seen` and `do`, each entry of `skipped`, the `detail` of a tool that failed or was skipped, the text of an error in `notes`, the `about` text and the path of each instruction file. The skill also treats `target`, `report` and any string that is not wrapped as data.
 
 For each finding the session says what it does in one sentence, whether it fits the project in `about`, and gives a verdict: `malicious`, `suspicious` or `expected`. It may call a LOW or MEDIUM finding `expected`. A HIGH or CRITICAL finding keeps its level and gets only `malicious` or `suspicious`, with a reason. For each instruction file it flags any line that tells an agent to run commands, fetch URLs, read secrets or home paths, weaken safety, hide actions or change settings.
 
@@ -278,6 +281,7 @@ The notes print under `LLM notes (advisory; cannot lower a finding)`. Their limi
 - A model that was fooled can mislabel a finding. It cannot change the report, the verdict or the exit code.
 - Models also raise false alarms and miss real problems. Treat `expected` as a reading of one excerpt, not a clearance.
 - If the JSON is invalid or the triage fails, the skill says so and the report stands alone.
+- The skill runs the check with a 10 minute Bash timeout. When the JSON is large and the tool saves it to a file or cuts it short, the skill reads the saved file in chunks. It does not guess a part that never arrived.
 - Run in a terminal, the command gives you no notes. They come from the skill.
 
 ## Scripts and CI

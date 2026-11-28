@@ -1,9 +1,12 @@
 //! A TOML detector, not a parser (Task 3): unknown syntax yields no entry, never an error.
 
+use std::rc::Rc;
+
 /// One `key = value` line with the table header above it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Kv {
-    pub table: String,
+    /// Shared by the entries of one table, so a huge header is not copied per entry.
+    pub table: Rc<str>,
     pub key: String,
     pub value: String,
     pub line: usize,
@@ -18,7 +21,7 @@ pub struct Kv {
 pub fn entries(text: &str) -> Vec<Kv> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut out = Vec::new();
-    let mut table = String::new();
+    let mut table: Rc<str> = Rc::from("");
     let mut lines = text.lines().enumerate();
     while let Some((index, raw)) = lines.next() {
         let line = raw.trim();
@@ -27,7 +30,7 @@ pub fn entries(text: &str) -> Vec<Kv> {
         }
         if line.starts_with('[') {
             if let Some(name) = header(line) {
-                table = name;
+                table = Rc::from(name);
             }
             continue;
         }
@@ -66,7 +69,7 @@ pub fn entries(text: &str) -> Vec<Kv> {
             continue;
         }
         out.push(Kv {
-            table: table.clone(),
+            table: Rc::clone(&table),
             key,
             value: joined,
             line: index + 1,
@@ -216,9 +219,38 @@ fn bracket_depth(s: &str) -> i32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_huge_table_header_is_not_copied_for_every_entry() {
+        // Compared with the same entries under a one-byte header, on the same host at the same
+        // moment, so a busy machine slows both sides alike. Copying the 1 MiB name per entry
+        // would cost thousands of times the baseline; the bound is 40x with a 20 ms floor.
+        let body = "a = 1\n".repeat(100_000);
+        let small = format!("[t]\n{body}");
+        let text = format!("[{}]\n{body}", "t".repeat(1 << 20));
+        let best_small = (0..3)
+            .map(|_| {
+                let started = std::time::Instant::now();
+                let _ = entries(&small);
+                started.elapsed()
+            })
+            .min()
+            .expect("three runs");
+        let started = std::time::Instant::now();
+        let found = entries(&text);
+        let took = started.elapsed();
+        let bound = best_small.max(std::time::Duration::from_millis(20)) * 40;
+        assert!(
+            took < bound,
+            "huge header: {took:?} against a base of {best_small:?}"
+        );
+        assert_eq!(found.len(), 100_000);
+        assert_eq!(found[99_999].line, 100_001);
+        assert_eq!(found[0].table.len(), 1 << 20);
+    }
+
     fn kv(table: &str, key: &str, value: &str, line: usize) -> Kv {
         Kv {
-            table: table.to_string(),
+            table: table.into(),
             key: key.to_string(),
             value: value.to_string(),
             line,
